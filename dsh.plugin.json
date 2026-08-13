@@ -1,0 +1,19 @@
+{
+  "id": "@dsh-external/dsh-onebot",
+  "version": "0.1.0",
+  "main": "./lib/index.js",
+  "description": "QQ bot channel for dsh via OneBot 11 (NapCat et al.): reverse/forward WebSocket, DM+group with allowlists and mention gating, image/voice inbound, sentence-split long replies, [[qq_forward]], whitelisted NapCat API proxy",
+  "engines": { "dsh": ">=0.0.1" },
+  "contributes": {
+    "tools": [
+      "qq_send_image",
+      "qq_send_voice",
+      "qq_send_video",
+      "qq_send_file",
+      "qq_send_forward",
+      "qq_napcat_api",
+      "qq_group_history"
+    ],
+    "skills": []
+  }
+}
