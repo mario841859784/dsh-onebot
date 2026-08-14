@@ -27,6 +27,17 @@
 | 会话 | 每个 QQ 会话一个持久 Agent（session id 稳定派生），重启后自动 resume；每轮结束 flush 落盘 |
 | 提示词 | 自动注入 QQ 平台说明（纯文本输出、图片走 view_image、工具指引） |
 
+## 兼容性
+
+| 项 | 要求 |
+|---|---|
+| dsh | ≥ 0.1.0-rc.6（`engines.dsh`；@deepseek-ai/* 均为 peer 依赖 0.1.0-rc.6） |
+| Node.js | ≥ 22 |
+| OneBot 11 实现 | NapCat / Lagrange / LLOneBot / go-cqhttp（reverse 或 forward WebSocket） |
+| 可选依赖 | 语音转写需 ffmpeg + whisper CLI；t2i 文字图在 Linux 需 Noto CJK 字体 |
+
+最后验证：2026-08-14（90/90 vitest 全绿，dsh web 实测 QQ 私聊/群聊收发、文字图卡片、合并转发、语音转写）。
+
 ## 安装
 
 **前置**：dsh（≥0.1.0-rc.6）在 PATH 上；NapCat 或其他 OneBot 11 实现已运行。
@@ -83,12 +94,26 @@ npm install --include=dev
 
 环境变量：`ONEBOT_ALLOWED_USERS`（逗号分隔管理员）、`ONEBOT_ALLOW_ALL_USERS=true`（开发用）。
 
+## 权限与数据
+
+- **网络**：与 OneBot 11 网关建立 WebSocket 连接（reverse 监听或 forward 拨出）；入站图片/文件从 QQ CDN 下载。
+- **文件**：入站媒体与会话映射写入 `<dsh-home>/media/onebot/`（`mediaDir`，6 小时过期清理）；会话数据由 dsh 宿主持久化。
+- **系统调用**：语音转写调用本机 ffmpeg 与 whisper CLI（可 `sttEnabled: false` 关闭）。
+- **敏感信息**：`accessToken` 与管理员白名单存于 dsh 配置，不写入日志；出站内容经敏感信息审计。
+- **不收集**：无遥测，除用户配置的 OneBot 网关与图片 CDN 外不调用任何第三方服务。
+
 ## 给模型的平台说明（自动注入）
 
 - QQ 不渲染 Markdown → 输出纯文本（编号/短横线列表、行内反引号）。
 - 发图/文件/语音/视频用 `qq_send_*` 工具；合并转发用 `qq_send_forward`。
 - 用户发来的图片会标注本地路径，用 `view_image`（dsh-vision）查看。
 - 群聊消息带 `[HH:MM 昵称(QQ)]` 前缀；受限用户消息带 `[受限用户:仅问答]` 前缀（仅回答，禁止文件/终端/配置操作）。
+
+## 卸载
+
+1. 从 `~/.dsh/profiles/<profile>/cordis.patch.yml` 删除 dsh-onebot 的 insert 条目；
+2. 重启 dsh，日志不再出现 `[dsh-onebot] mounted` 即卸载完成；
+3. 可选：删除插件目录与 `<dsh-home>/media/onebot/` 残留媒体。
 
 ## 开发
 
@@ -107,6 +132,17 @@ npm install --include=dev
 - **临时媒体 6h 过期清理**：只写不删会无限堆积。
 - **t2i 按码点迭代**：JS 字符串索引会拆开 emoji 代理对（高代理位被分类成 CJK → 渲染成黑色字形），绘制/测量必须用 `Array.from`/for...of。
 - **t2i 度量=绘制**：换行/列宽统一走 `segWidth`（胶囊/粗体/斜体附加宽），像素级右缘验证 ≤790（非白判定 `not(r>245&&g>245&&b>245)`）。
+
+## 故障排查
+
+| 症状 | 原因与处理 |
+|---|---|
+| 群聊不响应 | `requireMention: true` 时需 @ 或回复才触发；@ 检测 fail-closed——确认 botQQ 已从 meta 事件学习，或显式配置 |
+| 图片下载 403 | NapCat 会把 URL 中的 `&` 转成 `&amp;`（解析已自动反转义）；仍失败可查日志中 media 下载行 |
+| 文字图中文豆腐块 | Linux 未装 CJK 字体：`apt install fonts-noto-cjk`，并用 `fontFiles` 指定 SC 字体文件 |
+| 崩溃循环 / 工具注册冲突 | 同一插件文件被 insert 两次（双实例）——检查 patch 无重复条目 |
+| 语音显示 [语音] 占位 | ffmpeg 或 whisper 不可用；安装后重启，或 `sttEnabled: false` 关闭 |
+| 日志在哪 | dsh 宿主日志；插件历史根因与修复见 [DEVLOG.md](DEVLOG.md) |
 
 ## 路线图（v2 候选）
 
