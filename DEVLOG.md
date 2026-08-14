@@ -65,6 +65,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 下午 | **loop 结算顺序再调整**（用户要求明确顺序）：合并转发 → 发送 t2i/final → 撤回。settleLoopBuffer 拆为 sendLoopForward + recallLoopMessages 两段，turn/end 在发送链上排三步（转发成功才执行撤回，失败保留原消息）；测试断言更新（fwd → final → delete），90/90 全过，构建待重启 |
 | 下午 | **入站图片压缩规划**：对齐 Hermes 原版 _shrink_image 梳理决策点，用户拍板——黑底垫色、EXIF 方向校正、GIF 不支持时保持原图；方案见 §3.12，待实现 |
 | 下午 | **入站图片压缩实现**：src/image-shrink.ts + media.ts 接线 + imageMaxSize 配置；踩坑：@napi-rs/canvas loadImage 已自动应用 EXIF 方向（手写解析会双重旋转）→ 删手写 EXIF 逻辑；99/99 全过，详见 §3.12 |
+| 晚 | **入站媒体解析修复验证（用户实测四类全过）**：语音——转写正常附带（测试语「听到了吗」）；图片——[图片:path] 标注正确、view_image 可读；文件——[文件:path] 标注正确、dsh-onebot-image-compress-plan.md 完整可读；视频——[视频:path] 标注正确、MP4 v2 有效。四类均落盘 dsh 媒体目录，修复生效 |
 
 ---
 
