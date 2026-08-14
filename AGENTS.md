@@ -49,15 +49,35 @@ npm install --include=dev && ./scripts/build.sh
 touch ~/.dsh/profiles/web/cordis.patch.yml
 ```
 
-## 4. 验收（改动完成前自查）
+## 4. 隐私与脱敏（发布/推公开仓库前必查）
+
+- **示例一律占位符**：文档/示例代码里的 IP、端口、路径、QQ 号用 `<占位>` 或假值
+  （如 `192.168.1.100`、`/home/user`）；真实内网 IP（`192.168.5.x`）与真实端口（如 `18643`）绝不入库
+  （2026-08-14 曾泄露 NAS 面板 `192.168.5.74:6098` 与 dsh 机 `ws://192.168.5.140:18643`，事后全仓脱敏 + 历史重写）
+- **提交邮箱**：repo 级 `user.email` 必须为 `mario841859784@users.noreply.github.com`
+  （曾用真实 QQ 邮箱 `841859784@qq.com` 提交，需 filter-branch 重写历史；`dsh-onebot@localhost` 同样不合格）
+- **token 隔离**：`accessToken`/密钥只放 `~/.dsh` 配置（cordis.patch.yml），绝不写进插件代码/测试/文档
+- **发布前扫描**（工作区 + 历史都要）：
+  ```sh
+  grep -rn "192\.168\|10\.\|172\.\(1[6-9]\|2[0-9]\|3[01]\)\." --include="*.md" --include="*.ts" --include="*.js" . | grep -v node_modules
+  grep -rn "/Users/\|841859784\|[1-9][0-9]\{9\}" --include="*.md" --include="*.ts" . | grep -v node_modules
+  git log -p --all | grep -nE "841859784@qq\.com|accessToken: '[^']|password\s*[:=]\s*[^' ]"   # 历史
+  git log --all --diff-filter=D --name-only --pretty=format:      # 曾删除的敏感文件
+  ```
+- **历史泄露处理**：`git filter-branch` 重写（`--env-filter` 改邮箱 + `--tree-filter` 改文本）→
+  `rm -rf .git/refs/original && git reflog expire --expire=now --all && git gc --prune=now --aggressive`
+  → `git push --force-with-lease`（先 `git fetch` 刷新 lease；重写会同步改动本地 remote ref）
+
+## 5. 验收（改动完成前自查）
 
 - [ ] tsc 零错误 + vitest 全绿
 - [ ] 渲染改动：像素右缘扫描（x>791 零违规）+ view_image 视觉检查
 - [ ] 协议/桥接改动：tests/e2e-peer.mjs 模拟对端 E2E 通过
 - [ ] 配置改动：与 ~/.dsh/profiles/web/cordis.patch.yml 的说明同步
+- [ ] 隐私扫描通过（无真实 IP/用户名/QQ 号/token；历史邮箱全 noreply）——见 §4
 - [ ] DEVLOG.md 已更新
 
-## 5. 关键文件地图
+## 6. 关键文件地图
 
 | 文件 | 职责 |
 |---|---|
