@@ -197,6 +197,61 @@ describe('ChatBridge', () => {
     await connection.stop()
   })
 
+  it('preserves the chat mapping across stop()', async () => {
+    const ctx = new Context()
+    const sessionIds: string[] = []
+    const captured = { followups: [] as Array<{ text: string; sessionId: string }> }
+    const agents = makeFakeAgents(sessionIds, captured)
+    const sessions = { flush: vi.fn(async () => undefined) }
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
+    const connection = new OneBotConnection({
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+    })
+    const bridge = new ChatBridge({
+      ctx, connection,
+      media: new MediaStore(join(mediaDir, 'media'), 6),
+      transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
+      agents: agents as never,
+      sessions: sessions as never,
+      defaultModel: undefined,
+      config: {
+        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
+        sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
+        maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
+      },
+      policy: {
+        dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
+        adminUsers: ['10001'], allowAllUsers: false, requireMention: true,
+      },
+      log: () => undefined,
+    })
+    connection.onMessage = event => { void bridge.handleInbound(event) }
+    bridge.start()
+    connection.start()
+    await vi.waitFor(() => expect(connection.address()).toBeDefined())
+    const address = connection.address()!
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
+    client.on('message', data => {
+      const frame = JSON.parse(data.toString()) as Record<string, unknown>
+      if (typeof frame.echo === 'string') {
+        client.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 7 }, echo: frame.echo }))
+      }
+    })
+    client.send(JSON.stringify({
+      post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002,
+      message: [{ type: 'text', data: { text: 'hi' } }], raw_message: 'hi',
+      sender: { user_id: 10001, nickname: '小明' },
+    }))
+    await vi.waitFor(() => expect(captured.followups).toHaveLength(1))
+    await bridge.stop()
+    const { readFile } = await import('node:fs/promises')
+    const mapping = JSON.parse(await readFile(join(mediaDir, 'chat-sessions.json'), 'utf8'))
+    expect(mapping['private:10001']).toBe(sessionIds[0])
+    await connection.stop()
+  })
+
   it('sends an error notice on a failed turn', async () => {
     const ctx = new Context()
     const sessionIds: string[] = []

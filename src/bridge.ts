@@ -102,6 +102,10 @@ export class ChatBridge {
   private readonly bySession = new Map<string, ChatId>()
   private stopping = false
   private mappingSaveTimer: ReturnType<typeof setTimeout> | undefined
+  /** Resolves once the on-disk chat mapping has been loaded. */
+  private mappingLoaded: Promise<void> = Promise.resolve()
+  /** Session ids whose persisted logs are unusable; creates must avoid them. */
+  private readonly brokenSessions = new Set<string>()
 
   constructor(deps: BridgeDeps) {
     this.deps = deps
@@ -120,7 +124,7 @@ export class ChatBridge {
     connection.onStatus = (connected: boolean) => {
       this.deps.log(connected ? 'info' : 'warn', 'OneBot ' + (connected ? 'connected' : 'disconnected'))
     }
-    void this.loadMapping().then(() => {
+    this.mappingLoaded = this.ready().then(() => this.loadMapping()).then(() => {
       if (this.stopping) return
       this.deps.log('info', 'bridge ready (' + this.chats.size + ' resumed chat(s))')
     })
@@ -133,6 +137,7 @@ export class ChatBridge {
       clearTimeout(this.mappingSaveTimer)
       this.mappingSaveTimer = undefined
     }
+    await this.saveMapping()
     for (const chat of this.chats.values()) {
       this.stopTyping(chat)
       try {
@@ -143,7 +148,6 @@ export class ChatBridge {
     }
     this.chats.clear()
     this.bySession.clear()
-    await this.saveMapping()
   }
 
   /** Map an agent session id back to its chat (for model tools). */
@@ -199,6 +203,21 @@ export class ChatBridge {
    */
   sendSegments(chatId: ChatId, segments: OutboundSegment[]): Promise<string | undefined> {
     return this.enqueue(chatId, () => this.sendMsg(chatId, segments, {}))
+  }
+
+  /**
+   * Wait for the loader's complete application (model selection, settings,
+   * persistence) before reading the default model — the same gate the
+   * headless runner uses, so the pinned selection is never a half-loaded
+   * default.
+   */
+  private async ready(): Promise<void> {
+    try {
+      const loader = this.deps.ctx.get('loader') as { await(): Promise<void> } | undefined
+      await loader?.await()
+    } catch (error) {
+      this.deps.log('debug', 'loader.await failed: ' + (error instanceof Error ? error.message : String(error)))
+    }
   }
 
   // ------------------------------------------------------------ inbound
@@ -477,6 +496,9 @@ export class ChatBridge {
       if (event.data.reason.kind === 'error' && this.deps.config.sendErrorNotice) {
         const message = event.data.reason.error.message
         this.sendToChat(chatId, '⚠️ 运行出错：' + message).catch(() => undefined)
+        if (/persisted log on disk that does not match this live session|id collision/i.test(message)) {
+          void this.healSessionCollision(chatId)
+        }
       }
       this.stopTyping(chat)
       chat.busy = false
@@ -502,7 +524,11 @@ export class ChatBridge {
   private async ensureChat(chatId: ChatId, nickname: string): Promise<ChatAgent> {
     const existing = this.chats.get(chatId)
     if (existing !== undefined) return existing
-    const sessionId = makeSessionId(sessionIdForChat(chatId))
+    await this.mappingLoaded
+    let sessionId = makeSessionId(sessionIdForChat(chatId))
+    if (this.brokenSessions.has(sessionId)) {
+      sessionId = makeSessionId(sessionIdForChat(chatId) + '-' + Date.now().toString(36))
+    }
     const selection = this.deps.defaultModel?.()
     const agentOptions: { provider?: string; model?: string } = {}
     if (selection !== undefined) {
@@ -513,16 +539,36 @@ export class ChatBridge {
     const selectionRef = selection !== undefined
       ? { current: selection, assembled: undefined }
       : undefined
-    const handle = await this.deps.agents.create({
-      sessionId,
-      meta: { cwd },
-      agentOptions,
-      setup: agentCtx => {
-        if (selectionRef !== undefined) {
-          installModelSelection(agentCtx, selectionRef)
-        }
-      },
-    })
+    let handle: { agent: Agent; dispose(): Promise<void> }
+    try {
+      handle = await this.deps.agents.create({
+        sessionId,
+        meta: { cwd },
+        agentOptions,
+        setup: agentCtx => {
+          if (selectionRef !== undefined) {
+            installModelSelection(agentCtx, selectionRef)
+          }
+        },
+      })
+    } catch (error) {
+      // A stale or foreign persisted log under the same id blocks creation
+      // (id collision). Recover with a fresh suffixed session id instead of
+      // failing the chat.
+      const fallbackId = makeSessionId(sessionIdForChat(chatId) + '-' + Date.now().toString(36))
+      this.deps.log('warn', 'agent create failed (' + (error instanceof Error ? error.message : String(error)) + '); retrying with ' + fallbackId)
+      handle = await this.deps.agents.create({
+        sessionId: fallbackId,
+        meta: { cwd },
+        agentOptions,
+        setup: agentCtx => {
+          if (selectionRef !== undefined) {
+            installModelSelection(agentCtx, selectionRef)
+          }
+        },
+      })
+      this.deps.log('info', 'recovered with fresh session ' + fallbackId + ' for ' + chatId)
+    }
     const chat: ChatAgent = {
       chatId,
       sessionId,
@@ -538,7 +584,7 @@ export class ChatBridge {
     this.chats.set(chatId, chat)
     this.bySession.set(sessionId, chatId)
     this.deps.log('info', 'agent created for ' + chatId + ' (session ' + sessionId + ')')
-    void this.saveMappingDebounced()
+    void this.saveMapping()
     return chat
   }
 
@@ -548,7 +594,9 @@ export class ChatBridge {
       const { readFile } = await import('node:fs/promises')
       const content = await readFile(this.mappingPath(), 'utf8')
       const mapping = JSON.parse(content) as Record<string, string>
+      this.deps.log('debug', 'mapping file has ' + Object.keys(mapping).length + ' chat(s)')
       for (const [chatId, sessionId] of Object.entries(mapping)) {
+        this.deps.log('debug', 'attempting resume of ' + chatId + ' @ ' + sessionId)
         if (this.stopping) return
         try {
           const selection = this.deps.defaultModel?.()
@@ -584,6 +632,7 @@ export class ChatBridge {
           this.chats.set(chatId, chat)
           this.bySession.set(sessionId, chatId)
         } catch (error) {
+          this.brokenSessions.add(sessionId)
           this.deps.log('warn', 'resume failed for ' + chatId + ': ' + (error instanceof Error ? error.message : String(error)))
         }
       }
@@ -618,6 +667,27 @@ export class ChatBridge {
       this.mappingSaveTimer = undefined
       void this.saveMapping()
     }, 2_000).unref()
+  }
+
+  /**
+   * Recover from a session-log collision: the live session cannot append to
+   * the mismatched on-disk log, so dispose the agent and rebuild the chat on
+   * a fresh session id. The user is asked to resend.
+   */
+  private async healSessionCollision(chatId: ChatId): Promise<void> {
+    const chat = this.chats.get(chatId)
+    if (chat === undefined) return
+    this.brokenSessions.add(chat.sessionId)
+    this.chats.delete(chatId)
+    this.bySession.delete(chat.sessionId)
+    this.stopTyping(chat)
+    try {
+      await chat.dispose()
+    } catch (error) {
+      this.deps.log('warn', 'collision heal dispose failed: ' + String(error))
+    }
+    this.deps.log('warn', 'healed session collision for ' + chatId + '; a fresh session will be created on next message')
+    void this.saveMapping()
   }
 
   // ------------------------------------------------------------ typing

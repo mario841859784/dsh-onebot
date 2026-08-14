@@ -56,6 +56,7 @@ export class MediaStore {
   async cleanupExpired(): Promise<void> {
     const cutoff = Date.now() - this.ttlHours * 3600_000
     try {
+      await mkdir(this.dir, { recursive: true })
       const entries = await readdir(this.dir)
       for (const name of entries) {
         const path = join(this.dir, name)

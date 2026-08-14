@@ -64,6 +64,10 @@ export declare class ChatBridge {
     private readonly bySession;
     private stopping;
     private mappingSaveTimer;
+    /** Resolves once the on-disk chat mapping has been loaded. */
+    private mappingLoaded;
+    /** Session ids whose persisted logs are unusable; creates must avoid them. */
+    private readonly brokenSessions;
     constructor(deps: BridgeDeps);
     /** Start listening: wire connection handlers and the session event feed. */
     start(): void;
@@ -89,6 +93,13 @@ export declare class ChatBridge {
      * @returns the sent message id.
      */
     sendSegments(chatId: ChatId, segments: OutboundSegment[]): Promise<string | undefined>;
+    /**
+     * Wait for the loader's complete application (model selection, settings,
+     * persistence) before reading the default model — the same gate the
+     * headless runner uses, so the pinned selection is never a half-loaded
+     * default.
+     */
+    private ready;
     /**
      * Inbound OneBot message event → agent turn. All policy and media work is
      * contained: a failure here logs and drops the message, never the host.
@@ -124,6 +135,12 @@ export declare class ChatBridge {
     private mappingPath;
     private saveMapping;
     private saveMappingDebounced;
+    /**
+     * Recover from a session-log collision: the live session cannot append to
+     * the mismatched on-disk log, so dispose the agent and rebuild the chat on
+     * a fresh session id. The user is asked to resend.
+     */
+    private healSessionCollision;
     /** Start the NapCat typing indicator (private chats only). */
     private startTyping;
     /** Stop the typing indicator. */
