@@ -73,6 +73,7 @@ export interface Config {
   maxImageBytes: number
   maxVoiceBytes: number
   maxFileBytes: number
+  imageMaxSize: number
   sttEnabled: boolean
   sttEngine: 'auto' | 'openai' | 'whisper-cpp' | 'custom'
   sttCommand: string
@@ -141,6 +142,8 @@ export const Config: z<Config> = z.object({
     .description('入站临时媒体文件保留时长（小时），到期自动清理'),
   maxImageBytes: z.number().default(IMAGE_MAX_BYTES)
     .description('出站图片大小上限（字节）'),
+  imageMaxSize: z.number().default(2048)
+    .description('入站图片长边上限（像素）；超过则等比压缩后交给视觉模型，<=0 禁用'),
   maxVoiceBytes: z.number().default(VOICE_MAX_BYTES)
     .description('出站语音大小上限（字节）'),
   maxFileBytes: z.number().default(MEDIA_MAX_BYTES)
@@ -205,7 +208,7 @@ export function apply(ctx: Context, config: Config): void {
       callTimeoutMs: 30_000,
     },
   )
-  const media = new MediaStore(mediaDir, config.tempTtlHours)
+  const media = new MediaStore(mediaDir, config.tempTtlHours, config.imageMaxSize)
   const transcriber = new Transcriber({
     enabled: config.sttEnabled,
     engine: config.sttEngine,

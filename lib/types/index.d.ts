@@ -77,6 +77,7 @@ export interface Config {
     maxImageBytes: number;
     maxVoiceBytes: number;
     maxFileBytes: number;
+    imageMaxSize: number;
     sttEnabled: boolean;
     sttEngine: 'auto' | 'openai' | 'whisper-cpp' | 'custom';
     sttCommand: string;

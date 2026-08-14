@@ -22,11 +22,14 @@ export interface ResolvedMedia {
 export declare class MediaStore {
     readonly dir: string;
     private readonly ttlHours;
+    private readonly imageMaxSize;
     /**
      * @param dir - absolute scratch directory (created on demand).
      * @param ttlHours - files older than this are deleted on cleanup.
+     * @param imageMaxSize - inbound-image long-edge cap in px; images larger
+     *   than this are downscaled right after download (`<=0` disables).
      */
-    constructor(dir: string, ttlHours: number);
+    constructor(dir: string, ttlHours: number, imageMaxSize?: number);
     /** Ensure the scratch directory exists. */
     ensure(): Promise<void>;
     /** A fresh scratch file path with the given extension. */
@@ -51,6 +54,7 @@ export declare class MediaStore {
         url?: string;
         file?: string;
     } | undefined>): Promise<ResolvedMedia | undefined>;
+    private resolveInner;
     /**
      * Download a URL into the scratch dir.
      * @param url - remote URL.

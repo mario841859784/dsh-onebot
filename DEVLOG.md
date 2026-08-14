@@ -64,6 +64,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 下午 | **QQ 文件接收双通道**：NapCat 文档（napneko.github.io/develop/file）确认 get_private_file_url 私聊直链（QQ CDN，实测 200 + MD5 一致）→ resolveNasFile 优先直链下载，失败回退 get_file 的 base64/http-url 载荷（SSH 方案未实现，仅注释残留，后已清理）；get_private_file_url 加入 qq_napcat_api 白名单；file 段解析 name 回退 file 字段 + 保留 file_id。90/90 全过 |
 | 下午 | **loop 结算顺序再调整**（用户要求明确顺序）：合并转发 → 发送 t2i/final → 撤回。settleLoopBuffer 拆为 sendLoopForward + recallLoopMessages 两段，turn/end 在发送链上排三步（转发成功才执行撤回，失败保留原消息）；测试断言更新（fwd → final → delete），90/90 全过，构建待重启 |
 | 下午 | **入站图片压缩规划**：对齐 Hermes 原版 _shrink_image 梳理决策点，用户拍板——黑底垫色、EXIF 方向校正、GIF 不支持时保持原图；方案见 §3.12，待实现 |
+| 下午 | **入站图片压缩实现**：src/image-shrink.ts + media.ts 接线 + imageMaxSize 配置；踩坑：@napi-rs/canvas loadImage 已自动应用 EXIF 方向（手写解析会双重旋转）→ 删手写 EXIF 逻辑；99/99 全过，详见 §3.12 |
 
 ---
 
@@ -138,18 +139,21 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
   - 权限：仅 admin（群聊成员/受限用户发 /new 直接忽略）
 - **验证**：82 vitest 全绿（新增回归：/new 不进入 agent、收到确认回复、下一条消息落在带后缀的新会话 id）；tsc 构建通过
 
-### 3.12 入站图片压缩（2026-08-14 规划，v2 待实现）
-- **目标**：大图先压缩再交给视觉模型（view_image），避免大图拖慢视觉分析（路线图唯一剩余项；对齐 Hermes 原版 `_shrink_image`）
+### 3.12 入站图片压缩（2026-08-14，已实现）
+- **目标**：大图先压缩再交给视觉模型（view_image），避免大图拖慢视觉分析（路线图最后一项，已转正；对齐 Hermes 原版 `_shrink_image`）
 - **决策拍板**（用户确认）：
   - 触发：长边 > `imageMaxSize`（新配置，默认 2048，`<=0` 禁用）才压缩，等比缩放（长边限制、短边跟随）
   - 算法：@napi-rs/canvas 缩放（`imageSmoothingQuality: 'high'`），**不加新依赖**
   - 输出：RGBA（含透明）→ PNG；否则 → JPEG quality=85；**透明垫黑底**（与 PIL 转 RGB 一致）
-  - **EXIF 方向校正**（用户要求，优于原版）：读 EXIF Orientation 校正旋转后再压缩
-  - GIF 动图：canvas 无法解码时**保持原图**不压缩（用户确认；原版为塌缩第一帧，TS 版不强行支持）
+  - **EXIF 方向校正**（用户要求，优于原版）：竖拍图不横躺
+  - GIF 动图：**保持原图**不压缩（用户确认）
   - 失败/解码失败：保持原图（best-effort）
-- **执行位置**：media.ts 下载完成后立即压缩，仅 image 段；voice/video/file 不动；压缩后字节数不复查 IMAGE_MAX_BYTES（2048px JPEG q85 远小于 8MB）
-- **测试计划**：4000px 大图 → 长边 ≤2048；小图不动；RGBA→PNG / 不透明→JPEG；`imageMaxSize: 0` 禁用；解码失败回退原图；EXIF 校正用例
-- **文档**：README 配置表加 `imageMaxSize`、功能表「入站图片压缩」转正、路线图移除该项
+- **实现**（src/image-shrink.ts + media.ts resolve 包装）：
+  - `shrinkImage(src, maxSize)`：GIF 魔数跳过 → loadImage 解码 → 长边 ≤maxSize 不动 → 等比缩放 → PNG/JPEG 导出 → 写 `<原名>-c<maxSize>.png|jpg`（不覆盖原图）
+  - MediaStore 构造加 `imageMaxSize`（`<=0` 禁用）；resolve 的 image 分支下载后统一压缩（resolveInner 提取 + 外层包装，全分支单点生效）
+  - ⚠️ **踩坑（重要）**：原计划手写 JPEG APP1/EXIF Orientation 解析（零依赖约 40 行），实测 **@napi-rs/canvas 的 loadImage 已自动应用 EXIF 方向**（3000×2000 + Orientation=6 解码即 2000×3000）——再手动旋转会**双重旋转**。修复：删除手写 EXIF 解析与旋转代码，直接以解码尺寸为准（解码尺寸=显示尺寸）
+- **验证**：99/99 vitest 全绿（新增 9 例：4000→2048、小图不动、禁用、RGBA→PNG、不透明→JPEG、EXIF=6 输出 1365×2048、GIF 保持、损坏文件不抛、不覆盖原图）；tsc 零错误
+- **文档**：README 配置表加 `imageMaxSize`、功能表入站转正、路线图章节移除、兼容性验证更新为 99/99
 
 ---
 ## 4. 功能清单（当前状态）
@@ -157,7 +161,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 ### 入站
 - [x] 私聊/群聊（群需 @/回复触发，requireMention 默认 true；白名单授权）
 - [x] 段数组优先解析（CQ 字符串回退）、CQ 反转义
-- [x] 图片 url/base64/file/hash 四路获取；语音 ffmpeg→whisper 转写（失败降级 [语音]）
+- [x] 图片 url/base64/file/hash 四路获取；**大图自动压缩（长边 ≤imageMaxSize，GIF 不压，透明 PNG 保留）**；语音 ffmpeg→whisper 转写（失败降级 [语音]）
 - [x] 引用消息自动取原文（get_msg）；合并转发自动展开（get_forward_msg）
 - [x] 表情 id→emoji、@、回复、卡片、戳一戳段类型；群聊 [HH:MM 昵称(QQ)] 前缀注入
 
@@ -178,7 +182,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 ### 运维
 - [x] 会话映射持久化 + 重启 resume（含引导期模型选择等待）
 - [x] 热加载：改 patch 文件/touch 即生效（无需重启 dsh）
-- [x] 测试：90 vitest（单元 + 真实 WS 对端 + 全管线 + t2i 像素扫描 + 预设/工作区回归 + loop 合并/斜杠命令回归）
+- [x] 测试：99 vitest（单元 + 真实 WS 对端 + 全管线 + t2i 像素扫描 + 预设/工作区回归 + loop 合并/斜杠命令回归 + 图片压缩）
 
 ---
 
@@ -188,8 +192,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 2. **ZWJ 组合 emoji / 区域指示符**：按码点拆分绘制（原版一致限制）
 3. **t2i 链接/图片语法原样当文本**、无多级列表/任务列表/嵌套引用/合并单元格（原版一致限制）
 4. **Linux 部署**：需安装 Noto CJK（ttc 默认面可能是 JP，fontkit 提取 SC 面代码已就位但未在 Linux 实测）；emoji 需注册 NotoColorEmoji
-5. 入站图片压缩（≤2048px）；loop 合并已实现（2026-08-14 下午）；用户档案不移植（已从路线图移除）
-6. 卡片最大高度未限制（超长 markdown 可能生成超高图）
+5. 卡片最大高度未限制（超长 markdown 可能生成超高图）
 
 ---
 

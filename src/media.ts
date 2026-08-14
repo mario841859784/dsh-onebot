@@ -8,6 +8,7 @@
 import { mkdir, readFile, readdir, rm, stat, writeFile, copyFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { shrinkImage } from './image-shrink.js'
 
 /** Size limits (bytes), matching the Hermes adapter's constants. */
 export const IMAGE_MAX_BYTES = 8 * 1024 * 1024
@@ -29,14 +30,18 @@ export interface ResolvedMedia {
 export class MediaStore {
   readonly dir: string
   private readonly ttlHours: number
+  private readonly imageMaxSize: number
 
   /**
    * @param dir - absolute scratch directory (created on demand).
    * @param ttlHours - files older than this are deleted on cleanup.
+   * @param imageMaxSize - inbound-image long-edge cap in px; images larger
+   *   than this are downscaled right after download (`<=0` disables).
    */
-  constructor(dir: string, ttlHours: number) {
+  constructor(dir: string, ttlHours: number, imageMaxSize = 0) {
     this.dir = dir
     this.ttlHours = ttlHours > 0 ? ttlHours : 6
+    this.imageMaxSize = imageMaxSize
   }
 
   /** Ensure the scratch directory exists. */
@@ -82,6 +87,24 @@ export class MediaStore {
    * @returns the resolved file, or undefined when the ref cannot be fetched.
    */
   async resolve(ref: {
+    kind: 'image' | 'voice' | 'video' | 'file'
+    url?: string
+    file?: string
+  }, resolveHash: (kind: 'image' | 'voice' | 'video' | 'file', file: string) => Promise<{ url?: string; file?: string } | undefined>): Promise<ResolvedMedia | undefined> {
+    const result = await this.resolveInner(ref, resolveHash)
+    // Downscale inbound images right after download (long-edge cap).
+    if (result !== undefined && result.kind === 'image' && this.imageMaxSize > 0) {
+      try {
+        const shrunk = await shrinkImage(result.path, this.imageMaxSize)
+        if (shrunk !== undefined) result.path = shrunk
+      } catch (error) {
+        console.warn('[dsh-onebot] image shrink failed, keeping original:', error instanceof Error ? error.message : String(error))
+      }
+    }
+    return result
+  }
+
+  private async resolveInner(ref: {
     kind: 'image' | 'voice' | 'video' | 'file'
     url?: string
     file?: string
