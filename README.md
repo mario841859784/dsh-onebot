@@ -1,5 +1,7 @@
 # dsh-onebot
 
+> **[English](README.en.md) | 中文**
+
 给 DeepSeek Harness 加上 QQ 通道。A QQ channel for dsh.
 
 本插件把 dsh 变成一个 QQ 机器人（**OneBot 11 协议**，兼容 NapCat / Lagrange / LLOneBot / go-cqhttp），
