@@ -125,7 +125,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
   - `joinPreset(agentCtx)`：setup 里 `agentPresets.mount(agentCtx, config.agentPreset || undefined)`（默认走部署默认 standard；mount 失败仅 warn 回退旧行为，不炸聊天）
   - `attachToWorkspace(sessionId, headerCwd)`：按会话 header cwd `resolveByPath`，无则 `create`，再 `attachSession`（全 best-effort，失败仅日志）
   - 新增配置：`agentPreset`（留空=默认）、`workspacePath`（留空=宿主 cwd）；inject 加 `agentPresets`、`workspaceRegistry`
-  - patch 已配 `agentPreset: standard` + `workspacePath: /home/user/workspace`
+  - patch 已配 `agentPreset: standard` + `workspacePath: ~/workspace`
 - **防复发（3.10 修订）**：宿主重启 resume 旧会话时，旧会话 header cwd 是旧宿主 cwd（~/.hermes/workspace），与 workspacePath 不同 → 原逻辑会按旧 cwd 自动建工作区（实测踩中：自动创建了 ~/.hermes/workspace 工作区）。修订：**仅当 headerCwd === workspacePath 时才自动创建**；异 cwd 会话只挂到已存在的工作区，否则跳过（保持未分组）。旧会话用脚本迁移（header cwd 改写 + 目录迁移 + workspace/projcache 同步，见 workspace/migrate-qq-session.sh）
 - **验证**：81 vitest 全绿（含两条回归：preset mount + 工作区 create/attach；异 cwd 不自动建工作区）；tsc 构建通过。**生效需重启 dsh web**（宿主侧插件无 HMR）
 
@@ -190,11 +190,11 @@ cd ~/dsh-plugins/dsh-onebot && npm install --include=dev && ./scripts/build.sh
 ./node_modules/.bin/vitest run       # 79 个测试
 
 # 线上状态
-netstat -an | grep 18643             # NapCat 反向 WS 连接（ESTABLISHED）
-zstd -dc ~/.dsh/sessions/--Users-mario-.hermes-workspace--/onebot-private-*/session.jsonl.zstd   # 会话日志
+netstat -an | grep <port>             # NapCat 反向 WS 连接（ESTABLISHED）
+zstd -dc ~/.dsh/sessions/*/onebot-private-*/session.jsonl.zstd   # 会话日志
 
-# NapCat（NAS 192.168.1.100:6098/webui）
-网络配置 → ws-reverse → ws://192.168.1.100:18643/ws，token 与插件 accessToken 一致
+# NapCat（NAS 管理面板）
+网络配置 → ws-reverse → ws://<dsh 机器 IP>:<port>/ws，token 与插件 accessToken 一致
 docker restart 会丢登录态（需重新扫码/QCE 登录）
 ```
 
