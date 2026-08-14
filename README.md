@@ -66,8 +66,17 @@ npm install --include=dev
 
 重启 dsh（`dsh web` 或你的启动方式），日志出现 `[dsh-onebot] mounted` 即挂载成功。
 
-**NapCat 侧（reverse 模式）**：配置一个 ws-reverse 通道，URL 指向 dsh 所在机器
-（如 `ws://192.168.1.100:8643/ws`），token 与上面一致。
+**NapCat 侧（必须配置，两种模式二选一）**：
+
+- **reverse 模式（NapCat 拨入 dsh，推荐）**：NapCat 网络设置里新增「**WebSocket 客户端**」，
+  「上报地址」填 dsh 的 WS 地址 `ws://<dsh 所在机器 IP>:<port>/ws`（如 `ws://192.168.1.100:8643/ws`），
+  「token」填插件 `accessToken` 相同的值；dsh 与 NapCat 不同机时不能用 `127.0.0.1`。
+- **forward 模式（dsh 拨出到 NapCat）**：NapCat 网络设置里启用「**WebSocket 服务端**」（默认监听
+  `0.0.0.0:3001`），插件 `url` 配置为 `ws://<NapCat 所在机器 IP>:3001`（同机可用
+  `ws://127.0.0.1:3001`），token 两边一致。
+
+两侧 token 必须一致；消息上报格式建议选「**数组**」（插件段数组优先解析，CQ 字符串仅回退）。
+配置完成后重启 dsh，日志出现 `[dsh-onebot] mounted` 且 NapCat 显示连接成功即就绪。
 
 **部署位置要求**：NapCat 必须部署在 dsh **可达的局域网**内（同一网段/能互通），
 WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 dsh 不在同一台机器时，
