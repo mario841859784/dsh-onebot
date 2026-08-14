@@ -117,6 +117,29 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 
 环境变量：`ONEBOT_ALLOWED_USERS`（逗号分隔管理员）、`ONEBOT_ALLOW_ALL_USERS=true`（开发用）。
 
+## t2i 字体依赖
+
+文字图卡片需要三类字体（CJK / 等宽 / 彩色 emoji），插件启动时从系统与固定路径自动注册，
+缺失时对应字符渲染为豆腐块。
+
+- **macOS**：零安装——自动使用系统自带 Hiragino Sans GB / Songti SC、Menlo、Apple Color Emoji。
+- **Linux**（Debian/Ubuntu，一条命令补齐）：
+
+  ```sh
+  sudo apt install fonts-noto-cjk fonts-dejavu-core fonts-noto-color-emoji
+  ```
+
+  | 依赖 | 提供文件（插件自动注册路径） | 用途 |
+  |---|---|---|
+  | `fonts-noto-cjk` | `/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc` | 中文正文/标题（ttc 自动提取 SC 面，回退 JP/Mono 面） |
+  | `fonts-dejavu-core` | `/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf` | 代码块/行内 code 等宽 |
+  | `fonts-noto-color-emoji` | `/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf` | 彩色 emoji |
+  | 可选 `fonts-wqy-zenhei` / `fonts-wqy-microhei` | `/usr/share/fonts/truetype/wqy/*.ttc` | CJK 备选（Noto 缺失时） |
+  | 可选 `fonts-unifont` | `/usr/share/fonts/opentype/unifont/*.otf` | 最后兜底 |
+
+- **自定义**：`fontFiles` 指定额外字体文件（重启生效）；`fontFamilies` 指定优先使用的家族名。
+  渲染器带墨水自检——缺字体的家族会被自动剔除并回退，不会静默出豆腐块卡片。
+
 ## 权限与数据
 
 - **网络**：与 OneBot 11 网关建立 WebSocket 连接（reverse 监听或 forward 拨出）；入站图片/文件从 QQ CDN 下载。
