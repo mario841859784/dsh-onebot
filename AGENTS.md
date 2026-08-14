@@ -53,9 +53,9 @@ touch ~/.dsh/profiles/web/cordis.patch.yml
 
 - **示例一律占位符**：文档/示例代码里的 IP、端口、路径、QQ 号用 `<占位>` 或假值
   （如 `192.168.1.100`、`/home/user`）；真实内网 IP（`192.168.5.x`）与真实端口（如 `18643`）绝不入库
-  （2026-08-14 曾泄露 NAS 面板 `192.168.5.74:6098` 与 dsh 机 `ws://192.168.5.140:18643`，事后全仓脱敏 + 历史重写）
+  （2026-08-14 曾泄露 NAS 面板 `<内网IP:端口>` 与 dsh 机 `ws://<内网IP:端口>`，事后全仓脱敏 + 历史重写）
 - **提交邮箱**：repo 级 `user.email` 必须为 `mario841859784@users.noreply.github.com`
-  （曾用真实 QQ 邮箱 `841859784@qq.com` 提交，需 filter-branch 重写历史；`dsh-onebot@localhost` 同样不合格）
+  （曾用真实 QQ 邮箱提交，需 filter-branch 重写历史；`dsh-onebot@localhost` 同样不合格）
 - **token 隔离**：`accessToken`/密钥只放 `~/.dsh` 配置（cordis.patch.yml），绝不写进插件代码/测试/文档
 - **发布前扫描**（工作区 + 历史都要）：
   ```sh
