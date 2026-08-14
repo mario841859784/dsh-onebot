@@ -660,12 +660,11 @@ export class ChatBridge {
   }
 
   /**
-   * Fetch an inbound QQ file to a local path. NapCat's get_file returns
+   * Fetch an inbound QQ file to a local path. NapCat's get_file may return
    * container-internal paths unreachable from this host, so:
    *   1. prefer the private-file direct link (get_private_file_url → HTTP
-   *      CDN download, works for private chats, no SSH needed);
-   *   2. fall back to SSH (nasSsh): docker cp the file out of the NapCat
-   *      container onto the NAS scratch dir and stream it back as base64.
+   *      CDN download, works for private chats);
+   *   2. fall back to get_file base64 / http-url payloads.
    * Returns the [文件:path] annotation, or '' when disabled/failed.
    */
   private async resolveNasFile(ref: MediaRef): Promise<string> {
@@ -686,7 +685,7 @@ export class ChatBridge {
         }
       }
     } catch (error) {
-      this.deps.log('debug', 'get_private_file_url failed (falling back to ssh): ' + (error instanceof Error ? error.message : String(error)))
+      this.deps.log('debug', 'get_private_file_url failed (falling back to get_file): ' + (error instanceof Error ? error.message : String(error)))
     }
     // 2. get_file: with NapCat's file server enabled it returns a `base64`
     //    payload or an http(s) `url`; otherwise a container path (SSH below).

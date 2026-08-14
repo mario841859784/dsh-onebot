@@ -173,12 +173,11 @@ export declare class ChatBridge {
     /** Expand a quoted (reply) message into [引用] text via get_msg. */
     private expandQuote;
     /**
-     * Fetch an inbound QQ file to a local path. NapCat's get_file returns
+     * Fetch an inbound QQ file to a local path. NapCat's get_file may return
      * container-internal paths unreachable from this host, so:
      *   1. prefer the private-file direct link (get_private_file_url → HTTP
-     *      CDN download, works for private chats, no SSH needed);
-     *   2. fall back to SSH (nasSsh): docker cp the file out of the NapCat
-     *      container onto the NAS scratch dir and stream it back as base64.
+     *      CDN download, works for private chats);
+     *   2. fall back to get_file base64 / http-url payloads.
      * Returns the [文件:path] annotation, or '' when disabled/failed.
      */
     private resolveNasFile;
