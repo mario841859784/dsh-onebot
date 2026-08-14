@@ -384,6 +384,12 @@ export class OneBotConnection {
       }
       if (event.post_type === 'message') {
         try {
+          const ev = event as unknown as { message_type?: string; message?: unknown; raw_message?: unknown }
+          console.log('[dsh-onebot:dbg] raw message event:', JSON.stringify({
+            message_type: ev.message_type,
+            message: ev.message,
+            raw_message: ev.raw_message,
+          }))
           this.onMessage(event)
         } catch (error) {
           console.error('[dsh-onebot] onMessage handler failed:', error)

@@ -18,6 +18,8 @@ export interface MediaRef {
   url?: string
   /** raw file field: base64://..., file://..., or a hash. */
   file?: string
+  /** OneBot file_id (NapCat file segments carry the real id here). */
+  fileId?: string
   name?: string
   subType?: string
 }
@@ -217,8 +219,17 @@ export function parseMessage(segments: OneBotSegment[] | undefined, raw: string)
         textParts.push('[视频]')
         break
       case 'file':
-        media.push({ kind: 'file', url: seg.data.url || undefined, file: seg.data.file || undefined, name: seg.data.name })
-        textParts.push(seg.data.name ? `[文件:${seg.data.name}]` : '[文件]')
+        // NapCat's file segment: `file` holds the file NAME (not a path),
+        // `file_id` the real id, `name` is usually absent. Keep the raw
+        // fields for media.ts; the display name falls back to `file`.
+        media.push({
+          kind: 'file',
+          url: seg.data.url || undefined,
+          file: seg.data.file || undefined,
+          fileId: seg.data.file_id || undefined,
+          name: seg.data.name || seg.data.file || undefined,
+        })
+        textParts.push(seg.data.name || seg.data.file ? `[文件:${seg.data.name || seg.data.file}]` : '[文件]')
         break
       case 'at': {
         const qq = seg.data.qq ?? ''

@@ -45,6 +45,8 @@ export interface BridgeConfig {
     fontFamilies: readonly string[];
     agentPreset: string;
     workspacePath: string;
+    /** Max inbound file bytes fetched via QQ direct link / base64 (0 = no cap). */
+    maxInboundFileBytes: number;
 }
 /** Agent-preset service (dsh-agent-presets): joins agents to a preset composition. */
 export interface AgentPresetsLike {
@@ -53,13 +55,22 @@ export interface AgentPresetsLike {
     }>;
 }
 /** Workspace registry (dsh-workspace): durable workspace membership. */
+export interface WorkspaceLike {
+    id: string;
+    path: string;
+    sessionIds: readonly string[];
+    attachSession(sessionId: string): Promise<void>;
+}
+/** Workspace registry (dsh-workspace): durable workspace membership. */
 export interface WorkspaceRegistryLike {
-    resolveByPath(path: string): Promise<{
-        attachSession(sessionId: string): Promise<void>;
-    } | undefined>;
-    create(path: string, title?: string): Promise<{
-        attachSession(sessionId: string): Promise<void>;
-    }>;
+    resolveByPath(path: string): Promise<WorkspaceLike | undefined>;
+    create(path: string, title?: string): Promise<WorkspaceLike>;
+    list(): WorkspaceLike[];
+}
+/** Default model service (dsh-agent-default-model): read/save the default selection. */
+export interface AgentDefaultModelLike {
+    currentSelection(): ModelSelection | undefined;
+    saveSelection(next: ModelSelection): Promise<void>;
 }
 /** Services the bridge needs (subset of the plugin Context). */
 export interface BridgeDeps {
@@ -71,6 +82,7 @@ export interface BridgeDeps {
     sessions: SessionStore;
     agentPresets: AgentPresetsLike;
     workspaceRegistry: WorkspaceRegistryLike;
+    agentDefaultModel: AgentDefaultModelLike | undefined;
     defaultModel: (() => ModelSelection | undefined) | undefined;
     config: BridgeConfig;
     policy: AccessPolicyConfig;
@@ -85,6 +97,9 @@ export declare class ChatBridge {
     private readonly deps;
     private readonly chats;
     private readonly bySession;
+    /** Per-chat workspace override set by /workspace (survives /new resets,
+     * so the next agent for the chat is created under the new directory). */
+    private readonly chatWorkspacePaths;
     private stopping;
     private mappingSaveTimer;
     /** Resolves once the on-disk chat mapping has been loaded. */
@@ -130,6 +145,25 @@ export declare class ChatBridge {
     handleInbound(event: OneBotEvent): Promise<void>;
     private processInbound;
     /**
+     * Slash-command router. Commands are admin-only (the Hermes member
+     * slash-command block) and are matched on the first word; a leading
+     * @mention glued to the command (QQ group at + text) is stripped first.
+     * A path like /tmp/x is never a command (command words are
+     * /[A-Za-z][A-Za-z0-9_-]* only). Unknown commands return false so the
+     * message reaches the model, matching the Hermes "fall through" behavior.
+     * @param chatId - the chat the command arrived in.
+     * @param text - parsed inbound text.
+     * @param userId - sender QQ number.
+     * @returns true when the message was consumed by a command.
+     */
+    private tryHandleCommand;
+    /** /model: show the current model (+ discoverable providers), or switch. */
+    private handleModelCommand;
+    /** /workspace: show current cwd, list workspaces, or switch directory. */
+    private handleWorkspaceCommand;
+    /** Current default model selection, best-effort (absent services return undefined). */
+    private safeDefaultModel;
+    /**
      * Build the message body text: placeholders become annotated local paths
      * (images/voices/videos) and voice files are transcribed when enabled.
      */
@@ -138,6 +172,20 @@ export declare class ChatBridge {
     private resolveMediaRef;
     /** Expand a quoted (reply) message into [引用] text via get_msg. */
     private expandQuote;
+    /**
+     * Fetch an inbound QQ file to a local path. NapCat's get_file returns
+     * container-internal paths unreachable from this host, so:
+     *   1. prefer the private-file direct link (get_private_file_url → HTTP
+     *      CDN download, works for private chats, no SSH needed);
+     *   2. fall back to SSH (nasSsh): docker cp the file out of the NapCat
+     *      container onto the NAS scratch dir and stream it back as base64.
+     * Returns the [文件:path] annotation, or '' when disabled/failed.
+     */
+    private resolveNasFile;
+    /** Download a URL into the local media dir; returns the path or ''. */
+    private downloadToMedia;
+    /** Write bytes into the local media dir; returns the path or ''. */
+    private writeMediaFile;
     /** Expand a combined-forward id into "name: content" lines. */
     private expandForward;
     /** Serialize work on one chat's send chain. */
@@ -149,6 +197,16 @@ export declare class ChatBridge {
         name: string;
         content: string;
     }>): Promise<void>;
+    /**
+     * Merge ≥2 sent interim texts into one forward message (turn/end step 1).
+     * Throws on failure so the caller keeps the original messages.
+     */
+    private sendLoopForward;
+    /**
+     * Recall the original interim messages (turn/end step 3, only after the
+     * forward succeeded). Recall failure is logged only — content is never lost.
+     */
+    private recallLoopMessages;
     private onSessionEvent;
     private onSessionFlush;
     /** Get (or create) the agent for a chat. */
@@ -165,8 +223,9 @@ export declare class ChatBridge {
      */
     private healSessionCollision;
     /**
-     * Effective workspace directory for QQ chat sessions: the configured
-     * workspacePath, falling back to the host process cwd.
+     * Effective workspace directory for a chat's sessions: the per-chat
+     * /workspace override when set, else the configured workspacePath, falling
+     * back to the host process cwd.
      */
     private effectiveCwd;
     /**
@@ -178,12 +237,24 @@ export declare class ChatBridge {
      */
     private joinPreset;
     /**
-     * Attach a chat session to the workspace owning its header cwd (creating the
-     * workspace when the directory is unowned), so QQ sessions group under a
-     * workspace in the GUI instead of "Ungrouped". Best-effort: failure only
-     * logs.
+     * Attach a chat session to the workspace owning its header cwd, so QQ
+     * sessions group under a workspace in the GUI instead of "Ungrouped".
+     * Best-effort: failure only logs.
+     *
+     * A workspace is auto-created only when the session cwd matches the
+     * configured workspacePath (new sessions). A resumed session carrying a
+     * foreign cwd (e.g. created under an earlier host cwd) is attached only when
+     * a workspace already owns that path — never auto-created, so legacy
+     * sessions cannot spawn accidental workspaces.
      */
     private attachToWorkspace;
+    /**
+     * /new: dispose the current chat agent and retire its session id, so the
+     * next inbound message creates a brand-new session (fresh history; the old
+     * conversation stays on disk). The confirmation is sent directly through
+     * the outbound pipeline since no agent is left to reply.
+     */
+    private resetChat;
     /** Start the NapCat typing indicator (private chats only). */
     private startTyping;
     /** Stop the typing indicator. */

@@ -16,6 +16,8 @@ export interface MediaRef {
     url?: string;
     /** raw file field: base64://..., file://..., or a hash. */
     file?: string;
+    /** OneBot file_id (NapCat file segments carry the real id here). */
+    fileId?: string;
     name?: string;
     subType?: string;
 }

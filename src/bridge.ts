@@ -8,7 +8,7 @@
  * @module dsh-onebot/bridge
  */
 
-import type { Agent, AgentRegistry, AgentSetup, ModelSelection } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentRegistry, AgentSetup, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionId, SessionStore } from '@deepseek-ai/dsh-session'
@@ -63,6 +63,8 @@ export interface BridgeConfig {
   fontFamilies: readonly string[]
   agentPreset: string
   workspacePath: string
+  /** Max inbound file bytes fetched via QQ direct link / base64 (0 = no cap). */
+  maxInboundFileBytes: number
 }
 
 /** Agent-preset service (dsh-agent-presets): joins agents to a preset composition. */
@@ -71,9 +73,24 @@ export interface AgentPresetsLike {
 }
 
 /** Workspace registry (dsh-workspace): durable workspace membership. */
+export interface WorkspaceLike {
+  id: string
+  path: string
+  sessionIds: readonly string[]
+  attachSession(sessionId: string): Promise<void>
+}
+
+/** Workspace registry (dsh-workspace): durable workspace membership. */
 export interface WorkspaceRegistryLike {
-  resolveByPath(path: string): Promise<{ attachSession(sessionId: string): Promise<void> } | undefined>
-  create(path: string, title?: string): Promise<{ attachSession(sessionId: string): Promise<void> }>
+  resolveByPath(path: string): Promise<WorkspaceLike | undefined>
+  create(path: string, title?: string): Promise<WorkspaceLike>
+  list(): WorkspaceLike[]
+}
+
+/** Default model service (dsh-agent-default-model): read/save the default selection. */
+export interface AgentDefaultModelLike {
+  currentSelection(): ModelSelection | undefined
+  saveSelection(next: ModelSelection): Promise<void>
 }
 
 /** Services the bridge needs (subset of the plugin Context). */
@@ -86,6 +103,7 @@ export interface BridgeDeps {
   sessions: SessionStore
   agentPresets: AgentPresetsLike
   workspaceRegistry: WorkspaceRegistryLike
+  agentDefaultModel: AgentDefaultModelLike | undefined
   defaultModel: (() => ModelSelection | undefined) | undefined
   config: BridgeConfig
   policy: AccessPolicyConfig
@@ -103,10 +121,18 @@ interface ChatAgent {
   queue: Promise<unknown>
   /** Buffered last-step text when interimMessages is off. */
   pendingFinal: string
+  /** Loop merge (interimMessages on): text deferred one step, awaiting the
+   * next assistant/message to prove it interim — the last one is the final. */
+  loopPending: string | null
+  /** Sent interim messages awaiting turn/end settlement (≥2 → merge+recall). */
+  loopBuffer: Array<{ id: string; text: string }>
   /** Whether a turn is currently generating. */
   busy: boolean
   typingTimer: ReturnType<typeof setInterval> | undefined
   lastNickname: string
+  /** Mutable per-agent model selection (installModelSelection-bound); the
+   * /model command swaps `.current` for the next step. */
+  selectionRef: ModelSelectionRef | undefined
 }
 
 /** The mapping file name inside the media dir. */
@@ -120,6 +146,9 @@ export class ChatBridge {
   private readonly deps: BridgeDeps
   private readonly chats = new Map<ChatId, ChatAgent>()
   private readonly bySession = new Map<string, ChatId>()
+  /** Per-chat workspace override set by /workspace (survives /new resets,
+   * so the next agent for the chat is created under the new directory). */
+  private readonly chatWorkspacePaths = new Map<ChatId, string>()
   private stopping = false
   private mappingSaveTimer: ReturnType<typeof setTimeout> | undefined
   /** Resolves once the on-disk chat mapping has been loaded. */
@@ -322,6 +351,14 @@ export class ChatBridge {
         : userId
     const chatId = buildChatId(messageType === 'private' ? 'private' : 'group', messageType === 'private' ? userId : groupId)
 
+    // A new user message starts a fresh reply cycle: drop any unmerged loop
+    // residue from the previous cycle so interims never merge across turns.
+    const priorChat = this.chats.get(chatId)
+    if (priorChat !== undefined) {
+      priorChat.loopBuffer = []
+      priorChat.loopPending = null
+    }
+
     // Fire-and-forget temp cleanup on each inbound.
     void this.deps.media.cleanupExpired()
 
@@ -337,6 +374,13 @@ export class ChatBridge {
     }
 
     const isAdmin = classifyUserRole(userId, policy.adminUsers) === 'admin'
+
+    // Slash commands (admin only): /new, /stop, /model, /workspace, /help.
+    // Unknown /-words fall through to the model (Hermes-style).
+    if (await this.tryHandleCommand(chatId, parsed.text, userId)) {
+      return
+    }
+
     let final = body
     if (quote !== '') final = quote + '\n' + final
     if (forward !== '') final = forward + '\n' + final
@@ -363,6 +407,182 @@ export class ChatBridge {
   }
 
   /**
+   * Slash-command router. Commands are admin-only (the Hermes member
+   * slash-command block) and are matched on the first word; a leading
+   * @mention glued to the command (QQ group at + text) is stripped first.
+   * A path like /tmp/x is never a command (command words are
+   * /[A-Za-z][A-Za-z0-9_-]* only). Unknown commands return false so the
+   * message reaches the model, matching the Hermes "fall through" behavior.
+   * @param chatId - the chat the command arrived in.
+   * @param text - parsed inbound text.
+   * @param userId - sender QQ number.
+   * @returns true when the message was consumed by a command.
+   */
+  private async tryHandleCommand(chatId: ChatId, text: string, userId: string): Promise<boolean> {
+    const normalized = text.replace(/^@\d+\s*/, '')
+    const first = (normalized.split(/\s+/, 1)[0] ?? '').trim()
+    if (!/^\/[A-Za-z][A-Za-z0-9_-]*$/.test(first)) return false
+
+    const isAdmin = classifyUserRole(userId, this.deps.policy.adminUsers) === 'admin'
+    if (!isAdmin) {
+      await this.sendToChat(chatId, '该命令仅管理员可用。')
+      return true
+    }
+
+    const name = first.slice(1).toLowerCase()
+    this.deps.log('debug', 'slash /' + name + ' for ' + chatId)
+    if (name === 'new') {
+      this.deps.log('info', 'slash /new for ' + chatId)
+      await this.resetChat(chatId)
+      return true
+    }
+    if (name === 'stop') {
+      const chat = this.chats.get(chatId)
+      if (chat !== undefined && chat.agent.status === 'running') {
+        chat.agent.cancel({ kind: 'user' })
+        // Drop the deferred loop state so the cancelled turn settles silently
+        // instead of flushing its partial text as a final.
+        chat.loopPending = null
+        chat.loopBuffer = []
+        await this.sendToChat(chatId, '⏹ 已停止生成。')
+      } else {
+        await this.sendToChat(chatId, '当前没有正在进行的生成。')
+      }
+      return true
+    }
+    if (name === 'model') {
+      await this.handleModelCommand(chatId, normalized.slice(first.length).trim())
+      return true
+    }
+    if (name === 'workspace') {
+      await this.handleWorkspaceCommand(chatId, normalized.slice(first.length).trim())
+      return true
+    }
+    if (name === 'help') {
+      await this.sendToChat(chatId, '可用命令：\n/new 开启新会话（清空上下文）\n/stop 停止当前生成\n/model [provider/model] 查看或切换模型\n/workspace [路径|list] 查看或切换工作区\n/help 本帮助\n\n其他 / 开头的文本会直接交给模型。')
+      return true
+    }
+    return false
+  }
+
+  /** /model: show the current model (+ discoverable providers), or switch. */
+  private async handleModelCommand(chatId: ChatId, arg: string): Promise<void> {
+    const chat = this.chats.get(chatId)
+    const current = chat?.selectionRef?.current
+      ?? this.safeDefaultModel()
+    if (arg === '') {
+      const cur = current !== undefined ? current.provider + '/' + current.model : '（未设置）'
+      let out = '当前模型：' + cur
+      try {
+        const providers = this.deps.ctx.llm.listProviders()
+        for (const p of providers.slice(0, 6)) {
+          try {
+            const models = await this.deps.ctx.llm.listModels(p.id)
+            out += '\n' + p.id + ': ' + models.slice(0, 10).map(m => m.id).join(', ')
+          } catch (error) {
+            out += '\n' + p.id + ': （列表不可用）'
+            this.deps.log('debug', 'listModels failed for ' + p.id + ': ' + String(error))
+          }
+        }
+      } catch (error) {
+        out += '\n（模型列表不可用）'
+        this.deps.log('debug', 'listProviders failed: ' + String(error))
+      }
+      await this.sendToChat(chatId, out)
+      return
+    }
+    const m = /^(\S+)[\s/]+(\S+)$/.exec(arg)
+    if (m === null) {
+      await this.sendToChat(chatId, '用法：/model <provider> <model> 或 /model <provider>/<model>')
+      return
+    }
+    const provider = m[1]
+    const model = m[2]
+    try {
+      const models = await this.deps.ctx.llm.listModels(provider)
+      if (models.length > 0 && !models.some(x => x.id === model)) {
+        await this.sendToChat(chatId, `❌ ${provider} 下没有模型 ${model}。可用：` + models.slice(0, 10).map(x => x.id).join(', '))
+        return
+      }
+    } catch (error) {
+      this.deps.log('debug', 'model switch precheck failed for ' + provider + ': ' + String(error))
+    }
+    const next = { provider, model }
+    if (chat?.selectionRef !== undefined) {
+      chat.selectionRef.current = next
+    }
+    if (this.deps.agentDefaultModel !== undefined) {
+      try {
+        await this.deps.agentDefaultModel.saveSelection(next)
+      } catch (error) {
+        this.deps.log('warn', 'saveSelection failed: ' + String(error))
+      }
+    }
+    await this.sendToChat(chatId, `✅ 已切换模型：${provider}/${model}（下一步生效）`)
+  }
+
+  /** /workspace: show current cwd, list workspaces, or switch directory. */
+  private async handleWorkspaceCommand(chatId: ChatId, arg: string): Promise<void> {
+    if (arg === '') {
+      const cwd = this.effectiveCwd(chatId)
+      let suffix = ''
+      try {
+        const ws = await this.deps.workspaceRegistry.resolveByPath(cwd)
+        suffix = ws !== undefined ? `（工作区 ${ws.id}，${ws.sessionIds.length} 个会话）` : '（无 workspace 记录）'
+      } catch (error) {
+        this.deps.log('debug', 'resolveByPath failed: ' + String(error))
+      }
+      await this.sendToChat(chatId, `当前工作目录：${cwd} ${suffix}\n用法：/workspace <目录路径> 切换；/workspace list 列出全部`)
+      return
+    }
+    if (arg === 'list') {
+      try {
+        const list = this.deps.workspaceRegistry.list()
+        if (list.length === 0) {
+          await this.sendToChat(chatId, '（没有任何 workspace 记录）')
+          return
+        }
+        await this.sendToChat(chatId, list.map(w => `${w.id}  ${w.path}（${w.sessionIds.length} 会话）`).join('\n'))
+      } catch (error) {
+        this.deps.log('debug', 'workspace list failed: ' + String(error))
+        await this.sendToChat(chatId, '❌ 无法列出工作区。')
+      }
+      return
+    }
+    try {
+      const { realpath, stat } = await import('node:fs/promises')
+      const path = await realpath(arg)
+      const s = await stat(path)
+      if (!s.isDirectory()) {
+        await this.sendToChat(chatId, `❌ 不是目录：${arg}`)
+        return
+      }
+      const hadChat = this.chats.has(chatId)
+      this.chatWorkspacePaths.set(chatId, path)
+      if (hadChat) {
+        // Retire the current agent: its session cwd is frozen at creation, so
+        // the next message re-creates the session under the new directory.
+        await this.resetChat(chatId)
+      }
+      await this.sendToChat(chatId, `✅ 工作区已切换：${path}\n下一条消息将使用新工作区（新会话）。`)
+      this.deps.log('info', 'workspace switch for ' + chatId + ' -> ' + path)
+    } catch (error) {
+      this.deps.log('debug', 'workspace switch failed: ' + String(error))
+      await this.sendToChat(chatId, `❌ 目录无效或不可访问：${arg}`)
+    }
+  }
+
+  /** Current default model selection, best-effort (absent services return undefined). */
+  private safeDefaultModel(): ModelSelection | undefined {
+    try {
+      return this.deps.agentDefaultModel?.currentSelection()
+    } catch (error) {
+      this.deps.log('debug', 'currentSelection failed: ' + String(error))
+      return undefined
+    }
+  }
+
+  /**
    * Build the message body text: placeholders become annotated local paths
    * (images/voices/videos) and voice files are transcribed when enabled.
    */
@@ -382,6 +602,9 @@ export class ChatBridge {
 
   /** Resolve one media ref to a text annotation with a local path. */
   private async resolveMediaRef(ref: MediaRef, userId: string, messageType: string): Promise<string> {
+    if (ref.kind === 'file') {
+      return await this.resolveNasFile(ref)
+    }
     const resolved = await this.deps.media.resolve(ref, async (kind, file) => {
       if (kind === 'image') {
         const data = await this.deps.connection.call('get_image', { file }) as { url?: string; file?: string }
@@ -432,6 +655,106 @@ export class ChatBridge {
       return '[引用]' + (name !== '' ? name + ': ' : '') + text
     } catch (error) {
       this.deps.log('debug', 'quote expansion failed: ' + (error instanceof Error ? error.message : String(error)))
+      return ''
+    }
+  }
+
+  /**
+   * Fetch an inbound QQ file to a local path. NapCat's get_file returns
+   * container-internal paths unreachable from this host, so:
+   *   1. prefer the private-file direct link (get_private_file_url → HTTP
+   *      CDN download, works for private chats, no SSH needed);
+   *   2. fall back to SSH (nasSsh): docker cp the file out of the NapCat
+   *      container onto the NAS scratch dir and stream it back as base64.
+   * Returns the [文件:path] annotation, or '' when disabled/failed.
+   */
+  private async resolveNasFile(ref: MediaRef): Promise<string> {
+    const name = ref.name !== undefined && ref.name !== '' ? ref.name : 'file'
+    const safeName = name.replace(/[^A-Za-z0-9._-]/g, '_')
+    const fid = ref.fileId ?? ref.file ?? ''
+    if (fid === '') return ''
+    try {
+      // 1. Private-chat direct link (works even when SSH is not configured).
+      const direct = await this.deps.connection.call('get_private_file_url', { file_id: fid }) as {
+        url?: string
+      }
+      if (direct.url !== undefined && direct.url !== '') {
+        const localPath = await this.downloadToMedia(direct.url, safeName)
+        if (localPath !== '') {
+          this.deps.log('info', 'qq file fetched via direct link: ' + localPath)
+          return '[文件:' + localPath + ']'
+        }
+      }
+    } catch (error) {
+      this.deps.log('debug', 'get_private_file_url failed (falling back to ssh): ' + (error instanceof Error ? error.message : String(error)))
+    }
+    // 2. get_file: with NapCat's file server enabled it returns a `base64`
+    //    payload or an http(s) `url`; otherwise a container path (SSH below).
+    try {
+      const data = await this.deps.connection.call('get_file', { file: fid }) as {
+        file?: string
+        url?: string
+        base64?: string
+        file_size?: string | number
+      }
+      const size = Number(data.file_size ?? 0)
+      if (this.deps.config.maxInboundFileBytes > 0 && size > this.deps.config.maxInboundFileBytes) {
+        this.deps.log('warn', 'qq file too large (' + size + 'B), skipping fetch')
+        return ''
+      }
+      if (data.base64 !== undefined && data.base64 !== '') {
+        const localPath = await this.writeMediaFile(Buffer.from(data.base64, 'base64'), safeName)
+        if (localPath !== '') {
+          this.deps.log('info', 'qq file fetched via get_file base64: ' + localPath)
+          return '[文件:' + localPath + ']'
+        }
+      }
+      if (data.url !== undefined && /^https?:\/\//.test(data.url)) {
+        const localPath = await this.downloadToMedia(data.url, safeName)
+        if (localPath !== '') {
+          this.deps.log('info', 'qq file fetched via get_file url: ' + localPath)
+          return '[文件:' + localPath + ']'
+        }
+      }
+    } catch (error) {
+      this.deps.log('debug', 'get_file base64/url path failed: ' + (error instanceof Error ? error.message : String(error)))
+    }
+    this.deps.log('warn', 'qq file fetch failed: no direct link / base64 / http url available for ' + fid)
+    return ''
+  }
+
+  /** Download a URL into the local media dir; returns the path or ''. */
+  private async downloadToMedia(url: string, safeName: string): Promise<string> {
+    try {
+      const response = await fetch(url)
+      if (!response.ok || response.body === null) {
+        this.deps.log('warn', 'qq file direct download failed: HTTP ' + response.status)
+        return ''
+      }
+      const buffer = Buffer.from(await response.arrayBuffer())
+      if (this.deps.config.maxInboundFileBytes > 0 && buffer.length > this.deps.config.maxInboundFileBytes) {
+        this.deps.log('warn', 'qq file too large (' + buffer.length + 'B), skipping')
+        return ''
+      }
+      return await this.writeMediaFile(buffer, safeName)
+    } catch (error) {
+      this.deps.log('warn', 'qq file direct download failed: ' + (error instanceof Error ? error.message : String(error)))
+      return ''
+    }
+  }
+
+  /** Write bytes into the local media dir; returns the path or ''. */
+  private async writeMediaFile(buffer: Buffer, safeName: string): Promise<string> {
+    try {
+      const { writeFile, mkdir } = await import('node:fs/promises')
+      await mkdir(this.deps.config.mediaDir, { recursive: true })
+      const localPath = this.deps.config.mediaDir.endsWith('/')
+        ? this.deps.config.mediaDir + safeName
+        : this.deps.config.mediaDir + '/' + safeName
+      await writeFile(localPath, buffer)
+      return localPath
+    } catch (error) {
+      this.deps.log('warn', 'media write failed: ' + (error instanceof Error ? error.message : String(error)))
       return ''
     }
   }
@@ -512,6 +835,32 @@ export class ChatBridge {
     }
   }
 
+  /**
+   * Merge ≥2 sent interim texts into one forward message (turn/end step 1).
+   * Throws on failure so the caller keeps the original messages.
+   */
+  private async sendLoopForward(chatId: ChatId, buf: Array<{ id: string; text: string }>): Promise<void> {
+    const nodes = buf.map(({ text }) => ({
+      name: '助手',
+      content: stripMarkdown(text).slice(0, 500) || '(中间消息)',
+    }))
+    await this.sendForward(chatId, nodes)
+  }
+
+  /**
+   * Recall the original interim messages (turn/end step 3, only after the
+   * forward succeeded). Recall failure is logged only — content is never lost.
+   */
+  private async recallLoopMessages(chatId: ChatId, buf: Array<{ id: string; text: string }>): Promise<void> {
+    for (const { id } of buf) {
+      try {
+        await this.deps.connection.call('delete_msg', { message_id: id })
+      } catch (error) {
+        this.deps.log('debug', 'loop recall delete_msg failed for ' + id + ': ' + (error instanceof Error ? error.message : String(error)))
+      }
+    }
+  }
+
   // ------------------------------------------------------------ session events
 
   private onSessionEvent(session: Session, event: SessionEvent): void {
@@ -527,17 +876,62 @@ export class ChatBridge {
         .join('')
       if (text === '') return
       if (this.deps.config.interimMessages) {
-        this.deps.log('debug', 'interim send to ' + chatId + ': ' + text.slice(0, 80))
-        this.sendToChat(chatId, text).catch(error => {
-          this.deps.log('warn', 'interim send failed: ' + (error instanceof Error ? error.message : String(error)))
-        })
+        // Defer one step: the current text may still be the final step. The
+        // previously deferred text is now proven interim — send it now and
+        // remember its ids for the turn/end loop merge (merge + recall).
+        const prior = chat.loopPending
+        if (prior !== null) {
+          chat.loopPending = null
+          this.sendToChat(chatId, prior).then(ids => {
+            for (const id of ids) chat.loopBuffer.push({ id, text: prior })
+          }).catch(error => {
+            this.deps.log('warn', 'interim send failed: ' + (error instanceof Error ? error.message : String(error)))
+          })
+        }
+        chat.loopPending = text
       } else {
         chat.pendingFinal = text
       }
       return
     }
     if (event.type === 'turn/end') {
-      if (!this.deps.config.interimMessages && chat.pendingFinal !== '') {
+      if (this.deps.config.interimMessages) {
+        // Settlement order on the chat's send chain (each task is a raw
+        // connection/send call, never nested enqueues — awaiting sendToChat
+        // from inside a chain task would deadlock):
+        //   1. merged forward: the interim trail collapses into one card;
+        //   2. final text through the normal path (t2i card / split fallback);
+        //   3. recall the original interim messages — only when the forward
+        //      succeeded (a failed merge keeps everything visible).
+        const buf = chat.loopBuffer
+        chat.loopBuffer = []
+        let forwardOk = false
+        if (buf.length >= 2) {
+          void this.enqueue(chatId, async () => {
+            try {
+              await this.sendLoopForward(chatId, buf)
+              forwardOk = true
+            } catch (error) {
+              this.deps.log('info', 'loop merge failed, keeping original messages: ' + (error instanceof Error ? error.message : String(error)))
+            }
+          })
+        }
+        if (chat.loopPending !== null) {
+          const final = chat.loopPending
+          chat.loopPending = null
+          this.sendToChat(chatId, final).catch(error => {
+            this.deps.log('warn', 'final send failed: ' + (error instanceof Error ? error.message : String(error)))
+          })
+        }
+        if (buf.length >= 2) {
+          void this.enqueue(chatId, async () => {
+            if (!forwardOk) return
+            await this.recallLoopMessages(chatId, buf)
+          }).catch(error => {
+            this.deps.log('warn', 'loop recall failed: ' + (error instanceof Error ? error.message : String(error)))
+          })
+        }
+      } else if (chat.pendingFinal !== '') {
         const final = chat.pendingFinal
         chat.pendingFinal = ''
         this.sendToChat(chatId, final).catch(error => {
@@ -586,7 +980,7 @@ export class ChatBridge {
       agentOptions.provider = selection.provider
       agentOptions.model = selection.model
     }
-    const cwd = this.effectiveCwd()
+    const cwd = this.effectiveCwd(chatId)
     const meta: { cwd: string; agentPreset?: string } = { cwd }
     const preset = this.deps.config.agentPreset
     if (preset !== undefined && preset !== '') meta.agentPreset = preset
@@ -629,9 +1023,12 @@ export class ChatBridge {
       dispose: () => handle.dispose(),
       queue: Promise.resolve(),
       pendingFinal: '',
+      loopPending: null,
+      loopBuffer: [],
       busy: false,
       typingTimer: undefined,
       lastNickname: nickname,
+      selectionRef,
     }
     await handle.agent.whenIdle()
     this.chats.set(chatId, chat)
@@ -679,9 +1076,12 @@ export class ChatBridge {
             dispose: () => handle.dispose(),
             queue: Promise.resolve(),
             pendingFinal: '',
+            loopPending: null,
+            loopBuffer: [],
             busy: false,
             typingTimer: undefined,
             lastNickname: '',
+            selectionRef,
           }
           await handle.agent.whenIdle()
           this.chats.set(chatId, chat)
@@ -748,10 +1148,15 @@ export class ChatBridge {
   // ------------------------------------------------------------ workspace & preset
 
   /**
-   * Effective workspace directory for QQ chat sessions: the configured
-   * workspacePath, falling back to the host process cwd.
+   * Effective workspace directory for a chat's sessions: the per-chat
+   * /workspace override when set, else the configured workspacePath, falling
+   * back to the host process cwd.
    */
-  private effectiveCwd(): string {
+  private effectiveCwd(chatId?: ChatId): string {
+    if (chatId !== undefined) {
+      const override = this.chatWorkspacePaths.get(chatId)
+      if (override !== undefined && override !== '') return override
+    }
     const configured = this.deps.config.workspacePath
     return configured !== undefined && configured !== '' ? configured : process.cwd()
   }
@@ -778,10 +1183,15 @@ export class ChatBridge {
   }
 
   /**
-   * Attach a chat session to the workspace owning its header cwd (creating the
-   * workspace when the directory is unowned), so QQ sessions group under a
-   * workspace in the GUI instead of "Ungrouped". Best-effort: failure only
-   * logs.
+   * Attach a chat session to the workspace owning its header cwd, so QQ
+   * sessions group under a workspace in the GUI instead of "Ungrouped".
+   * Best-effort: failure only logs.
+   *
+   * A workspace is auto-created only when the session cwd matches the
+   * configured workspacePath (new sessions). A resumed session carrying a
+   * foreign cwd (e.g. created under an earlier host cwd) is attached only when
+   * a workspace already owns that path — never auto-created, so legacy
+   * sessions cannot spawn accidental workspaces.
    */
   private async attachToWorkspace(sessionId: string, headerCwd: string | undefined): Promise<void> {
     const registry = this.deps.workspaceRegistry
@@ -791,16 +1201,49 @@ export class ChatBridge {
         this.deps.log('warn', 'workspace attach skipped: session header carries no cwd')
         return
       }
-      let workspace = await registry.resolveByPath(headerCwd)
+      const workspace = await registry.resolveByPath(headerCwd)
       if (workspace === undefined) {
-        workspace = await registry.create(headerCwd)
+        if (headerCwd !== this.effectiveCwd()) {
+          this.deps.log('debug', 'workspace attach skipped: no workspace owns ' + headerCwd + ' and it differs from the configured workspacePath')
+          return
+        }
+        const created = await registry.create(headerCwd)
         this.deps.log('info', 'created workspace for ' + headerCwd)
+        await created.attachSession(sessionId)
+        this.deps.log('info', 'attached session ' + sessionId + ' to workspace ' + headerCwd)
+        return
       }
       await workspace.attachSession(sessionId)
       this.deps.log('info', 'attached session ' + sessionId + ' to workspace ' + headerCwd)
     } catch (error) {
       this.deps.log('warn', 'workspace attach failed for ' + sessionId + ': ' + (error instanceof Error ? error.message : String(error)))
     }
+  }
+
+  /**
+   * /new: dispose the current chat agent and retire its session id, so the
+   * next inbound message creates a brand-new session (fresh history; the old
+   * conversation stays on disk). The confirmation is sent directly through
+   * the outbound pipeline since no agent is left to reply.
+   */
+  private async resetChat(chatId: ChatId): Promise<void> {
+    const chat = this.chats.get(chatId)
+    if (chat !== undefined) {
+      this.stopTyping(chat)
+      this.brokenSessions.add(chat.sessionId)
+      this.chats.delete(chatId)
+      this.bySession.delete(chat.sessionId)
+      try {
+        await chat.dispose()
+      } catch (error) {
+        this.deps.log('warn', 'reset dispose failed: ' + (error instanceof Error ? error.message : String(error)))
+      }
+      this.deps.log('info', 'reset chat ' + chatId + ' (old session ' + chat.sessionId + ' retired)')
+    }
+    void this.saveMapping()
+    this.sendToChat(chatId, '✅ 已开启新会话，下一条消息将进入全新会话，旧对话历史保留在之前的会话中。').catch((error: unknown) => {
+      this.deps.log('warn', 'reset notice send failed: ' + String(error))
+    })
   }
 
   // ------------------------------------------------------------ typing
@@ -846,7 +1289,9 @@ function placeholderFor(ref: MediaRef): string {
   }
 }
 
-/** Extract text from a forward-node content (segment array or CQ string). */
+/**
+ * Extract text from a forward-node content (segment array or CQ string).
+ */
 function nodeContentText(content: unknown): string {
   if (Array.isArray(content)) {
     return content

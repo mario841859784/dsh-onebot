@@ -22,6 +22,7 @@ type Context = CordisContext & {
     sessions: SessionStore;
     agentDefaultModel: {
         currentSelection(): ModelSelection | undefined;
+        saveSelection(next: ModelSelection): Promise<void>;
     };
     agentPresets: {
         mount(agentCtx: unknown, id?: string): Promise<{
@@ -30,10 +31,21 @@ type Context = CordisContext & {
     };
     workspaceRegistry: {
         resolveByPath(path: string): Promise<{
+            id: string;
+            path: string;
+            sessionIds: readonly string[];
             attachSession(sessionId: string): Promise<void>;
         } | undefined>;
         create(path: string, title?: string): Promise<{
+            id: string;
+            path: string;
+            sessionIds: readonly string[];
             attachSession(sessionId: string): Promise<void>;
+        }>;
+        list(): Array<{
+            id: string;
+            path: string;
+            sessionIds: readonly string[];
         }>;
     };
 };
@@ -77,6 +89,7 @@ export interface Config {
     fontFamilies: string[];
     agentPreset: string;
     workspacePath: string;
+    maxInboundFileBytes: number;
 }
 /** Default media dir: <dsh-home>/media/onebot (dsh-home = $DSH_HOME or ~/.dsh). */
 export declare function defaultMediaDir(): string;

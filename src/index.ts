@@ -21,6 +21,7 @@ import { join } from 'node:path'
 import { OneBotConnection } from './connection.js'
 import type { OneBotEvent } from './connection.js'
 import { ChatBridge } from './bridge.js'
+import type { WorkspaceRegistryLike } from './bridge.js'
 import { MediaStore, IMAGE_MAX_BYTES, VOICE_MAX_BYTES, MEDIA_MAX_BYTES } from './media.js'
 import { Transcriber } from './stt.js'
 import { registerTools } from './tools.js'
@@ -32,13 +33,14 @@ type Context = CordisContext & {
   systemPrompt: SystemPrompt
   agents: AgentRegistry
   sessions: SessionStore
-  agentDefaultModel: { currentSelection(): ModelSelection | undefined }
+  agentDefaultModel: { currentSelection(): ModelSelection | undefined; saveSelection(next: ModelSelection): Promise<void> }
   agentPresets: {
     mount(agentCtx: unknown, id?: string): Promise<{ id: string }>
   }
   workspaceRegistry: {
-    resolveByPath(path: string): Promise<{ attachSession(sessionId: string): Promise<void> } | undefined>
-    create(path: string, title?: string): Promise<{ attachSession(sessionId: string): Promise<void> }>
+    resolveByPath(path: string): Promise<{ id: string; path: string; sessionIds: readonly string[]; attachSession(sessionId: string): Promise<void> } | undefined>
+    create(path: string, title?: string): Promise<{ id: string; path: string; sessionIds: readonly string[]; attachSession(sessionId: string): Promise<void> }>
+    list(): Array<{ id: string; path: string; sessionIds: readonly string[] }>
   }
 }
 
@@ -83,6 +85,7 @@ export interface Config {
   fontFamilies: string[]
   agentPreset: string
   workspacePath: string
+  maxInboundFileBytes: number
 }
 
 const ENV = (name: string): string => process.env[name] ?? ''
@@ -166,6 +169,8 @@ export const Config: z<Config> = z.object({
     .description('QQ 会话加入的 agent 预设 id；留空用部署默认（当前为 standard，提供 bash/fs/subagent 等全部工具；minimal 仅持久 bash + str_replace_editor）'),
   workspacePath: z.string().default('')
     .description('QQ 会话的工作区目录（写入会话 cwd，并自动归入该工作区，不存在则创建）；留空用宿主进程 cwd'),
+  maxInboundFileBytes: z.number().default(20 * 1024 * 1024)
+    .description('QQ 入站文件最大字节数（直链/base64 拉取，0 = 不限制）'),
 })
 
 /** Resolve env-var fallbacks into the effective access policy. */
@@ -223,7 +228,8 @@ export function apply(ctx: Context, config: Config): void {
     agents: ctx.agents,
     sessions: ctx.sessions,
     agentPresets: ctx.agentPresets,
-    workspaceRegistry: ctx.workspaceRegistry,
+    workspaceRegistry: ctx.workspaceRegistry as unknown as WorkspaceRegistryLike,
+    agentDefaultModel: ctx.agentDefaultModel,
     defaultModel: () => {
       try {
         return ctx.agentDefaultModel.currentSelection()
@@ -250,6 +256,7 @@ export function apply(ctx: Context, config: Config): void {
       fontFamilies: config.fontFamilies,
       agentPreset: config.agentPreset,
       workspacePath: config.workspacePath,
+      maxInboundFileBytes: config.maxInboundFileBytes,
     },
     policy,
     log: (level, message) => {
