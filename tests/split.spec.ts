@@ -5,17 +5,58 @@ describe('splitLongText', () => {
   it('keeps short text as one chunk', () => {
     expect(splitLongText('你好', 100)).toEqual(['你好'])
   })
-  it('splits at sentence boundaries', () => {
+  it('splits at sentence boundaries (backward scan, chunks end on punctuation)', () => {
     const text = '这是第一句很长的话。这是第二句。这是第三句！'
     const chunks = splitLongText(text, 10)
-    expect(chunks.length).toBeGreaterThan(1)
-    expect(chunks.join('')).toBe(text)
+    expect(chunks).toEqual(['这是第一句很长的话。', '这是第二句。', '这是第三句！'])
+    expect(chunks.every(c => c.length <= 10)).toBe(true)
   })
-  it('hard-cuts when no boundary is near', () => {
+  it('hard-cuts only when neither punctuation nor spaces exist', () => {
     const text = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     const chunks = splitLongText(text, 10)
     expect(chunks.every(c => c.length <= 10)).toBe(true)
     expect(chunks.join('')).toBe(text)
+  })
+
+  it('prefers a space cut over a hard cut (words survive)', () => {
+    const text = 'word1 word2 word3 word4 word5 word6 word7'
+    const chunks = splitLongText(text, 20)
+    expect(chunks.every(c => c.length <= 20)).toBe(true)
+    // Every boundary (except the text start) lands at a space: the original
+    // character before each non-first chunk is a space, so no word is split.
+    let cursor = 0
+    for (const chunk of chunks) {
+      const idx = text.indexOf(chunk, cursor)
+      if (idx > 0) {
+        expect(text[idx - 1]).toBe(' ')
+      }
+      cursor = idx + chunk.length
+    }
+    // Cuts happen at spaces and trailing spaces are stripped, so joining
+    // with single spaces reconstructs the original exactly.
+    expect(chunks.join(' ')).toBe(text)
+  })
+
+  it('never splits a surrogate pair (emoji stay whole)', () => {
+    const emoji = '😀'.repeat(12) // 24 UTF-16 units
+    const chunks = splitLongText(emoji, 10)
+    for (const chunk of chunks) {
+      // code points × 2 === code units ⇒ no lone surrogate halves inside
+      expect(chunk.length % 2).toBe(0)
+      expect(Array.from(chunk).length * 2).toBe(chunk.length)
+    }
+    expect(chunks.join('')).toBe(emoji)
+  })
+
+  it('does not treat dots or colons as sentence bounds (URLs stay whole)', () => {
+    const text = '请访问 https://example.com/very/long/path/with/many/parts 感谢'
+    const chunks = splitLongText(text, 30)
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(30)
+    }
+    // The URL is either intact inside a chunk or the cut happens at a space.
+    const joined = chunks.join('')
+    expect(joined.includes('https://example.com/very/long/path/with/many/parts')).toBe(true)
   })
   it('handles empty input', () => {
     expect(splitLongText('   ', 100)).toEqual([])

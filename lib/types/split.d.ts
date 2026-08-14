@@ -5,9 +5,14 @@
  * @module dsh-onebot/split
  */
 /**
- * Split long text into chunks no longer than splitLength, preferring sentence
- * boundaries. A chunk that cannot reach a boundary within BOUND_LOOKAHEAD is
- * hard-cut. Whitespace-only chunks are dropped.
+ * Split long text into chunks no longer than splitLength at sentence
+ * boundaries (port of the original _split_reply).
+ *
+ * Each window is scanned BACKWARD for the last sentence boundary, so chunks
+ * stay within the limit and end on punctuation. When a window contains no
+ * punctuation the cut prefers the last space (keeps words/URLs intact);
+ * only as a last resort is the chunk hard-cut at the limit. Boundaries
+ * never split a surrogate pair (emoji stay whole).
  * @param text - the full reply text.
  * @param splitLength - maximum chunk length (<= 0 resets to 100).
  * @returns text chunks.
