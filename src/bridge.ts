@@ -673,7 +673,7 @@ export class ChatBridge {
     const fid = ref.fileId ?? ref.file ?? ''
     if (fid === '') return ''
     try {
-      // 1. Private-chat direct link (works even when SSH is not configured).
+      // 1. Private-chat direct link (works without any container access).
       const direct = await this.deps.connection.call('get_private_file_url', { file_id: fid }) as {
         url?: string
       }
@@ -688,7 +688,7 @@ export class ChatBridge {
       this.deps.log('debug', 'get_private_file_url failed (falling back to get_file): ' + (error instanceof Error ? error.message : String(error)))
     }
     // 2. get_file: with NapCat's file server enabled it returns a `base64`
-    //    payload or an http(s) `url`; otherwise a container path (SSH below).
+    //    payload or an http(s) `url`; otherwise a container path we cannot reach.
     try {
       const data = await this.deps.connection.call('get_file', { file: fid }) as {
         file?: string
