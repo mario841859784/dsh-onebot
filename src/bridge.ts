@@ -30,6 +30,7 @@ import {
 } from './chat.js'
 import type { AccessPolicyConfig } from './chat.js'
 import { extractForwardBlocks, scanSensitive, splitLongText, stripMarkdown } from './split.js'
+import { renderTextImage } from './t2i/index.js'
 
 /** One OneBot message segment for outbound sends. */
 export interface OutboundSegment {
@@ -56,6 +57,10 @@ export interface BridgeConfig {
   maxImageBytes: number
   maxVoiceBytes: number
   maxFileBytes: number
+  textImageThreshold: number
+  cardFooter: string
+  fontFiles: readonly string[]
+  fontFamilies: readonly string[]
 }
 
 /** Services the bridge needs (subset of the plugin Context). */
@@ -183,12 +188,40 @@ export class ChatBridge {
         await this.sendForward(chatId, nodes)
         ids.push('forward')
       }
-      const plain = stripMarkdown(body)
-      if (plain !== '') {
-        const chunks = splitLongText(plain, this.deps.config.splitLength)
-        for (const chunk of chunks) {
-          const id = await this.sendMsg(chatId, [{ type: 'text', data: { text: chunk } }], options)
-          if (id !== undefined) ids.push(id)
+      let sentCard = false
+      const threshold = this.deps.config.textImageThreshold
+      if (threshold > 0 && body.length > threshold) {
+        try {
+          const chat = this.chats.get(chatId)
+          const title = chat !== undefined && chat.lastNickname !== ''
+            ? 'To ' + chat.lastNickname
+            : undefined
+          const png = renderTextImage(body, {
+            title,
+            footerBrand: this.deps.config.cardFooter,
+            fontFiles: this.deps.config.fontFiles,
+            fontFamilies: this.deps.config.fontFamilies,
+          })
+          const b64 = 'base64://' + png.toString('base64')
+          if (b64.length <= this.deps.config.maxImageBytes) {
+            const id = await this.sendMsg(chatId, [{ type: 'image', data: { file: b64 } }], options)
+            if (id !== undefined) ids.push(id)
+            sentCard = true
+          } else {
+            this.deps.log('warn', 't2i card PNG exceeds maxImageBytes; falling back to text')
+          }
+        } catch (error) {
+          this.deps.log('warn', 't2i render failed, falling back to text: ' + (error instanceof Error ? error.message : String(error)))
+        }
+      }
+      if (!sentCard) {
+        const plain = stripMarkdown(body)
+        if (plain !== '') {
+          const chunks = splitLongText(plain, this.deps.config.splitLength)
+          for (const chunk of chunks) {
+            const id = await this.sendMsg(chatId, [{ type: 'text', data: { text: chunk } }], options)
+            if (id !== undefined) ids.push(id)
+          }
         }
       }
       return ids

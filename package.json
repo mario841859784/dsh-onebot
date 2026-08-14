@@ -45,6 +45,8 @@
     "schemastery": "^3.18.0"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^1.0.6",
+    "fontkit": "^2.0.4",
     "schemastery": "^3.18.0",
     "ws": "^8.18.0"
   },

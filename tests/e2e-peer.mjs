@@ -43,8 +43,10 @@ ws.on('message', data => {
   if (frame.action) {
     if (frame.action === 'send_msg') {
       const segments = frame.params?.message ?? []
+      const kinds = segments.map(s => s?.type ?? '?').join(',')
       const text = segments.map(s => s?.data?.text ?? '').join('')
-      console.log('[peer] << ' + text)
+      const fileLen = segments.map(s => String(s?.data?.file ?? '').length).join(',')
+      console.log('[peer] << types=[' + kinds + '] fileLens=[' + fileLen + '] ' + text.slice(0, 80))
       replies.push(text)
     } else {
       console.log('[peer] action: ' + frame.action)

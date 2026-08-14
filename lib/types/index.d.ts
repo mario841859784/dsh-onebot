@@ -58,6 +58,10 @@ export interface Config {
     sttArgs: string[];
     sttModel: string;
     sttTimeoutMs: number;
+    textImageThreshold: number;
+    cardFooter: string;
+    fontFiles: string[];
+    fontFamilies: string[];
 }
 /** Default media dir: <dsh-home>/media/onebot (dsh-home = $DSH_HOME or ~/.dsh). */
 export declare function defaultMediaDir(): string;

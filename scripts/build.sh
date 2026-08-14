@@ -13,29 +13,35 @@ cd "$ROOT"
 # Ensure the plugin runs against the host's exact @deepseek-ai packages.
 "$ROOT/scripts/link-host.sh"
 
-DSH_BIN=""
-if command -v dsh &>/dev/null; then
-  DSH_BIN=$(readlink -f "$(command -v dsh)" 2>/dev/null || command -v dsh)
-fi
-if [ -z "$DSH_BIN" ]; then
-  echo "build: dsh not on PATH" >&2
-  exit 1
-fi
-
-# Walk up from the dsh bin to the node_modules root holding @deepseek-ai.
-DIR=$(dirname "$DSH_BIN")
-NODE_MODULES=""
-while [ "$DIR" != "/" ]; do
-  if [ -d "$DIR/node_modules/@deepseek-ai" ]; then
-    NODE_MODULES="$DIR/node_modules"
-    break
+# Locate the dsh install's node_modules root: via the dsh binary on PATH,
+# else via the npm/npx store pattern (works in restricted shells).
+resolve_dsh_root() {
+  local bin=""
+  if command -v dsh >/dev/null 2>&1; then
+    bin=$(command -v dsh)
   fi
-  DIR=$(dirname "$DIR")
-done
-if [ -z "$NODE_MODULES" ]; then
-  echo "build: cannot locate the dsh install (node_modules/@deepseek-ai not found above $DSH_BIN)" >&2
-  exit 1
-fi
+  if [ -n "$bin" ]; then
+    local dir
+    dir=$(dirname "$bin")
+    while [ "$dir" != "/" ]; do
+      if [ -d "$dir/node_modules/@deepseek-ai" ]; then
+        echo "$dir/node_modules"
+        return 0
+      fi
+      dir=$(dirname "$dir")
+    done
+  fi
+  local cand
+  for cand in "$HOME"/.npm/_npx/*/node_modules; do
+    if [ -d "$cand/@deepseek-ai" ]; then
+      echo "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+NODE_MODULES=$(resolve_dsh_root) || { echo "build: cannot locate the dsh install (dsh not on PATH, no npx store found)" >&2; exit 1; }
 
 TSC="node_modules/.bin/tsc"
 if [ ! -x "$TSC" ]; then

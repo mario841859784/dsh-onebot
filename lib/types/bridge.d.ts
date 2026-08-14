@@ -39,6 +39,10 @@ export interface BridgeConfig {
     maxImageBytes: number;
     maxVoiceBytes: number;
     maxFileBytes: number;
+    textImageThreshold: number;
+    cardFooter: string;
+    fontFiles: readonly string[];
+    fontFamilies: readonly string[];
 }
 /** Services the bridge needs (subset of the plugin Context). */
 export interface BridgeDeps {

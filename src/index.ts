@@ -70,6 +70,10 @@ export interface Config {
   sttArgs: string[]
   sttModel: string
   sttTimeoutMs: number
+  textImageThreshold: number
+  cardFooter: string
+  fontFiles: string[]
+  fontFamilies: string[]
 }
 
 const ENV = (name: string): string => process.env[name] ?? ''
@@ -141,6 +145,14 @@ export const Config: z<Config> = z.object({
     .description('whisper 模型（openai: small/base/medium...；whisper.cpp: 模型名或 .bin 绝对路径）'),
   sttTimeoutMs: z.number().default(300_000)
     .description('单次转写超时（毫秒）'),
+  textImageThreshold: z.number().default(150)
+    .description('回复正文超过该长度（字符数）时渲染为文字图卡片发送；<=0 禁用卡片路径'),
+  cardFooter: z.string().default('dsh')
+    .description('文字图卡片页脚品牌文字（"Powered by <brand>"）'),
+  fontFiles: z.array(z.string()).default([])
+    .description('t2i 渲染器注册的字体文件路径（Linux/自定义字体；macOS 自动用系统字体）'),
+  fontFamilies: z.array(z.string()).default([])
+    .description('t2i 渲染器优先使用的字体家族名（覆盖平台默认）'),
 })
 
 /** Resolve env-var fallbacks into the effective access policy. */
@@ -217,6 +229,10 @@ export function apply(ctx: Context, config: Config): void {
       maxImageBytes: config.maxImageBytes,
       maxVoiceBytes: config.maxVoiceBytes,
       maxFileBytes: config.maxFileBytes,
+      textImageThreshold: config.textImageThreshold,
+      cardFooter: config.cardFooter,
+      fontFiles: config.fontFiles,
+      fontFamilies: config.fontFamilies,
     },
     policy,
     log: (level, message) => {

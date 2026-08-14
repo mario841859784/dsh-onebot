@@ -20,7 +20,8 @@
 | 连接 | 反向 WS（NapCat ws-reverse 拨入，默认端口 8643）或正向 WS（拨出，默认 ws://127.0.0.1:3001）；断线自动重连（2s→60s 退避） |
 | 入站 | 私聊/群聊、段数组优先解析（CQ 字符串回退）、CQ 反转义、@/回复触发检测（fail-closed）、图片四路解析（url/base64/file/hash）、引用消息自动取原文（get_msg）、合并转发自动展开（get_forward_msg） |
 | 语音 | ffmpeg 转 16kHz WAV + whisper 转写（openai-whisper / whisper.cpp / 自定义命令），失败降级 [语音] 占位 |
-| 出站 | 长消息按句号分段（默认 ≤100 字/条）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、正在输入提示（set_input_status，仅私聊） |
+| 文字图 | t2i 卡片渲染器（@napi-rs/canvas）：标题/粗斜体/删除线/引用/列表/代码块/表格/行内 code 胶囊/彩色 emoji/中文标点禁则；与 Hermes 原版同款数值（800px/26px/禁则集合/右缘 790） |
+| 出站 | 长消息按句号分段（默认 ≤100 字/条）、**>150 字渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji，渲染失败自动回退分段）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、正在输入提示（set_input_status，仅私聊） |
 | 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_napcat_api`（14 个白名单 action）、`qq_group_history` |
 | 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计 |
 | 会话 | 每个 QQ 会话一个持久 Agent（session id 稳定派生），重启后自动 resume；每轮结束 flush 落盘 |
@@ -75,6 +76,9 @@ npm install --include=dev
 | `splitLength` | `100` | 长回复分段长度 |
 | `sttEnabled` | `true` | 语音转写（需 ffmpeg + whisper CLI） |
 | `sttModel` | `small` | whisper 模型 |
+| `textImageThreshold` | `150` | 回复正文超过该长度渲染为文字图卡片；`<=0` 禁用卡片路径 |
+| `cardFooter` | `dsh` | 卡片页脚品牌（"Powered by <brand>"） |
+| `fontFiles` / `fontFamilies` | `[]` | t2i 字体文件/家族覆盖（Linux 部署必看：需安装 Noto CJK） |
 | `mediaDir` | `<dsh-home>/media/onebot` | 入站媒体/映射文件目录 |
 
 环境变量：`ONEBOT_ALLOWED_USERS`（逗号分隔管理员）、`ONEBOT_ALLOW_ALL_USERS=true`（开发用）。
@@ -101,10 +105,11 @@ npm install --include=dev
 - **重连去重**：并发断线只允许一个重连任务，防止双 WS 连接。
 - **int(target) 兜底**：chat_id 解析进 try/catch，坏目标不能炸掉宿主。
 - **临时媒体 6h 过期清理**：只写不删会无限堆积。
+- **t2i 按码点迭代**：JS 字符串索引会拆开 emoji 代理对（高代理位被分类成 CJK → 渲染成黑色字形），绘制/测量必须用 `Array.from`/for...of。
+- **t2i 度量=绘制**：换行/列宽统一走 `segWidth`（胶囊/粗体/斜体附加宽），像素级右缘验证 ≤790（非白判定 `not(r>245&&g>245&&b>245)`）。
 
 ## 路线图（v2 候选）
 
-- t2i 文字图渲染器（@napi-rs/canvas 移植 Hermes 的 AstrBot 风格卡片：表格/彩色 emoji/中文禁则）
 - 入站图片压缩（≤2048px，避免大图拖慢视觉模型）
 - loop 中间消息合并转发 + 撤回
 - 用户档案（群消息 JSONL 记录 + HTTP 查询端点）
