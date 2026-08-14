@@ -117,6 +117,22 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 
 环境变量：`ONEBOT_ALLOWED_USERS`（逗号分隔管理员）、`ONEBOT_ALLOW_ALL_USERS=true`（开发用）。
 
+## dm / group 访问策略（初始化必选）
+
+私聊（`dmPolicy`）与群聊（`groupPolicy`）各自三选一，选项含义如下：
+
+| 选项 | dmPolicy（私聊） | groupPolicy（群聊） |
+|---|---|---|
+| `open` | **仅管理员**可私聊（adminUsers/`ONEBOT_ALLOWED_USERS`；设 `allowAllUsers: true` 则所有人可） | **所有群**可聊（群内消息受 `requireMention` 控制：需 @ 或回复才触发；群成员带 [受限用户:仅问答] 软限制） |
+| `allowlist` | 仅 **`allowFrom`** 白名单 QQ 可私聊（不要求是管理员） | 仅 **`groupAllowFrom`** 白名单群可聊 |
+| `disabled` | 私聊全部拒绝 | 群聊全部拒绝 |
+
+**初始化建议**：
+- 只想自己用 → `dmPolicy: open` + 配好 `adminUsers`（私聊只有你能发）；
+- 想开放给几个熟人 → `dmPolicy: allowlist` + `allowFrom: ['QQ1','QQ2']`；
+- 群聊专用机器人 → `groupPolicy: open`（配合默认 `requireMention: true`，群成员需 @ 才触发）；
+- 只允许特定群 → `groupPolicy: allowlist` + `groupAllowFrom`。
+
 ## t2i 字体依赖
 
 文字图卡片需要三类字体（CJK / 等宽 / 彩色 emoji），插件启动时从系统与固定路径自动注册，
