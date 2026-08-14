@@ -30,7 +30,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 
 - **形态**：外部插件 `~/dsh-plugins/dsh-onebot/`，挂载在 `~/.dsh/profiles/web/cordis.patch.yml`（profile 层）
 - **协议**：OneBot 11（兼容 NapCat / Lagrange / LLOneBot / go-cqhttp）
-- **连接**：反向 WS（默认 18643，本机 8643 预留给 Hermes），NapCat ws-reverse 拨入
+- **连接**：反向 WS（默认 8643），NapCat ws-reverse 拨入
 - **会话**：每个 QQ 会话一个持久 Agent（session id 稳定派生），重启自动 resume
 - **依赖**：@deepseek-ai/*（宿主符号链接）+ ws + @napi-rs/canvas + fontkit
 
@@ -49,7 +49,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 上午 | **E2E 四连修**：stop() 擦映射、resume 模型选择引导期默认值、session id collision 自愈、媒体目录 ENOENT（见 §4） |
 | 上午 | 入站消息 source 归属改为 plugin（会话日志区分平台消息） |
 | 上午 | 线上部署：发现挂载层两个坑（$HOME 字面量不被 loader 插值、config.yaml 不是 patch 层）→ 改挂 profile 层 cordis.patch.yml + 绝对路径；热加载 1 秒生效 |
-| 上午 | NapCat 拨入成功（18643 ESTABLISHED）；真实 QQ 链路验证：hello → 模型回复 → turn completed；重启记忆验证（暗号柚子跨重启保留） |
+| 上午 | NapCat 拨入成功（<port> ESTABLISHED）；真实 QQ 链路验证：hello → 模型回复 → turn completed；重启记忆验证（暗号柚子跨重启保留） |
 | 上午 | **t2i 里程碑**：按 T2I_DEV_DOC 整理方案获批；canvas 实验（系统字体家族/emoji 彩色/ttc/逐字形回退）；六模块落地（fonts/canvas/measure/parser/elements/index） |
 | 上午 | t2i 修三处：fontkit ESM 入口是浏览器构建（改 createRequire 惰性加载）、表格数据结构维度、嵌套 required 不被参数 DSL 支持 |
 | 上午 | **emoji 代理对 bug**：JS 字符串索引按 UTF-16 码元拆开 emoji → 高代理位被分类成 CJK 渲染成黑字形（像素扫描发现）→ 全链路改按码点迭代 |
@@ -61,7 +61,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 下午 | **loop 结算顺序调整**（用户要求）：final（含 t2i 卡片）先发，t2i 发送完成后再合并转发+撤回——先给用户看结果卡片，中间评论再收敛。测试断言同步更新（final → forward → delete 顺序），85/85 全过，构建待重启 |
 | 下午 | **斜杠命令补齐**：接通从未被调用的 tryHandleCommand 路由（此前仅 processInbound 特判 /new），新增 /model（查看当前模型+可用 provider/model 目录；`/model <provider> <model>` 切换：更新 agent selectionRef.current（下一步生效）+ agentDefaultModel.saveSelection 持久化，未知模型拒绝）与 /workspace（查看当前 cwd+所属 workspace；list 列出全部；`/workspace <目录>` 校验 realpath+isDirectory 后记录 per-chat 覆盖，并 retire 当前 agent——session cwd 创建时冻结，下一条消息以新目录重建会话）；/stop 增强：cancel 后清 loopPending/loopBuffer（被取消回合静默收尾不发残文）；/new 统一走 resetChat（删除重复内联与 parseSlashCommand 孤儿）；/help 更新。类型：BridgeDeps 注入 agentDefaultModel + WorkspaceRegistryLike 扩展 list；fake agent 补 status/cancel；90/90 全过，构建待重启 |
 | 下午 | **事故与修复**：往 cordis.patch.yml 错误新增 dsh-onebot-nas 条目（同插件二次加载）→ 双实例工具注册冲突 → 崩溃循环 + chat-sessions.json 被清空。修复：移除重复条目（配置合并进现有 dsh-onebot 条目），恢复映射，重启。**教训：同一插件文件绝不能 insert 两次；给现有插件加配置必须改原条目 config** |
-| 下午 | **QQ 文件接收双通道**：NapCat 文档（napneko.github.io/develop/file）确认 get_private_file_url 私聊直链（QQ CDN，实测 200 + MD5 一致）→ resolveNasFile 优先直链下载，失败回退 SSH（docker cp + base64 回传）；get_private_file_url 加入 qq_napcat_api 白名单；file 段解析 name 回退 file 字段 + 保留 file_id。90/90 全过 |
+| 下午 | **QQ 文件接收双通道**：NapCat 文档（napneko.github.io/develop/file）确认 get_private_file_url 私聊直链（QQ CDN，实测 200 + MD5 一致）→ resolveNasFile 优先直链下载，失败回退 get_file 的 base64/http-url 载荷（SSH 方案未实现，仅注释残留，后已清理）；get_private_file_url 加入 qq_napcat_api 白名单；file 段解析 name 回退 file 字段 + 保留 file_id。90/90 全过 |
 | 下午 | **loop 结算顺序再调整**（用户要求明确顺序）：合并转发 → 发送 t2i/final → 撤回。settleLoopBuffer 拆为 sendLoopForward + recallLoopMessages 两段，turn/end 在发送链上排三步（转发成功才执行撤回，失败保留原消息）；测试断言更新（fwd → final → delete），90/90 全过，构建待重启 |
 
 ---
@@ -132,7 +132,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 ### 3.11 斜杠命令 /new（2026-08-14）
 - **需求**：QQ 里发斜杠命令开新对话无效——插件此前没有任何斜杠命令处理，/xxx 被当普通消息丢给模型
 - **实现**（src/bridge.ts）：
-  - `parseSlashCommand(text, selfId)`：解析入站文本，容忍群聊 `@<bot> /new` 前缀；目前仅 `new` 一个命令
+  - `parseSlashCommand(text, selfId)`：解析入站文本，容忍群聊 `@<bot> /new` 前缀；命令集：`/new` `/model` `/workspace` `/stop` `/help`（/model、/workspace 为下午随命令补齐加入，见 §2 时间线）
   - `resetChat(chatId)`：销毁当前 chat agent、把旧 session id 加入 brokenSessions（下次消息自动生成 `onebot-private-<qq>-<base36>` 新 id）、清映射、直接经出站管线回发「已开启新对话」确认（agent 已销毁，不走模型）
   - 权限：仅 admin（群聊成员/受限用户发 /new 直接忽略）
 - **验证**：82 vitest 全绿（新增回归：/new 不进入 agent、收到确认回复、下一条消息落在带后缀的新会话 id）；tsc 构建通过
@@ -150,6 +150,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 ### 出站
 - [x] 长消息策略：≤100 单条 / 100–150 标点分段 / >150 t2i 文字图卡片（渲染失败回退分段）
 - [x] Markdown 剥离为 QQ 纯文本；[[qq_forward]] 合并转发（群/私聊）
+- [x] loop 中间消息自动合并转发+撤回（interimMessages 缓冲 ≥2 条收敛为合并转发卡片并撤回原消息；顺序：合并转发 → t2i/final → 撤回）
 - [x] 图片（路径/URL，≤9 张）、语音、视频、文件工具；正在输入提示（私聊）
 - [x] qq_napcat_api 白名单代理（14 个 action）、qq_group_history
 
@@ -163,7 +164,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 ### 运维
 - [x] 会话映射持久化 + 重启 resume（含引导期模型选择等待）
 - [x] 热加载：改 patch 文件/touch 即生效（无需重启 dsh）
-- [x] 测试：80 vitest（单元 + 真实 WS 对端 + 全管线 + t2i 像素扫描 + 预设/工作区回归）
+- [x] 测试：90 vitest（单元 + 真实 WS 对端 + 全管线 + t2i 像素扫描 + 预设/工作区回归 + loop 合并/斜杠命令回归）
 
 ---
 
@@ -187,7 +188,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 
 # 构建与测试
 cd ~/dsh-plugins/dsh-onebot && npm install --include=dev && ./scripts/build.sh
-./node_modules/.bin/vitest run       # 79 个测试
+./node_modules/.bin/vitest run       # 90 个测试
 
 # 线上状态
 netstat -an | grep <port>             # NapCat 反向 WS 连接（ESTABLISHED）
