@@ -120,6 +120,21 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 
 环境变量：`ONEBOT_ALLOWED_USERS`（逗号分隔管理员）、`ONEBOT_ALLOW_ALL_USERS=true`（开发用）。
 
+## 会话工作区（workspace）选择
+
+每个 QQ 会话创建时按以下优先级确定工作目录（写入 session meta，**创建时冻结**，不随配置变化）：
+
+1. 该会话的 `/workspace` 覆盖（per-chat 记录，跨 `/new` 保留）
+2. 配置 `workspacePath`
+3. 宿主进程 cwd（`process.cwd()`）
+
+`/workspace <目录>` 切换（realpath + 目录校验）：记录覆盖后会 retire 当前 agent，
+下一条消息以新目录重建会话，旧会话保留在磁盘。`/workspace` 无参数查看当前目录，
+`/workspace list` 列出全部 workspace 记录。
+
+会话自动挂载到 GUI 工作区：仅当会话 cwd 等于配置的 `workspacePath`（未配置时为宿主 cwd）
+才自动创建 workspace；沿用旧 cwd 的遗留会话只在已有 workspace 拥有该路径时挂载，不会自动新建。
+
 ## dm / group 访问策略（初始化必选）
 
 私聊（`dmPolicy`）与群聊（`groupPolicy`）各自三选一，选项含义如下：

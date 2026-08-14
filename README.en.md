@@ -124,6 +124,23 @@ default). Common options:
 
 Env vars: `ONEBOT_ALLOWED_USERS` (comma-separated admins), `ONEBOT_ALLOW_ALL_USERS=true` (development).
 
+## Session workspace selection
+
+Each QQ session picks its working directory at creation time, in this order (written into the session meta and
+frozen for the session's lifetime):
+
+1. The chat's `/workspace` override (per-chat, survives `/new` resets)
+2. The configured `workspacePath`
+3. The host process cwd (`process.cwd()`)
+
+`/workspace <dir>` switches directories (realpath + directory check): it records the override and retires the
+current agent, so the next message rebuilds the session under the new directory. The old session stays on disk.
+`/workspace` with no argument shows the current directory; `/workspace list` lists all workspace records.
+
+Sessions attach to GUI workspaces as follows: a new workspace is auto-created only when the session cwd equals
+the configured `workspacePath` (or the host cwd when unset); legacy sessions carrying a foreign cwd are attached
+only when a workspace already owns that path, never auto-created.
+
 ## dm / group access policies (pick on first setup)
 
 Private (`dmPolicy`) and group (`groupPolicy`) chats each have three options:
