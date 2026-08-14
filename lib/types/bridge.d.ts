@@ -43,6 +43,23 @@ export interface BridgeConfig {
     cardFooter: string;
     fontFiles: readonly string[];
     fontFamilies: readonly string[];
+    agentPreset: string;
+    workspacePath: string;
+}
+/** Agent-preset service (dsh-agent-presets): joins agents to a preset composition. */
+export interface AgentPresetsLike {
+    mount(agentCtx: unknown, id?: string): Promise<{
+        id: string;
+    }>;
+}
+/** Workspace registry (dsh-workspace): durable workspace membership. */
+export interface WorkspaceRegistryLike {
+    resolveByPath(path: string): Promise<{
+        attachSession(sessionId: string): Promise<void>;
+    } | undefined>;
+    create(path: string, title?: string): Promise<{
+        attachSession(sessionId: string): Promise<void>;
+    }>;
 }
 /** Services the bridge needs (subset of the plugin Context). */
 export interface BridgeDeps {
@@ -52,6 +69,8 @@ export interface BridgeDeps {
     transcriber: Transcriber;
     agents: AgentRegistry;
     sessions: SessionStore;
+    agentPresets: AgentPresetsLike;
+    workspaceRegistry: WorkspaceRegistryLike;
     defaultModel: (() => ModelSelection | undefined) | undefined;
     config: BridgeConfig;
     policy: AccessPolicyConfig;
@@ -145,6 +164,26 @@ export declare class ChatBridge {
      * a fresh session id. The user is asked to resend.
      */
     private healSessionCollision;
+    /**
+     * Effective workspace directory for QQ chat sessions: the configured
+     * workspacePath, falling back to the host process cwd.
+     */
+    private effectiveCwd;
+    /**
+     * Join the QQ agent to the configured agent preset (the deployment default
+     * when unset) so its tools/prompt sections/skill catalog resolve against the
+     * preset composition instead of the empty global layer. Best-effort: a
+     * broken preset falls back to the previous behavior rather than failing the
+     * chat.
+     */
+    private joinPreset;
+    /**
+     * Attach a chat session to the workspace owning its header cwd (creating the
+     * workspace when the directory is unowned), so QQ sessions group under a
+     * workspace in the GUI instead of "Ungrouped". Best-effort: failure only
+     * logs.
+     */
+    private attachToWorkspace;
     /** Start the NapCat typing indicator (private chats only). */
     private startTyping;
     /** Stop the typing indicator. */

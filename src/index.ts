@@ -33,10 +33,17 @@ type Context = CordisContext & {
   agents: AgentRegistry
   sessions: SessionStore
   agentDefaultModel: { currentSelection(): ModelSelection | undefined }
+  agentPresets: {
+    mount(agentCtx: unknown, id?: string): Promise<{ id: string }>
+  }
+  workspaceRegistry: {
+    resolveByPath(path: string): Promise<{ attachSession(sessionId: string): Promise<void> } | undefined>
+    create(path: string, title?: string): Promise<{ attachSession(sessionId: string): Promise<void> }>
+  }
 }
 
 export const name = 'dsh-onebot'
-export const inject = ['tools', 'systemPrompt', 'agents', 'sessions', 'agentDefaultModel']
+export const inject = ['tools', 'systemPrompt', 'agents', 'sessions', 'agentDefaultModel', 'agentPresets', 'workspaceRegistry']
 
 /** Plugin configuration (validated by schemastery). */
 export interface Config {
@@ -74,6 +81,8 @@ export interface Config {
   cardFooter: string
   fontFiles: string[]
   fontFamilies: string[]
+  agentPreset: string
+  workspacePath: string
 }
 
 const ENV = (name: string): string => process.env[name] ?? ''
@@ -153,6 +162,10 @@ export const Config: z<Config> = z.object({
     .description('t2i 渲染器注册的字体文件路径（Linux/自定义字体；macOS 自动用系统字体）'),
   fontFamilies: z.array(z.string()).default([])
     .description('t2i 渲染器优先使用的字体家族名（覆盖平台默认）'),
+  agentPreset: z.string().default('')
+    .description('QQ 会话加入的 agent 预设 id；留空用部署默认（当前为 standard，提供 bash/fs/subagent 等全部工具；minimal 仅持久 bash + str_replace_editor）'),
+  workspacePath: z.string().default('')
+    .description('QQ 会话的工作区目录（写入会话 cwd，并自动归入该工作区，不存在则创建）；留空用宿主进程 cwd'),
 })
 
 /** Resolve env-var fallbacks into the effective access policy. */
@@ -209,6 +222,8 @@ export function apply(ctx: Context, config: Config): void {
     transcriber,
     agents: ctx.agents,
     sessions: ctx.sessions,
+    agentPresets: ctx.agentPresets,
+    workspaceRegistry: ctx.workspaceRegistry,
     defaultModel: () => {
       try {
         return ctx.agentDefaultModel.currentSelection()
@@ -233,6 +248,8 @@ export function apply(ctx: Context, config: Config): void {
       cardFooter: config.cardFooter,
       fontFiles: config.fontFiles,
       fontFamilies: config.fontFamilies,
+      agentPreset: config.agentPreset,
+      workspacePath: config.workspacePath,
     },
     policy,
     log: (level, message) => {

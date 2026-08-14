@@ -110,6 +110,19 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 - 参数 DSL 不支持嵌套 `items.required`（defineTool 直接报错）→ execute 内手检
 - 字面量联合用 `z.const('x')`
 
+### 3.10 QQ 会话未加入 agent 预设 + 未挂工作区（2026-08-14）
+- **症状**：①QQ 会话在 GUI 显示「未分组」；②QQ 会话只有 qq_* + view_image 8 个工具，没有 bash/fs/read 等（会话日志实证：request header 的 tools 数组恰好 8 个，system prompt 仅 2793 字符，无任何工具指引节）
+- **根因**（dsh-agent-presets 源码 lib/index.js:866 实证）：
+  1. bridge 用 `ctx.agents.create({ setup: 只装模型选择 })` 直接建会话，**没有 `agentPresets.mount(agentCtx)`** → 该 agent 的 tools/prompt/skills 解析在 **empty global layer**，只剩插件自己全局注册的 qq_*（dsh-onebot）+ view_image（dsh-vision）。bash/fs/subagent 等全部在 standard 预设的 agent-plane 里（config/agent-presets/standard/agent.cordis.yml），不加入预设就看不到
+  2. GUI 建会话走 api sessions.create → `composeAgent(preset)` + `workspace.attachSession()`；bridge 两样都没做 → 会话不在任何 workspaceRegistry.sessionIds 里 → GUI「未分组」。attachSession 全仓库只有 dsh-host-apiproxy 调用
+- **修复**（src/bridge.ts）：
+  - `joinPreset(agentCtx)`：setup 里 `agentPresets.mount(agentCtx, config.agentPreset || undefined)`（默认走部署默认 standard；mount 失败仅 warn 回退旧行为，不炸聊天）
+  - `attachToWorkspace(sessionId, headerCwd)`：按会话 header cwd `resolveByPath`，无则 `create`，再 `attachSession`（全 best-effort，失败仅日志）
+  - 新增配置：`agentPreset`（留空=默认）、`workspacePath`（留空=宿主 cwd）；inject 加 `agentPresets`、`workspaceRegistry`
+  - patch 已配 `agentPreset: standard` + `workspacePath: /home/user/workspace`
+- **验证**：80 vitest 全绿（新增回归测试：joinPreset 收到 standard + create/attachSession 按 cwd 调用）；tsc 构建通过。**生效需重启 dsh web**（宿主侧插件无 HMR）
+- **注意**：restart 后 loadMapping resume 的旧会话（header cwd=~/.hermes/workspace）也会被挂到对应工作区（不存在则自动创建）
+
 ---
 ## 4. 功能清单（当前状态）
 
@@ -136,7 +149,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 ### 运维
 - [x] 会话映射持久化 + 重启 resume（含引导期模型选择等待）
 - [x] 热加载：改 patch 文件/touch 即生效（无需重启 dsh）
-- [x] 测试：79 vitest（单元 + 真实 WS 对端 + 全管线 + t2i 像素扫描）
+- [x] 测试：80 vitest（单元 + 真实 WS 对端 + 全管线 + t2i 像素扫描 + 预设/工作区回归）
 
 ---
 

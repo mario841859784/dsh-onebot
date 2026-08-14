@@ -23,6 +23,19 @@ type Context = CordisContext & {
     agentDefaultModel: {
         currentSelection(): ModelSelection | undefined;
     };
+    agentPresets: {
+        mount(agentCtx: unknown, id?: string): Promise<{
+            id: string;
+        }>;
+    };
+    workspaceRegistry: {
+        resolveByPath(path: string): Promise<{
+            attachSession(sessionId: string): Promise<void>;
+        } | undefined>;
+        create(path: string, title?: string): Promise<{
+            attachSession(sessionId: string): Promise<void>;
+        }>;
+    };
 };
 export declare const name = "dsh-onebot";
 export declare const inject: string[];
@@ -62,6 +75,8 @@ export interface Config {
     cardFooter: string;
     fontFiles: string[];
     fontFamilies: string[];
+    agentPreset: string;
+    workspacePath: string;
 }
 /** Default media dir: <dsh-home>/media/onebot (dsh-home = $DSH_HOME or ~/.dsh). */
 export declare function defaultMediaDir(): string;

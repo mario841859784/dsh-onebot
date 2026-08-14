@@ -8,7 +8,7 @@
  * @module dsh-onebot/bridge
  */
 
-import type { Agent, AgentRegistry, ModelSelection } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentRegistry, AgentSetup, ModelSelection } from '@deepseek-ai/dsh-agent'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionId, SessionStore } from '@deepseek-ai/dsh-session'
@@ -61,6 +61,19 @@ export interface BridgeConfig {
   cardFooter: string
   fontFiles: readonly string[]
   fontFamilies: readonly string[]
+  agentPreset: string
+  workspacePath: string
+}
+
+/** Agent-preset service (dsh-agent-presets): joins agents to a preset composition. */
+export interface AgentPresetsLike {
+  mount(agentCtx: unknown, id?: string): Promise<{ id: string }>
+}
+
+/** Workspace registry (dsh-workspace): durable workspace membership. */
+export interface WorkspaceRegistryLike {
+  resolveByPath(path: string): Promise<{ attachSession(sessionId: string): Promise<void> } | undefined>
+  create(path: string, title?: string): Promise<{ attachSession(sessionId: string): Promise<void> }>
 }
 
 /** Services the bridge needs (subset of the plugin Context). */
@@ -71,6 +84,8 @@ export interface BridgeDeps {
   transcriber: Transcriber
   agents: AgentRegistry
   sessions: SessionStore
+  agentPresets: AgentPresetsLike
+  workspaceRegistry: WorkspaceRegistryLike
   defaultModel: (() => ModelSelection | undefined) | undefined
   config: BridgeConfig
   policy: AccessPolicyConfig
@@ -571,21 +586,26 @@ export class ChatBridge {
       agentOptions.provider = selection.provider
       agentOptions.model = selection.model
     }
-    const cwd = process.cwd()
+    const cwd = this.effectiveCwd()
+    const meta: { cwd: string; agentPreset?: string } = { cwd }
+    const preset = this.deps.config.agentPreset
+    if (preset !== undefined && preset !== '') meta.agentPreset = preset
     const selectionRef = selection !== undefined
       ? { current: selection, assembled: undefined }
       : undefined
+    const setup: AgentSetup = async agentCtx => {
+      await this.joinPreset(agentCtx)
+      if (selectionRef !== undefined) {
+        installModelSelection(agentCtx, selectionRef)
+      }
+    }
     let handle: { agent: Agent; dispose(): Promise<void> }
     try {
       handle = await this.deps.agents.create({
         sessionId,
-        meta: { cwd },
+        meta,
         agentOptions,
-        setup: agentCtx => {
-          if (selectionRef !== undefined) {
-            installModelSelection(agentCtx, selectionRef)
-          }
-        },
+        setup,
       })
     } catch (error) {
       // A stale or foreign persisted log under the same id blocks creation
@@ -595,16 +615,13 @@ export class ChatBridge {
       this.deps.log('warn', 'agent create failed (' + (error instanceof Error ? error.message : String(error)) + '); retrying with ' + fallbackId)
       handle = await this.deps.agents.create({
         sessionId: fallbackId,
-        meta: { cwd },
+        meta,
         agentOptions,
-        setup: agentCtx => {
-          if (selectionRef !== undefined) {
-            installModelSelection(agentCtx, selectionRef)
-          }
-        },
+        setup,
       })
       this.deps.log('info', 'recovered with fresh session ' + fallbackId + ' for ' + chatId)
     }
+    await this.attachToWorkspace(handle.agent.session.id, handle.agent.session.header?.cwd)
     const chat: ChatAgent = {
       chatId,
       sessionId,
@@ -647,12 +664,14 @@ export class ChatBridge {
           const handle = await this.deps.agents.resume({
             resumeSessionId: makeSessionId(sessionId),
             agentOptions,
-            setup: agentCtx => {
+            setup: async agentCtx => {
+              await this.joinPreset(agentCtx)
               if (selectionRef !== undefined) {
                 installModelSelection(agentCtx, selectionRef)
               }
             },
           })
+          await this.attachToWorkspace(handle.agent.session.id, handle.agent.session.header?.cwd)
           const chat: ChatAgent = {
             chatId,
             sessionId: makeSessionId(sessionId),
@@ -724,6 +743,64 @@ export class ChatBridge {
     }
     this.deps.log('warn', 'healed session collision for ' + chatId + '; a fresh session will be created on next message')
     void this.saveMapping()
+  }
+
+  // ------------------------------------------------------------ workspace & preset
+
+  /**
+   * Effective workspace directory for QQ chat sessions: the configured
+   * workspacePath, falling back to the host process cwd.
+   */
+  private effectiveCwd(): string {
+    const configured = this.deps.config.workspacePath
+    return configured !== undefined && configured !== '' ? configured : process.cwd()
+  }
+
+  /**
+   * Join the QQ agent to the configured agent preset (the deployment default
+   * when unset) so its tools/prompt sections/skill catalog resolve against the
+   * preset composition instead of the empty global layer. Best-effort: a
+   * broken preset falls back to the previous behavior rather than failing the
+   * chat.
+   */
+  private async joinPreset(agentCtx: unknown): Promise<void> {
+    if (this.deps.agentPresets === undefined) return
+    try {
+      const configured = this.deps.config.agentPreset
+      const preset = await this.deps.agentPresets.mount(
+        agentCtx,
+        configured !== undefined && configured !== '' ? configured : undefined,
+      )
+      this.deps.log('debug', 'agent joined preset ' + preset.id)
+    } catch (error) {
+      this.deps.log('warn', 'agent preset mount failed (tools fall back to the global layer): ' + (error instanceof Error ? error.message : String(error)))
+    }
+  }
+
+  /**
+   * Attach a chat session to the workspace owning its header cwd (creating the
+   * workspace when the directory is unowned), so QQ sessions group under a
+   * workspace in the GUI instead of "Ungrouped". Best-effort: failure only
+   * logs.
+   */
+  private async attachToWorkspace(sessionId: string, headerCwd: string | undefined): Promise<void> {
+    const registry = this.deps.workspaceRegistry
+    if (registry === undefined) return
+    try {
+      if (headerCwd === undefined || headerCwd === '') {
+        this.deps.log('warn', 'workspace attach skipped: session header carries no cwd')
+        return
+      }
+      let workspace = await registry.resolveByPath(headerCwd)
+      if (workspace === undefined) {
+        workspace = await registry.create(headerCwd)
+        this.deps.log('info', 'created workspace for ' + headerCwd)
+      }
+      await workspace.attachSession(sessionId)
+      this.deps.log('info', 'attached session ' + sessionId + ' to workspace ' + headerCwd)
+    } catch (error) {
+      this.deps.log('warn', 'workspace attach failed for ' + sessionId + ': ' + (error instanceof Error ? error.message : String(error)))
+    }
   }
 
   // ------------------------------------------------------------ typing

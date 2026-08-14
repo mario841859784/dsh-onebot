@@ -15,17 +15,18 @@ import { Transcriber } from '../src/stt.js'
 /** A fake agent handle for the bridge. */
 function makeFakeAgents(sessionIds: string[], captured: { followups: Array<{ text: string; sessionId: string }> }) {
   const agents = {
-    create: vi.fn(async (options: { sessionId: string }) => {
+    create: vi.fn(async (options: { sessionId: string; meta?: { cwd?: string }; setup?: (agentCtx: unknown) => unknown }) => {
       const sessionId = String(options.sessionId)
       sessionIds.push(sessionId)
       const agent = {
-        session: { id: sessionId, seq: 0 },
+        session: { id: sessionId, seq: 0, header: { cwd: options.meta?.cwd ?? process.cwd() } },
         followup: (message: { content: Array<{ type: string; text?: string }> }) => {
           const text = message.content.map(b => b.text ?? '').join('')
           captured.followups.push({ text, sessionId })
         },
         whenIdle: async () => undefined,
       }
+      if (typeof options.setup === 'function') await options.setup({})
       return { agent, dispose: async () => undefined }
     }),
     resume: vi.fn(async () => {
@@ -453,6 +454,93 @@ describe('ChatBridge', () => {
     await vi.waitFor(() => {
       expect(outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('运行出错'))).toBe(true)
     })
+    client.close()
+    await bridge.stop()
+    await connection.stop()
+  })
+
+  it('joins the configured agent preset and attaches the session to its workspace', async () => {
+    const ctx = new Context()
+    const sessionIds: string[] = []
+    const captured = { followups: [] as Array<{ text: string; sessionId: string }> }
+    const agents = makeFakeAgents(sessionIds, captured)
+    const sessions = { flush: vi.fn(async () => undefined) }
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
+    const connection = new OneBotConnection({
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+    })
+
+    const mountedPresets: Array<string | undefined> = []
+    const agentPresets = {
+      mount: vi.fn(async (_agentCtx: unknown, id?: string) => {
+        mountedPresets.push(id)
+        return { id: id ?? 'standard' }
+      }),
+    }
+    const attached: Array<{ sessionId: string; cwd: string }> = []
+    const workspaceRegistry = {
+      resolveByPath: vi.fn(async () => undefined),
+      create: vi.fn(async (path: string) => ({
+        attachSession: vi.fn(async (sessionId: string) => { attached.push({ sessionId, cwd: path }) }),
+      })),
+    }
+
+    const bridge = new ChatBridge({
+      ctx,
+      connection,
+      media: new MediaStore(join(mediaDir, 'media'), 6),
+      transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
+      agents: agents as never,
+      sessions: sessions as never,
+      agentPresets: agentPresets as never,
+      workspaceRegistry: workspaceRegistry as never,
+      defaultModel: undefined,
+      config: {
+        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
+        sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
+        maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
+        textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
+        agentPreset: 'standard', workspacePath: mediaDir,
+      },
+      policy: {
+        dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
+        adminUsers: ['10001'], allowAllUsers: false, requireMention: true,
+      },
+      log: () => undefined,
+    })
+    connection.onMessage = event => {
+      void bridge.handleInbound(event)
+    }
+    bridge.start()
+    connection.start()
+    await vi.waitFor(() => expect(connection.address()).toBeDefined())
+    const address = connection.address()!
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
+    client.on('message', data => {
+      const frame = JSON.parse(data.toString()) as Record<string, unknown>
+      if (typeof frame.echo === 'string') {
+        client.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 7 }, echo: frame.echo }))
+      }
+    })
+    client.send(JSON.stringify({
+      post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002,
+      message: [{ type: 'text', data: { text: 'hi' } }], raw_message: 'hi',
+      sender: { user_id: 10001, nickname: '小明' },
+    }))
+    await vi.waitFor(() => expect(captured.followups).toHaveLength(1))
+    await vi.waitFor(() => expect(attached).toHaveLength(1))
+
+    // The agent joined the configured preset (standard), so its tools resolve
+    // against the preset composition instead of the empty global layer.
+    expect(mountedPresets).toEqual(['standard'])
+    // The session was attached to the workspace owning its header cwd
+    // (creating the workspace when unowned) instead of landing ungrouped.
+    expect(workspaceRegistry.resolveByPath).toHaveBeenCalledWith(mediaDir)
+    expect(workspaceRegistry.create).toHaveBeenCalledWith(mediaDir)
+    expect(attached[0]).toEqual({ sessionId: sessionIds[0], cwd: mediaDir })
+
     client.close()
     await bridge.stop()
     await connection.stop()
