@@ -202,7 +202,7 @@ Lessons ported from the source DEVLOG:
 - **CQ unescaping**: NapCat escapes `&` in URLs to `&amp;`; unescape before downloading (the root cause of CDN 403s).
 - **Fail-closed @ detection**: when the bot's QQ is unknown, group messages are treated as un-mentioned and never
   auto-replied.
-- **Fail pending actions on disconnect**: reject all in-flight actions immediately on WS close to avoid 10–30 s
+- **Fail pending actions on disconnect**: reject all in-flight actions immediately on WS close to avoid 10-30 s
   stalls and leaks.
 - **Dedupe reconnects**: only one reconnect task per concurrent disconnect, preventing dual WS connections.
 - **int(target) fallback**: chat_id parsing runs inside try/catch so a bad target can't crash the host.
