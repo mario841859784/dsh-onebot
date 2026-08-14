@@ -62,7 +62,12 @@ npm install --include=dev
         port: 8643
         # accessToken: ''    # 与 NapCat 配置一致
         # botQQ: ''          # 留空自动从 meta 事件学习
+        adminUsers: ['你的QQ号']   # 必配：至少一个管理员，否则私聊/斜杠命令不可用
 ```
+
+> ⚠️ **首次配置必须设置至少一个管理员**（`adminUsers` 或环境变量 `ONEBOT_ALLOWED_USERS`）：
+> `dmPolicy: open`（默认）只允许管理员私聊，斜杠命令也仅管理员可用；不设置则无人能对话。
+> 开发调试可临时 `allowAllUsers: true`（或 `ONEBOT_ALLOW_ALL_USERS=true`）放行所有用户。
 
 重启 dsh（`dsh web` 或你的启动方式），日志出现 `[dsh-onebot] mounted` 即挂载成功。
 
@@ -95,15 +100,15 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `accessToken` | 空 | OneBot token |
 | `botQQ` | 空 | 机器人 QQ（空=自动学习） |
 | `requireMention` | `true` | 群聊需 @ 或回复才响应 |
-| `dmPolicy` | `open` | `open`(仅管理员)/`allowlist`/`disabled` |
-| `groupPolicy` | `open` | `open`/`allowlist`/`disabled` |
-| `adminUsers` | `[]` | 管理员 QQ；也可用 `ONEBOT_ALLOWED_USERS` 环境变量 |
+| `dmPolicy` | `open` | 私聊策略：`open`(仅管理员)/`allowlist`(白名单)/`disabled` |
+| `groupPolicy` | `open` | 群聊策略：`open`(所有人)/`allowlist`/`disabled` |
+| `adminUsers` | `[]` | 管理员 QQ；也可用 `ONEBOT_ALLOWED_USERS` 环境变量。**必须至少设置一个**，否则私聊（dmPolicy=open）与斜杠命令无人可用 |
 | `allowFrom` / `groupAllowFrom` | `[]` | 白名单用户/群 |
 | `interimMessages` | `true` | 工具调用之间的中间文本是否立即发送；`false` 只发最终回复 |
-| `splitLength` | `100` | 长回复分段长度 |
+| `splitLength` | `100` | 文本路径分段长度：≤该值单条发送，超出按标点/空格切分为多段（可自定义） |
 | `sttEnabled` | `true` | 语音转写（需 ffmpeg + whisper CLI） |
 | `sttModel` | `small` | whisper 模型 |
-| `textImageThreshold` | `150` | 回复正文超过该长度渲染为文字图卡片；`<=0` 禁用卡片路径 |
+| `textImageThreshold` | `150` | t2i 卡片阈值：正文长度 > 该值渲染为文字图卡片；`<=0` 禁用卡片路径。分段三档（默认 100/150，均可自定义）：≤`splitLength` 单条 → `splitLength`~`textImageThreshold` 标点分段 → >`textImageThreshold` 文字图卡片 |
 | `cardFooter` | `dsh` | 卡片页脚品牌（"Powered by <brand>"） |
 | `fontFiles` / `fontFamilies` | `[]` | t2i 字体文件/家族覆盖（Linux 部署必看：需安装 Noto CJK） |
 | `mediaDir` | `<dsh-home>/media/onebot` | 入站媒体/映射文件目录 |
