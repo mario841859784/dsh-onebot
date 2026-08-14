@@ -114,6 +114,10 @@ npm install --include=dev
 - loop 中间消息合并转发 + 撤回
 - 用户档案（群消息 JSONL 记录 + HTTP 查询端点）
 
+## 开发记录
+
+完整时间线/根因/修复见 [DEVLOG.md](DEVLOG.md)（移植自 Hermes onebot 插件的 DEVLOG 惯例）。
+
 ## License
 
 BSD-3-Clause
