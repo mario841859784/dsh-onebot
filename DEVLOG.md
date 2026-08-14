@@ -63,6 +63,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 下午 | **事故与修复**：往 cordis.patch.yml 错误新增 dsh-onebot-nas 条目（同插件二次加载）→ 双实例工具注册冲突 → 崩溃循环 + chat-sessions.json 被清空。修复：移除重复条目（配置合并进现有 dsh-onebot 条目），恢复映射，重启。**教训：同一插件文件绝不能 insert 两次；给现有插件加配置必须改原条目 config** |
 | 下午 | **QQ 文件接收双通道**：NapCat 文档（napneko.github.io/develop/file）确认 get_private_file_url 私聊直链（QQ CDN，实测 200 + MD5 一致）→ resolveNasFile 优先直链下载，失败回退 get_file 的 base64/http-url 载荷（SSH 方案未实现，仅注释残留，后已清理）；get_private_file_url 加入 qq_napcat_api 白名单；file 段解析 name 回退 file 字段 + 保留 file_id。90/90 全过 |
 | 下午 | **loop 结算顺序再调整**（用户要求明确顺序）：合并转发 → 发送 t2i/final → 撤回。settleLoopBuffer 拆为 sendLoopForward + recallLoopMessages 两段，turn/end 在发送链上排三步（转发成功才执行撤回，失败保留原消息）；测试断言更新（fwd → final → delete），90/90 全过，构建待重启 |
+| 下午 | **入站图片压缩规划**：对齐 Hermes 原版 _shrink_image 梳理决策点，用户拍板——黑底垫色、EXIF 方向校正、GIF 不支持时保持原图；方案见 §3.12，待实现 |
 
 ---
 
@@ -136,6 +137,19 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
   - `resetChat(chatId)`：销毁当前 chat agent、把旧 session id 加入 brokenSessions（下次消息自动生成 `onebot-private-<qq>-<base36>` 新 id）、清映射、直接经出站管线回发「已开启新对话」确认（agent 已销毁，不走模型）
   - 权限：仅 admin（群聊成员/受限用户发 /new 直接忽略）
 - **验证**：82 vitest 全绿（新增回归：/new 不进入 agent、收到确认回复、下一条消息落在带后缀的新会话 id）；tsc 构建通过
+
+### 3.12 入站图片压缩（2026-08-14 规划，v2 待实现）
+- **目标**：大图先压缩再交给视觉模型（view_image），避免大图拖慢视觉分析（路线图唯一剩余项；对齐 Hermes 原版 `_shrink_image`）
+- **决策拍板**（用户确认）：
+  - 触发：长边 > `imageMaxSize`（新配置，默认 2048，`<=0` 禁用）才压缩，等比缩放（长边限制、短边跟随）
+  - 算法：@napi-rs/canvas 缩放（`imageSmoothingQuality: 'high'`），**不加新依赖**
+  - 输出：RGBA（含透明）→ PNG；否则 → JPEG quality=85；**透明垫黑底**（与 PIL 转 RGB 一致）
+  - **EXIF 方向校正**（用户要求，优于原版）：读 EXIF Orientation 校正旋转后再压缩
+  - GIF 动图：canvas 无法解码时**保持原图**不压缩（用户确认；原版为塌缩第一帧，TS 版不强行支持）
+  - 失败/解码失败：保持原图（best-effort）
+- **执行位置**：media.ts 下载完成后立即压缩，仅 image 段；voice/video/file 不动；压缩后字节数不复查 IMAGE_MAX_BYTES（2048px JPEG q85 远小于 8MB）
+- **测试计划**：4000px 大图 → 长边 ≤2048；小图不动；RGBA→PNG / 不透明→JPEG；`imageMaxSize: 0` 禁用；解码失败回退原图；EXIF 校正用例
+- **文档**：README 配置表加 `imageMaxSize`、功能表「入站图片压缩」转正、路线图移除该项
 
 ---
 ## 4. 功能清单（当前状态）
