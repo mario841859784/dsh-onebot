@@ -6,7 +6,7 @@ A QQ channel for DeepSeek Harness. 给 DeepSeek Harness 加上 QQ 通道。
 
 This plugin turns dsh into a QQ bot (**OneBot 11 protocol**, compatible with NapCat / Lagrange / LLOneBot / go-cqhttp).
 Like [dsh-vision](https://github.com/dsh-external/dsh-vision), it ships as an external plugin: **zero Python, pure
-TypeScript, a native Cordis plugin** mounted into the dsh host process — no core code changes.
+TypeScript, a native Cordis plugin** mounted into the dsh host process, with no core code changes.
 
 ```
 User(QQ) ←→ NapCat ←→ dsh-onebot plugin ←→ dsh Agent (one per chat)
@@ -85,7 +85,7 @@ Restart dsh (`dsh web` or however you start it); the log line `[dsh-onebot] moun
   (`ws://127.0.0.1:3001` works on the same machine), tokens must match on both sides.
 
 Tokens must match on both sides; for the message report format, choose **"array"** (the plugin parses segment
-arrays first; CQ strings are only a fallback). After configuring, restart dsh — `[dsh-onebot] mounted` in the log
+arrays first; CQ strings are only a fallback). After configuring, restart dsh. `[dsh-onebot] mounted` in the log
 plus a successful NapCat connection means you're ready.
 
 **Deployment requirements**: NapCat must be on a LAN **reachable from dsh** (same subnet / routable).
@@ -145,7 +145,7 @@ Private (`dmPolicy`) and group (`groupPolicy`) chats each have three options:
 Text-image cards need three font families (CJK / monospace / color emoji). The plugin registers them
 automatically from the system and fixed paths at startup; missing glyphs render as tofu blocks.
 
-- **macOS**: zero install — uses system Hiragino Sans GB / Songti SC, Menlo and Apple Color Emoji automatically.
+- **macOS**: zero install. Uses system Hiragino Sans GB / Songti SC, Menlo and Apple Color Emoji automatically.
 - **Linux** (Debian/Ubuntu, one command):
 
   ```sh
@@ -161,7 +161,7 @@ automatically from the system and fixed paths at startup; missing glyphs render 
   | optional `fonts-unifont` | `/usr/share/fonts/opentype/unifont/*.otf` | last-resort fallback |
 
 - **Custom**: `fontFiles` adds extra font files (restart to apply); `fontFamilies` prioritizes family names.
-  The renderer does an ink self-check — families missing glyphs are dropped and fall back automatically,
+  The renderer does an ink self-check: families missing glyphs are dropped and fall back automatically,
   so you never get a silent tofu card.
 
 ## Permissions & data
@@ -187,7 +187,7 @@ automatically from the system and fixed paths at startup; missing glyphs render 
 ## Uninstall
 
 1. Remove the dsh-onebot insert entry from `~/.dsh/profiles/<profile>/cordis.patch.yml`;
-2. Restart dsh — `[dsh-onebot] mounted` gone from the log means it's unloaded;
+2. Restart dsh; `[dsh-onebot] mounted` gone from the log means it's unloaded;
 3. Optional: delete the plugin directory and leftover media under `<dsh-home>/media/onebot/`.
 
 ## Development
@@ -216,11 +216,11 @@ Lessons ported from the source DEVLOG:
 
 | Symptom | Cause & fix |
 |---|---|
-| Group chat not responding | With `requireMention: true`, @ or reply is required; @ detection is fail-closed — make sure botQQ was learned from meta events or configured explicitly |
+| Group chat not responding | With `requireMention: true`, @ or reply is required; @ detection is fail-closed; make sure botQQ was learned from meta events or configured explicitly |
 | Image download 403 | NapCat escapes `&` in URLs to `&amp;` (parsing unescapes automatically); if it still fails, check the media download line in the log |
 | File receive fails | NapCat on a different machine needs the "file-to-URL" switch on, otherwise `get_file` returns an unreachable container path; confirm dsh ↔ NapCat network connectivity |
 | Tofu CJK in text images | Linux without CJK fonts: `apt install fonts-noto-cjk`, and point `fontFiles` at an SC font file |
-| Crash loop / tool registration conflict | The same plugin file inserted twice (double instance) — check the patch has no duplicate entries |
+| Crash loop / tool registration conflict | The same plugin file inserted twice (double instance); check the patch has no duplicate entries |
 | Voice shows `[语音]` placeholder | ffmpeg or whisper unavailable; install and restart, or set `sttEnabled: false` |
 | Where are the logs | dsh host logs; historical root causes & fixes in [DEVLOG.md](DEVLOG.md) |
 
