@@ -69,6 +69,11 @@ npm install --include=dev
 **NapCat 侧（reverse 模式）**：配置一个 ws-reverse 通道，URL 指向 dsh 所在机器
 （如 `ws://192.168.1.100:8643/ws`），token 与上面一致。
 
+**部署位置要求**：NapCat 必须部署在 dsh **可达的局域网**内（同一网段/能互通），
+WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 dsh 不在同一台机器时，
+需要在 NapCat 侧**开启「文件转 URL」开关**，`get_file` 才会返回可下载的 http(s) url
+（否则返回容器内路径，本插件无法访问）。
+
 ## 配置
 
 完整配置项见 [src/index.ts](src/index.ts) 的 `Config` schema（schemastery 校验，均有默认值）。常用：
@@ -143,6 +148,7 @@ npm install --include=dev
 |---|---|
 | 群聊不响应 | `requireMention: true` 时需 @ 或回复才触发；@ 检测 fail-closed——确认 botQQ 已从 meta 事件学习，或显式配置 |
 | 图片下载 403 | NapCat 会把 URL 中的 `&` 转成 `&amp;`（解析已自动反转义）；仍失败可查日志中 media 下载行 |
+| 文件接收失败 | 非本机部署 NapCat 时需开启「文件转 URL」开关，否则 get_file 返回容器内路径不可达；确认 dsh 与 NapCat 网络互通 |
 | 文字图中文豆腐块 | Linux 未装 CJK 字体：`apt install fonts-noto-cjk`，并用 `fontFiles` 指定 SC 字体文件 |
 | 崩溃循环 / 工具注册冲突 | 同一插件文件被 insert 两次（双实例）——检查 patch 无重复条目 |
 | 语音显示 [语音] 占位 | ffmpeg 或 whisper 不可用；安装后重启，或 `sttEnabled: false` 关闭 |
