@@ -304,9 +304,12 @@ export class ChatBridge {
     const chat = await this.ensureChat(chatId, nickname)
     chat.lastNickname = nickname
     this.deps.log('info', 'followup from ' + chatId + ': ' + final.slice(0, 120))
+    // Plugin-originated user message: the session log attributes QQ inbound
+    // messages to this plugin (the built-in plugin source with form omitted),
+    // keeping them distinguishable from host/web UI inputs.
     chat.agent.followup(createUserMessage({
       content: [{ type: 'text', text: final }],
-      source: { kind: 'user' },
+      source: { kind: 'plugin', plugin: 'dsh-onebot' },
     }))
     this.startTyping(chat)
   }
