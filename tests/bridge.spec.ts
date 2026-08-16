@@ -1006,6 +1006,106 @@ describe('ChatBridge', () => {
     await connection.stop()
   })
 
+  it('dedupes duplicate assistant/message events for the same message id', async () => {
+    const ctx = new Context()
+    const sessionIds: string[] = []
+    const captured = { followups: [] as Array<{ text: string; sessionId: string }> }
+    const agents = makeFakeAgents(sessionIds, captured)
+    const sessions = { flush: vi.fn(async () => undefined) }
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
+    const connection = new OneBotConnection({
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+    })
+    const bridge = new ChatBridge({
+      ctx, connection,
+      media: new MediaStore(join(mediaDir, 'media'), 6),
+      transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
+      agents: agents as never,
+      sessions: sessions as never,
+      agentPresets: { mount: vi.fn(async () => ({ id: 'standard' })) } as never,
+      workspaceRegistry: {
+        resolveByPath: vi.fn(async () => undefined),
+        create: vi.fn(async () => ({ attachSession: vi.fn(async () => undefined) })),
+      } as never,
+      defaultModel: undefined,
+      config: {
+        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
+        sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
+        maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
+        textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
+        agentPreset: 'standard', workspacePath: mediaDir,
+      },
+      policy: {
+        dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
+        adminUsers: ['10001'], allowAllUsers: false, requireMention: true,
+      },
+      log: () => undefined,
+    })
+    connection.onMessage = event => {
+      void bridge.handleInbound(event)
+    }
+    bridge.start()
+    connection.start()
+    await vi.waitFor(() => expect(connection.address()).toBeDefined())
+    const address = connection.address()!
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
+
+    const outbound: Array<Record<string, unknown>> = []
+    client.on('message', data => {
+      const frame = JSON.parse(data.toString()) as Record<string, unknown>
+      outbound.push(frame)
+      if (typeof frame.echo === 'string') {
+        client.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 7 }, echo: frame.echo }))
+      }
+    })
+
+    client.send(JSON.stringify({
+      post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002,
+      message: [{ type: 'text', data: { text: '重复事件测试' } }],
+      raw_message: '重复事件测试',
+      sender: { user_id: 10001, nickname: '小明' },
+    }))
+    await vi.waitFor(() => expect(captured.followups).toHaveLength(1))
+    const session = { id: sessionIds[0] }
+
+    // Tool-carrying interims are sent immediately; a re-emitted event with the
+    // same message id (streaming/usage) must not send again.
+    const emitAssistant = (id: string, text: string) => {
+      ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+        turn: 1, step: 1,
+        message: {
+          id, role: 'assistant',
+          content: [{ type: 'text', text }, { type: 'tool-call', id: 'call-1', name: 'test', arguments: '{}' }],
+        },
+      }))
+    }
+    emitAssistant('msg-dup-1', '第一条：查资料')
+    emitAssistant('msg-dup-1', '第一条：查资料')
+    emitAssistant('msg-dup-1', '第一条：查资料')
+    emitAssistant('msg-dup-2', '第二条：总结')
+    await vi.waitFor(() => {
+      expect(outbound.filter(f => f.action === 'send_msg')).toHaveLength(2)
+    })
+    ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    await vi.waitFor(() => {
+      expect(outbound.filter(f => f.action === 'send_private_forward_msg')).toHaveLength(1)
+    })
+    const fwd = outbound.find(f => f.action === 'send_private_forward_msg')!
+    const params = fwd.params as { messages: Array<{ data: { content: Array<{ data: { text: string } }> } }> }
+    expect(params.messages).toHaveLength(2)
+    expect(params.messages[0].data.content[0].data.text).toBe('第一条：查资料')
+    expect(params.messages[1].data.content[0].data.text).toBe('第二条：总结')
+    await vi.waitFor(() => {
+      expect(outbound.filter(f => f.action === 'delete_msg')).toHaveLength(2)
+    })
+
+    client.close()
+    await bridge.stop()
+    await connection.stop()
+  })
+
   it('leaves a single interim as-is: no merge, no recall', async () => {
     const ctx = new Context()
     const sessionIds: string[] = []

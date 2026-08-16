@@ -126,6 +126,9 @@ interface ChatAgent {
   loopPending: string | null
   /** Sent interim messages awaiting turn/end settlement (≥2 → merge+recall). */
   loopBuffer: Array<{ id: string; text: string }>
+  /** Last assistant message id already handled — duplicate session events
+   * (streaming/usage re-emits of the same message) must not re-send it. */
+  lastHandledMessageId: string | undefined
   /** Whether a turn is currently generating. */
   busy: boolean
   typingTimer: ReturnType<typeof setInterval> | undefined
@@ -926,6 +929,12 @@ export class ChatBridge {
     const chat = this.chats.get(chatId)
     if (chat === undefined || chat.sessionId !== session.id) return
     if (event.type === 'assistant/message') {
+      // Dedupe: the session may re-emit the same message (streaming/usage
+      // updates); each id is handled exactly once, or interims would send
+      // repeatedly and flood the loop buffer.
+      const messageId = event.data.message.id
+      if (messageId !== undefined && chat.lastHandledMessageId === messageId) return
+      if (messageId !== undefined) chat.lastHandledMessageId = messageId
       const text = event.data.message.content
         .filter(block => block.type === 'text')
         .map(block => block.text)
@@ -1052,6 +1061,7 @@ export class ChatBridge {
       pendingFinal: '',
       loopPending: null,
       loopBuffer: [],
+      lastHandledMessageId: undefined,
       busy: false,
       typingTimer: undefined,
       lastNickname: nickname,
@@ -1105,6 +1115,7 @@ export class ChatBridge {
             pendingFinal: '',
             loopPending: null,
             loopBuffer: [],
+            lastHandledMessageId: undefined,
             busy: false,
             typingTimer: undefined,
             lastNickname: '',

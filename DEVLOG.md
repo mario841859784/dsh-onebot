@@ -76,6 +76,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 上午 | **loop 合并"少撤回一条"（用户截图实测）**：每轮合并卡片都比中间消息少一条（卡片 2 条+撤回 2 条，漏掉最后一条中间文本且不撤回）。根因：interim 消息 id 在 sendToChat 完成后**异步** push 进 loopBuffer，而 turn/end **同步**快照 buffer → 最后一条 pending interim 的 push 晚于快照，落进被替换的旧数组，永不合并/撤回 |
 | 上午 | **中间消息"慢一拍"（用户反馈）**：原「延迟一条」策略（上一条文本等下一条 assistant/message 到达才发）让 QQ 收到的中间文本滞后一步。方案：assistant/message 的 content 含 tool-call 块时 100% 不是最终回复（模型调用工具后必继续）→ **立即发送并记账**；仅无工具调用的纯文本保持延迟判定（用于区分最终回复） |
 | 上午 | 修复实现：`sendInterim`（发送+记账封装）+ `settleLoop`（turn/end 先 await 发送队列排空再快照 buffer，顺序：合并转发 → final（t2i/分段原路径）→ 撤回，任一步失败安全降级保留原消息）；99/99 全过，推送 GitHub（68f2398），详见 §3.13 |
+| 晚 | **上线实测发现重复发送（用户截图+OCR 核对）**：合并卡片 5 条，第一条中间文本出现 3 次（内容完全相同）。根因：同一 assistant 消息会被会话**重发多次 assistant/message 事件**（流式/usage 更新重发），「立即发送」逻辑对每次事件都 sendInterim 一次 → 重复发送+重复入账。修复：按 message.id 去重（`lastHandledMessageId`，同一 id 只处理一次；消息无 id 时跳过不去重，兼容旧事件）；新增去重回归测试（同 id 重发 3 次只出 1 条，合并卡片 2 条+撤回 2 条）；100/100 全过，推送 GitHub |
 
 ---
 
