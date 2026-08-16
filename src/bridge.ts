@@ -862,6 +862,63 @@ export class ChatBridge {
 
   // ------------------------------------------------------------ session events
 
+  /** Send one interim text and record its ids for the turn/end loop merge. */
+  private sendInterim(chatId: ChatId, chat: ChatAgent, text: string): void {
+    this.sendToChat(chatId, text).then(ids => {
+      for (const id of ids) chat.loopBuffer.push({ id, text })
+    }).catch(error => {
+      this.deps.log('warn', 'interim send failed: ' + (error instanceof Error ? error.message : String(error)))
+    })
+  }
+
+  /**
+   * Settle a finished turn's interim trail (interimMessages on): merge ≥2
+   * interim messages into one forward card, send the deferred final text,
+   * then recall the original interim messages — only when the merge
+   * succeeded (a failed merge keeps everything visible).
+   *
+   * The chat's send chain is drained FIRST: an interim's message id lands in
+   * loopBuffer only after its send actually completed (async push), so
+   * snapshotting before the queue settles would drop the last interim
+   * (unmerged + unrecalled). Settlement runs outside the send chain — each
+   * step is a raw connection/send call, never a nested enqueue.
+   */
+  private async settleLoop(chatId: ChatId, chat: ChatAgent): Promise<void> {
+    try {
+      await chat.queue
+    } catch {
+      // failures already settle the enqueue chain; keep going
+    }
+    if (chat.loopBuffer.length < 2 && chat.loopPending === null) return
+    const buf = chat.loopBuffer
+    chat.loopBuffer = []
+    let forwardOk = false
+    if (buf.length >= 2) {
+      try {
+        await this.sendLoopForward(chatId, buf)
+        forwardOk = true
+      } catch (error) {
+        this.deps.log('info', 'loop merge failed, keeping original messages: ' + (error instanceof Error ? error.message : String(error)))
+      }
+    }
+    if (chat.loopPending !== null) {
+      const final = chat.loopPending
+      chat.loopPending = null
+      try {
+        await this.sendToChat(chatId, final)
+      } catch (error) {
+        this.deps.log('warn', 'final send failed: ' + (error instanceof Error ? error.message : String(error)))
+      }
+    }
+    if (buf.length >= 2 && forwardOk) {
+      try {
+        await this.recallLoopMessages(chatId, buf)
+      } catch (error) {
+        this.deps.log('warn', 'loop recall failed: ' + (error instanceof Error ? error.message : String(error)))
+      }
+    }
+  }
+
   private onSessionEvent(session: Session, event: SessionEvent): void {
     if (this.stopping) return
     const chatId = this.bySession.get(session.id)
@@ -875,19 +932,24 @@ export class ChatBridge {
         .join('')
       if (text === '') return
       if (this.deps.config.interimMessages) {
-        // Defer one step: the current text may still be the final step. The
-        // previously deferred text is now proven interim — send it now and
-        // remember its ids for the turn/end loop merge (merge + recall).
+        // The arriving message proves the previously deferred text interim —
+        // flush it now, regardless of this message's shape.
         const prior = chat.loopPending
         if (prior !== null) {
           chat.loopPending = null
-          this.sendToChat(chatId, prior).then(ids => {
-            for (const id of ids) chat.loopBuffer.push({ id, text: prior })
-          }).catch(error => {
-            this.deps.log('warn', 'interim send failed: ' + (error instanceof Error ? error.message : String(error)))
-          })
+          this.sendInterim(chatId, chat, prior)
         }
-        chat.loopPending = text
+        // A message carrying tool calls can never be the final reply (the
+        // model continues after the tool) — send it immediately instead of
+        // deferring one step, so QQ receives interims without the one-step
+        // lag. Only tool-free text stays deferred until turn/end proves it
+        // either interim (next assistant/message) or final.
+        const hasToolCall = event.data.message.content.some(block => block.type === 'tool-call')
+        if (hasToolCall) {
+          this.sendInterim(chatId, chat, text)
+        } else {
+          chat.loopPending = text
+        }
       } else {
         chat.pendingFinal = text
       }
@@ -895,41 +957,7 @@ export class ChatBridge {
     }
     if (event.type === 'turn/end') {
       if (this.deps.config.interimMessages) {
-        // Settlement order on the chat's send chain (each task is a raw
-        // connection/send call, never nested enqueues — awaiting sendToChat
-        // from inside a chain task would deadlock):
-        //   1. merged forward: the interim trail collapses into one card;
-        //   2. final text through the normal path (t2i card / split fallback);
-        //   3. recall the original interim messages — only when the forward
-        //      succeeded (a failed merge keeps everything visible).
-        const buf = chat.loopBuffer
-        chat.loopBuffer = []
-        let forwardOk = false
-        if (buf.length >= 2) {
-          void this.enqueue(chatId, async () => {
-            try {
-              await this.sendLoopForward(chatId, buf)
-              forwardOk = true
-            } catch (error) {
-              this.deps.log('info', 'loop merge failed, keeping original messages: ' + (error instanceof Error ? error.message : String(error)))
-            }
-          })
-        }
-        if (chat.loopPending !== null) {
-          const final = chat.loopPending
-          chat.loopPending = null
-          this.sendToChat(chatId, final).catch(error => {
-            this.deps.log('warn', 'final send failed: ' + (error instanceof Error ? error.message : String(error)))
-          })
-        }
-        if (buf.length >= 2) {
-          void this.enqueue(chatId, async () => {
-            if (!forwardOk) return
-            await this.recallLoopMessages(chatId, buf)
-          }).catch(error => {
-            this.deps.log('warn', 'loop recall failed: ' + (error instanceof Error ? error.message : String(error)))
-          })
-        }
+        void this.settleLoop(chatId, chat)
       } else if (chat.pendingFinal !== '') {
         const final = chat.pendingFinal
         chat.pendingFinal = ''

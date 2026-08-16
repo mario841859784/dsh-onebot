@@ -206,6 +206,21 @@ export declare class ChatBridge {
      * forward succeeded). Recall failure is logged only — content is never lost.
      */
     private recallLoopMessages;
+    /** Send one interim text and record its ids for the turn/end loop merge. */
+    private sendInterim;
+    /**
+     * Settle a finished turn's interim trail (interimMessages on): merge ≥2
+     * interim messages into one forward card, send the deferred final text,
+     * then recall the original interim messages — only when the merge
+     * succeeded (a failed merge keeps everything visible).
+     *
+     * The chat's send chain is drained FIRST: an interim's message id lands in
+     * loopBuffer only after its send actually completed (async push), so
+     * snapshotting before the queue settles would drop the last interim
+     * (unmerged + unrecalled). Settlement runs outside the send chain — each
+     * step is a raw connection/send call, never a nested enqueue.
+     */
+    private settleLoop;
     private onSessionEvent;
     private onSessionFlush;
     /** Get (or create) the agent for a chat. */
