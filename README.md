@@ -23,7 +23,7 @@
 | 入站 | 私聊/群聊、段数组优先解析（CQ 字符串回退）、CQ 反转义、@/回复触发检测（fail-closed）、图片四路解析（url/base64/file/hash）、大图自动压缩（长边 ≤`imageMaxSize`，GIF 不压）、文件段双通道接收（CDN 直链 get_private_file_url + get_file base64/url 回退）、表情 id→emoji/卡片/戳一戳段类型、引用消息自动取原文（get_msg）、合并转发自动展开（get_forward_msg） |
 | 语音 | ffmpeg 转 16kHz WAV + whisper 转写（openai-whisper / whisper.cpp / 自定义命令），失败降级 [语音] 占位 |
 | 文字图 | t2i 卡片渲染器（@napi-rs/canvas）：标题/粗斜体/删除线/引用/列表/代码块/表格/行内 code 胶囊/彩色 emoji/中文标点禁则；与 Hermes 原版同款数值（800px/26px/禁则集合/右缘 790） |
-| 出站 | 长消息按句号分段（默认 ≤100 字/条）、**>150 字渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji，渲染失败自动回退分段）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、loop 中间消息自动合并转发+撤回（interimMessages 缓冲 ≥2 条收敛为合并转发卡片并撤回原消息，单条直接发出）、正在输入提示（set_input_status，仅私聊） |
+| 出站 | 长消息按句号分段（默认 ≤100 字/条）、**>150 字渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji，渲染失败自动回退分段）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、loop 中间消息自动合并转发+撤回（interimMessages：带工具调用的中间文本**立即发送**，无工具调用的纯文本延迟一步以区分最终回复；一轮结束时缓冲 ≥2 条收敛为合并转发卡片并撤回原消息，单条直接发出；结算前先排空发送队列，不漏最后一条）、正在输入提示（set_input_status，仅私聊） |
 | 命令 | 斜杠命令（仅管理员）：`/new` 开新会话、`/model` 查看/切换模型、`/workspace` 查看/切换工作区、`/stop` 停止生成并清残留、`/help` 帮助 |
 | 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_napcat_api`（14 个白名单 action）、`qq_group_history` |
 | 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计 |
@@ -40,7 +40,7 @@
 | OneBot 11 实现 | NapCat / Lagrange / LLOneBot / go-cqhttp（reverse 或 forward WebSocket） |
 | 可选依赖 | 语音转写需 ffmpeg + whisper CLI；t2i 文字图在 Linux 需 Noto CJK 字体 |
 
-最后验证：2026-08-14（99/99 vitest 全绿，dsh web 实测 QQ 私聊/群聊收发、文字图卡片、合并转发、语音转写、入站大图压缩）。
+最后验证：2026-08-16（99/99 vitest 全绿，dsh web 实测 QQ 私聊/群聊收发、文字图卡片、长文本分段、loop 中间消息即时发送+合并转发+撤回、语音转写、入站大图压缩）。
 
 ## 安装
 

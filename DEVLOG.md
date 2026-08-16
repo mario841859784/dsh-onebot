@@ -67,6 +67,16 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 下午 | **入站图片压缩实现**：src/image-shrink.ts + media.ts 接线 + imageMaxSize 配置；踩坑：@napi-rs/canvas loadImage 已自动应用 EXIF 方向（手写解析会双重旋转）→ 删手写 EXIF 逻辑；99/99 全过，详见 §3.12 |
 | 晚 | **入站媒体解析修复验证（用户实测四类全过）**：语音——转写正常附带（测试语「听到了吗」）；图片——[图片:path] 标注正确、view_image 可读；文件——[文件:path] 标注正确、dsh-onebot-image-compress-plan.md 完整可读；视频——[视频:path] 标注正确、MP4 v2 有效。四类均落盘 dsh 媒体目录，修复生效 |
 
+### 2026-08-16（验证与修复）
+
+| 时间 | 工作 |
+|---|---|
+| 上午 | 包名改为 `@dsh-external/dsh-onebot`（符合插件生态 scope 约定，登记 awesome-dsh-plugins 前置），推送 GitHub（a27dd2b） |
+| 上午 | **长文本分段路径验证**（用户实测）：默认 textImageThreshold=150 时 >150 字符回复全部走 t2i 卡片，文本分段（splitLongText）仅 100~150 区间或卡片渲染失败时触发；100~150 区间实测分段正常（按句号切两段） |
+| 上午 | **loop 合并"少撤回一条"（用户截图实测）**：每轮合并卡片都比中间消息少一条（卡片 2 条+撤回 2 条，漏掉最后一条中间文本且不撤回）。根因：interim 消息 id 在 sendToChat 完成后**异步** push 进 loopBuffer，而 turn/end **同步**快照 buffer → 最后一条 pending interim 的 push 晚于快照，落进被替换的旧数组，永不合并/撤回 |
+| 上午 | **中间消息"慢一拍"（用户反馈）**：原「延迟一条」策略（上一条文本等下一条 assistant/message 到达才发）让 QQ 收到的中间文本滞后一步。方案：assistant/message 的 content 含 tool-call 块时 100% 不是最终回复（模型调用工具后必继续）→ **立即发送并记账**；仅无工具调用的纯文本保持延迟判定（用于区分最终回复） |
+| 上午 | 修复实现：`sendInterim`（发送+记账封装）+ `settleLoop`（turn/end 先 await 发送队列排空再快照 buffer，顺序：合并转发 → final（t2i/分段原路径）→ 撤回，任一步失败安全降级保留原消息）；99/99 全过，推送 GitHub（68f2398），详见 §3.13 |
+
 ---
 
 ## 3. 关键决策与坑（按价值排序）
@@ -156,6 +166,16 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 - **验证**：99/99 vitest 全绿（新增 9 例：4000→2048、小图不动、禁用、RGBA→PNG、不透明→JPEG、EXIF=6 输出 1365×2048、GIF 保持、损坏文件不抛、不覆盖原图）；tsc 零错误
 - **文档**：README 配置表加 `imageMaxSize`、功能表入站转正、路线图章节移除、兼容性验证更新为 99/99
 
+### 3.13 loop 合并竞态与中间消息慢一拍（2026-08-16，已修复）
+- **症状 A（少撤回）**：用户截图实测——每轮合并转发卡片都比实际中间消息少一条：卡片 2 条+撤回 2 条，最后一条中间文本留在聊天里（不合并、不撤回）
+- **根因 A**：interim 记账是 `sendToChat(...).then(ids => loopBuffer.push(...))` ——消息真正发出后**异步** push；而 turn/end 处理是**同步** `const buf = chat.loopBuffer; chat.loopBuffer = []` 快照换数组。模型生成完最后一条 assistant/message 后立刻发 turn/end，此时最后一条 interim 的发送还在队列里、push 未发生 → 快照后 push 进被替换的旧数组 → 该消息永久失去合并/撤回跟踪
+- **症状 B（慢一拍）**：用户反馈 QQ 收到的中间文本滞后——「延迟一条」策略下每条中间文本都要等下一条 assistant/message 到达才发出
+- **根因 B**：延迟一条是**有意设计**（上一条被下一条证明是 interim 才发，防最终回复被当中间消息发出），但代价是每步都慢一拍
+- **修复**：
+  - **立即发送判定**：assistant/message 的 content 含 `tool-call` 块 → 该消息 100% 不是最终回复（模型调用工具后必继续生成）→ 立即发送并入账（`sendInterim`）；仅无工具调用的纯文本保持延迟判定，turn/end 时作为 final 发送
+  - **结算先排空队列**：`settleLoop`（turn/end 分支改为 void 异步调用）先 `await chat.queue` 等发送链全部 settle（最后一条 interim 的 push 必然完成——push 回调注册早于队列 catch 链的恢复），再快照 buffer，顺序执行：合并转发 → final（t2i/分段原路径）→ 撤回；任一步失败安全降级（合并失败保留原消息，内容不丢）
+- **验证**：99/99 vitest 全绿（既有 ≥2 合并+撤回、单条不合并、新消息清残留测试全部保持通过）；src 与 lib 入库，推送 GitHub（68f2398）
+
 ---
 ## 4. 功能清单（当前状态）
 
@@ -169,7 +189,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 ### 出站
 - [x] 长消息策略：≤100 单条 / 100–150 标点分段 / >150 t2i 文字图卡片（渲染失败回退分段）
 - [x] Markdown 剥离为 QQ 纯文本；[[qq_forward]] 合并转发（群/私聊）
-- [x] loop 中间消息自动合并转发+撤回（interimMessages 缓冲 ≥2 条收敛为合并转发卡片并撤回原消息；顺序：合并转发 → t2i/final → 撤回）
+- [x] loop 中间消息自动合并转发+撤回（interimMessages：带 tool-call 的中间文本立即发送、无工具调用延迟一步判定；缓冲 ≥2 条收敛为合并转发卡片并撤回原消息；顺序：合并转发 → t2i/final → 撤回；结算前排空发送队列不漏最后一条）
 - [x] 图片（路径/URL，≤9 张）、语音、视频、文件工具；正在输入提示（私聊）
 - [x] qq_napcat_api 白名单代理（14 个 action）、qq_group_history
 
