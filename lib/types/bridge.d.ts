@@ -106,6 +106,8 @@ export declare class ChatBridge {
     private mappingLoaded;
     /** Session ids whose persisted logs are unusable; creates must avoid them. */
     private readonly brokenSessions;
+    /** Session ids retired across restarts (durable copy of brokenSessions). */
+    private retiredSessionIds;
     constructor(deps: BridgeDeps);
     /** Start listening: wire connection handlers and the session event feed. */
     start(): void;
@@ -230,6 +232,16 @@ export declare class ChatBridge {
     private mappingPath;
     private saveMapping;
     private saveMappingDebounced;
+    /** Whether a session id must never be created again (this run or on disk). */
+    private isSessionIdBlocked;
+    /** A suffixed session id for a chat that avoids every blocked id. */
+    private freshSessionId;
+    /** Permanently retire a session id: in-memory plus durable on-disk record,
+     * so a restart never reuses an id whose log collides with a fresh session. */
+    private retireSession;
+    private retiredPath;
+    private loadRetired;
+    private saveRetired;
     /**
      * Recover from a session-log collision: the live session cannot append to
      * the mismatched on-disk log, so dispose the agent and rebuild the chat on

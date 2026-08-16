@@ -78,6 +78,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 上午 | 修复实现：`sendInterim`（发送+记账封装）+ `settleLoop`（turn/end 先 await 发送队列排空再快照 buffer，顺序：合并转发 → final（t2i/分段原路径）→ 撤回，任一步失败安全降级保留原消息）；99/99 全过，推送 GitHub（68f2398），详见 §3.13 |
 | 晚 | **上线实测发现重复发送（用户截图+OCR 核对）**：合并卡片 5 条，第一条中间文本出现 3 次（内容完全相同）。根因：同一 assistant 消息会被会话**重发多次 assistant/message 事件**（流式/usage 更新重发），「立即发送」逻辑对每次事件都 sendInterim 一次 → 重复发送+重复入账。修复：按 message.id 去重（`lastHandledMessageId`，同一 id 只处理一次；消息无 id 时跳过不去重，兼容旧事件）；新增去重回归测试（同 id 重发 3 次只出 1 条，合并卡片 2 条+撤回 2 条）；100/100 全过，推送 GitHub |
 | 晚 | **修复后复验通过（用户截图确认）**：重启加载新代码后实测——3 轮工具调用 3 条中间文本：合并卡片正好 3 条、撤回提示 3 条、无重复、中间文本即时出现。三连修（排空队列/立即发送/去重）全部生效 |
+| 晚 | **/new 后开不了新对话（用户上报）**：`session "onebot-private-841859784" already has a persisted log on disk that does not match this live session (id collision)`。排查：会话 id 按 chat 确定性派生，/new 只把旧 id 记进**内存** brokenSessions 并清空 mapping，重启后裸 id 被复用撞上磁盘旧日志。修复：废弃 id 持久化（retired-sessions.json）+ 兜底记账修复（用真实 session id 收尾）；102/102 全过，详见 §3.14 |
 
 ---
 
@@ -178,6 +179,14 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
   - **结算先排空队列**：`settleLoop`（turn/end 分支改为 void 异步调用）先 `await chat.queue` 等发送链全部 settle（最后一条 interim 的 push 必然完成——push 回调注册早于队列 catch 链的恢复），再快照 buffer，顺序执行：合并转发 → final（t2i/分段原路径）→ 撤回；任一步失败安全降级（合并失败保留原消息，内容不丢）
 - **验证**：99/99 vitest 全绿（既有 ≥2 合并+撤回、单条不合并、新消息清残留测试全部保持通过）；src 与 lib 入库，推送 GitHub（68f2398）
 
+### 3.14 /new 后 id collision 复现：废弃 id 持久化 + 兜底记账修复（2026-08-16，已修复）
+- **症状**：QQ 私聊 `/new` 后下一条消息报 `session "onebot-private-841859784" already has a persisted log on disk that does not match this live session (id collision)`，新对话开不起来
+- **现场还原**（磁盘证据）：会话 id 由 chat 确定性派生（`sessionIdForChat` → `onebot-private-<qq>`，永不变）；首次会话的日志持久化在 `~/.dsh/sessions/--Users-mario--/onebot-private-841859784/`（cwd=/Users/mario = DSH 进程启动目录）；`/new`（resetChat）只把旧 id 记进**内存** `brokenSessions`、把 chat-sessions.json 清成 {}；进程重启后 `brokenSessions` 丢失、mapping 空 → 下一条消息 ensureChat 又用回裸 id → dsh-session-persistence 的 onCreated→adoptLivePrefix 发现磁盘旧日志的 seed 覆盖不了 → 抛 id collision。该错误**异步**浮出（create 本身 resolve，persistence 的 live.init 被 .catch 吞掉），回合结束变 turn/end error → 发 ⚠️ 并触发 healSessionCollision（内存拉黑裸 id）→ 再发一条才成功；**只要中间重启过一次，裸 id 又被复用，必复现**
+- **修复**：
+  - **废弃 id 持久化**：新增 `retired-sessions.json`（mediaDir 下，append-only 数组）。`retireSession(id)` = 内存 brokenSessions + 去重追加 + 立即写盘；调用点：resetChat（/new）、healSessionCollision、loadMapping resume 失败、ensureChat create 碰撞兜底。启动时 `loadRetired()` 读盘回填 brokenSessions。`ensureChat` 选 id 判断改为 `isSessionIdBlocked`（内存 ∪ 磁盘），`freshSessionId()` 生成带时间戳后缀新 id 并 while 去重 —— **重启后裸 id 永不再用**
+  - **兜底记账修复**：ensureChat 的 catch 分支兜底成功后，`chat.sessionId`/`bySession`/日志原本仍记**原始裸 id**（真实 session 是后缀 id）→ 会话事件全查不到（不回消息、mapping 写错 id）。改为统一用 `handle.agent.session.id`（真实 id）收尾；loadMapping 同步修正
+- **验证**：102/102 vitest 全绿。新增/扩展 3 例：/new 后 retired-sessions.json 落盘 + 同一 mediaDir 新 bridge 模拟重启首条消息直接用后缀 id（不再用裸 id）；create 碰撞兜底 → mapping/事件路由指向真实后缀 id；turn/end 碰撞 → retired 落盘 + mapping 清空。线上：预置 retired-sessions.json 两个已知废弃 id 后重启实测
+
 ---
 ## 4. 功能清单（当前状态）
 
@@ -205,7 +214,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 ### 运维
 - [x] 会话映射持久化 + 重启 resume（含引导期模型选择等待）
 - [x] 热加载：改 patch 文件/touch 即生效（无需重启 dsh）
-- [x] 测试：99 vitest（单元 + 真实 WS 对端 + 全管线 + t2i 像素扫描 + 预设/工作区回归 + loop 合并/斜杠命令回归 + 图片压缩）
+- [x] 测试：102 vitest（单元 + 真实 WS 对端 + 全管线 + t2i 像素扫描 + 预设/工作区回归 + loop 合并/斜杠命令回归 + 图片压缩 + 废弃会话 id 持久化/重启回归）
 
 ---
 

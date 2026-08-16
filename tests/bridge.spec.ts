@@ -13,11 +13,18 @@ import { MediaStore } from '../src/media.js'
 import { Transcriber } from '../src/stt.js'
 
 /** A fake agent handle for the bridge. */
-function makeFakeAgents(sessionIds: string[], captured: { followups: Array<{ text: string; sessionId: string }> }) {
+function makeFakeAgents(
+  sessionIds: string[],
+  captured: { followups: Array<{ text: string; sessionId: string }> },
+  opts?: { failCreateFor?: string },
+) {
   const agents = {
     create: vi.fn(async (options: { sessionId: string; meta?: { cwd?: string }; setup?: (agentCtx: unknown) => unknown }) => {
       const sessionId = String(options.sessionId)
       sessionIds.push(sessionId)
+      if (opts?.failCreateFor !== undefined && sessionId === opts.failCreateFor) {
+        throw new Error('session "' + sessionId + '" already has a persisted log on disk that does not match this live session (id collision)')
+      }
       const agent = {
         session: { id: sessionId, seq: 0, header: { cwd: options.meta?.cwd ?? process.cwd() } },
         status: 'idle',
@@ -38,6 +45,68 @@ function makeFakeAgents(sessionIds: string[], captured: { followups: Array<{ tex
     }),
   }
   return agents
+}
+
+/** Full bridge + WS harness: inbound via real WebSocket, outbound captured. */
+async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string }) {
+  const ctx = new Context()
+  const sessionIds: string[] = []
+  const captured = { followups: [] as Array<{ text: string; sessionId: string }> }
+  const agents = makeFakeAgents(sessionIds, captured, opts)
+  const sessions = { flush: vi.fn(async () => undefined) }
+  const mediaDir = opts?.mediaDir ?? mkdtempSync(join(tmpdir(), 'onebot-test-'))
+  const connection = new OneBotConnection({
+    mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+  })
+  const bridge = new ChatBridge({
+    ctx,
+    connection,
+    media: new MediaStore(join(mediaDir, 'media'), 6),
+    transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
+    agents: agents as never,
+    sessions: sessions as never,
+    agentPresets: undefined as never,
+    workspaceRegistry: undefined as never,
+    defaultModel: undefined,
+    config: {
+      botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+      interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
+      sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
+      maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
+      textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
+      agentPreset: 'standard', workspacePath: mediaDir,
+    },
+    policy: {
+      dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
+      adminUsers: ['10001'], allowAllUsers: false, requireMention: true,
+    },
+    log: () => undefined,
+  })
+  connection.onMessage = event => {
+    void bridge.handleInbound(event)
+  }
+  bridge.start()
+  connection.start()
+  await vi.waitFor(() => expect(connection.address()).toBeDefined())
+  const address = connection.address()!
+  const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+  await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
+  const outbound: Array<Record<string, unknown>> = []
+  client.on('message', data => {
+    const frame = JSON.parse(data.toString()) as Record<string, unknown>
+    outbound.push(frame)
+    if (typeof frame.echo === 'string') {
+      client.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 7 }, echo: frame.echo }))
+    }
+  })
+  const sendText = (text: string): void => {
+    client.send(JSON.stringify({
+      post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002,
+      message: [{ type: 'text', data: { text } }], raw_message: text,
+      sender: { user_id: 10001, nickname: '小明' },
+    }))
+  }
+  return { ctx, sessionIds, captured, sessions, mediaDir, connection, bridge, client, outbound, sendText }
 }
 
 function makeEvent(type: string, data: unknown): SessionEvent {
@@ -747,9 +816,95 @@ describe('ChatBridge', () => {
     expect(sessionIds).toHaveLength(2)
     expect(sessionIds[1]).toMatch(/^onebot-private-10001-[a-z0-9]+$/)
 
+    // 3. The retirement is durable: retired-sessions.json records the first
+    //    session id, so a restart never reuses it.
+    const { readFile } = await import('node:fs/promises')
+    await vi.waitFor(async () => {
+      const retired = JSON.parse(await readFile(join(mediaDir, 'retired-sessions.json'), 'utf8')) as string[]
+      expect(retired).toContain('onebot-private-10001')
+    })
+
+    // 4. Restart simulation: a fresh bridge on the same media dir must skip
+    //    the retired bare id and open the next message on a new suffixed id.
+    const h2 = await makeHarness({ mediaDir })
+    h2.sendText('重启后第一条')
+    await vi.waitFor(() => expect(h2.captured.followups).toHaveLength(1))
+    expect(h2.sessionIds).toHaveLength(1)
+    expect(h2.sessionIds[0]).toMatch(/^onebot-private-10001-[a-z0-9]+$/)
+    h2.client.close()
+    await h2.bridge.stop()
+    await h2.connection.stop()
+
     client.close()
     await bridge.stop()
     await connection.stop()
+  })
+
+  it('recovers from a create id collision with a suffixed session and records the truth', async () => {
+    const h = await makeHarness({ failCreateFor: 'onebot-private-10001' })
+    const { readFile } = await import('node:fs/promises')
+    h.sendText('hi')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    // The bare attempt failed synchronously and the fallback succeeded.
+    expect(h.sessionIds).toHaveLength(2)
+    const fallback = h.sessionIds[1]
+    expect(fallback).toMatch(/^onebot-private-10001-[a-z0-9]+$/)
+    expect(h.captured.followups[0].sessionId).toBe(fallback)
+    // The mapping persists the REAL session id (not the attempted bare one).
+    await vi.waitFor(async () => {
+      const mapping = JSON.parse(await readFile(join(h.mediaDir, 'chat-sessions.json'), 'utf8'))
+      expect(mapping['private:10001']).toBe(fallback)
+    })
+    // The colliding id is retired durably.
+    await vi.waitFor(async () => {
+      const retired = JSON.parse(await readFile(join(h.mediaDir, 'retired-sessions.json'), 'utf8')) as string[]
+      expect(retired).toContain('onebot-private-10001')
+    })
+    // Session events route to the chat through the REAL id.
+    const session = { id: fallback }
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 1,
+      message: { role: 'assistant', content: [{ type: 'text', text: '兜底回复' }] },
+    }))
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('兜底回复'))).toBe(true)
+    })
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('persists the retired id when a turn/end reports an id collision', async () => {
+    const h = await makeHarness()
+    const { readFile } = await import('node:fs/promises')
+    h.sendText('hi')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const sessionId = h.sessionIds[0]
+    const session = { id: sessionId }
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', {
+      turn: 1,
+      reason: {
+        kind: 'error',
+        error: { code: 'E_COLLISION', message: 'session "' + sessionId + '" already has a persisted log on disk that does not match this live session (id collision)' },
+      },
+    }))
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('运行出错'))).toBe(true)
+    })
+    // The colliding id lands in retired-sessions.json and the chat mapping
+    // is emptied (the next message will rebuild on a fresh id).
+    await vi.waitFor(async () => {
+      const retired = JSON.parse(await readFile(join(h.mediaDir, 'retired-sessions.json'), 'utf8')) as string[]
+      expect(retired).toContain(sessionId)
+    })
+    await vi.waitFor(async () => {
+      const mapping = JSON.parse(await readFile(join(h.mediaDir, 'chat-sessions.json'), 'utf8'))
+      expect(Object.keys(mapping)).toHaveLength(0)
+    })
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
   })
 
   it('joins the configured agent preset and attaches the session to its workspace', async () => {

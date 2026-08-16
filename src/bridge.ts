@@ -140,6 +140,8 @@ interface ChatAgent {
 
 /** The mapping file name inside the media dir. */
 const MAPPING_FILE = 'chat-sessions.json'
+/** The retired-session-id file name inside the media dir (append-only). */
+const RETIRED_FILE = 'retired-sessions.json'
 
 /**
  * Bridge between OneBot events and dsh agents. Create via the constructor and
@@ -158,6 +160,8 @@ export class ChatBridge {
   private mappingLoaded: Promise<void> = Promise.resolve()
   /** Session ids whose persisted logs are unusable; creates must avoid them. */
   private readonly brokenSessions = new Set<string>()
+  /** Session ids retired across restarts (durable copy of brokenSessions). */
+  private retiredSessionIds: string[] = []
 
   constructor(deps: BridgeDeps) {
     this.deps = deps
@@ -176,7 +180,10 @@ export class ChatBridge {
     connection.onStatus = (connected: boolean) => {
       this.deps.log(connected ? 'info' : 'warn', 'OneBot ' + (connected ? 'connected' : 'disconnected'))
     }
-    this.mappingLoaded = this.ready().then(() => this.loadMapping()).then(() => {
+    this.mappingLoaded = this.ready().then(async () => {
+      await this.loadRetired()
+      await this.loadMapping()
+    }).then(() => {
       if (this.stopping) return
       this.deps.log('info', 'bridge ready (' + this.chats.size + ' resumed chat(s))')
     })
@@ -1007,8 +1014,8 @@ export class ChatBridge {
     if (existing !== undefined) return existing
     await this.mappingLoaded
     let sessionId = makeSessionId(sessionIdForChat(chatId))
-    if (this.brokenSessions.has(sessionId)) {
-      sessionId = makeSessionId(sessionIdForChat(chatId) + '-' + Date.now().toString(36))
+    if (this.isSessionIdBlocked(sessionId)) {
+      sessionId = this.freshSessionId(chatId)
     }
     const selection = this.deps.defaultModel?.()
     const agentOptions: { provider?: string; model?: string } = {}
@@ -1041,7 +1048,8 @@ export class ChatBridge {
       // A stale or foreign persisted log under the same id blocks creation
       // (id collision). Recover with a fresh suffixed session id instead of
       // failing the chat.
-      const fallbackId = makeSessionId(sessionIdForChat(chatId) + '-' + Date.now().toString(36))
+      this.retireSession(sessionId)
+      const fallbackId = this.freshSessionId(chatId)
       this.deps.log('warn', 'agent create failed (' + (error instanceof Error ? error.message : String(error)) + '); retrying with ' + fallbackId)
       handle = await this.deps.agents.create({
         sessionId: fallbackId,
@@ -1051,10 +1059,14 @@ export class ChatBridge {
       })
       this.deps.log('info', 'recovered with fresh session ' + fallbackId + ' for ' + chatId)
     }
-    await this.attachToWorkspace(handle.agent.session.id, handle.agent.session.header?.cwd)
+    // The real session id is authoritative (the fallback path above creates a
+    // different id than the one initially attempted); record it everywhere so
+    // session events route to this chat and the mapping persists the truth.
+    const actualSessionId = handle.agent.session.id
+    await this.attachToWorkspace(actualSessionId, handle.agent.session.header?.cwd)
     const chat: ChatAgent = {
       chatId,
-      sessionId,
+      sessionId: actualSessionId,
       agent: handle.agent,
       dispose: () => handle.dispose(),
       queue: Promise.resolve(),
@@ -1069,8 +1081,8 @@ export class ChatBridge {
     }
     await handle.agent.whenIdle()
     this.chats.set(chatId, chat)
-    this.bySession.set(sessionId, chatId)
-    this.deps.log('info', 'agent created for ' + chatId + ' (session ' + sessionId + ')')
+    this.bySession.set(actualSessionId, chatId)
+    this.deps.log('info', 'agent created for ' + chatId + ' (session ' + actualSessionId + ')')
     void this.saveMapping()
     return chat
   }
@@ -1108,7 +1120,7 @@ export class ChatBridge {
           await this.attachToWorkspace(handle.agent.session.id, handle.agent.session.header?.cwd)
           const chat: ChatAgent = {
             chatId,
-            sessionId: makeSessionId(sessionId),
+            sessionId: handle.agent.session.id,
             agent: handle.agent,
             dispose: () => handle.dispose(),
             queue: Promise.resolve(),
@@ -1123,9 +1135,9 @@ export class ChatBridge {
           }
           await handle.agent.whenIdle()
           this.chats.set(chatId, chat)
-          this.bySession.set(sessionId, chatId)
+          this.bySession.set(handle.agent.session.id, chatId)
         } catch (error) {
-          this.brokenSessions.add(sessionId)
+          this.retireSession(sessionId)
           this.deps.log('warn', 'resume failed for ' + chatId + ': ' + (error instanceof Error ? error.message : String(error)))
         }
       }
@@ -1162,6 +1174,65 @@ export class ChatBridge {
     }, 2_000).unref()
   }
 
+  // ------------------------------------------------------------ retired ids
+
+  /** Whether a session id must never be created again (this run or on disk). */
+  private isSessionIdBlocked(id: string): boolean {
+    return this.brokenSessions.has(id) || this.retiredSessionIds.includes(id)
+  }
+
+  /** A suffixed session id for a chat that avoids every blocked id. */
+  private freshSessionId(chatId: ChatId): SessionId {
+    let id: SessionId
+    do {
+      id = makeSessionId(sessionIdForChat(chatId) + '-' + Date.now().toString(36))
+    } while (this.isSessionIdBlocked(id))
+    return id
+  }
+
+  /** Permanently retire a session id: in-memory plus durable on-disk record,
+   * so a restart never reuses an id whose log collides with a fresh session. */
+  private retireSession(id: string): void {
+    this.brokenSessions.add(id)
+    if (!this.retiredSessionIds.includes(id)) {
+      this.retiredSessionIds.push(id)
+    }
+    void this.saveRetired()
+  }
+
+  private retiredPath(): string {
+    return this.deps.config.mediaDir.endsWith('/') || this.deps.config.mediaDir.endsWith('\\')
+      ? this.deps.config.mediaDir + RETIRED_FILE
+      : this.deps.config.mediaDir + '/' + RETIRED_FILE
+  }
+
+  private async loadRetired(): Promise<void> {
+    try {
+      const { readFile } = await import('node:fs/promises')
+      const content = await readFile(this.retiredPath(), 'utf8')
+      const parsed = JSON.parse(content) as unknown
+      if (Array.isArray(parsed)) {
+        this.retiredSessionIds = parsed.filter((id): id is string => typeof id === 'string')
+        for (const id of this.retiredSessionIds) this.brokenSessions.add(id)
+        this.deps.log('debug', 'retired-sessions file has ' + this.retiredSessionIds.length + ' id(s)')
+      } else {
+        this.deps.log('warn', 'retired-sessions file is not a JSON array; ignoring')
+      }
+    } catch {
+      // No retired file yet — fresh start.
+    }
+  }
+
+  private async saveRetired(): Promise<void> {
+    try {
+      const { mkdir, writeFile } = await import('node:fs/promises')
+      await mkdir(this.deps.config.mediaDir, { recursive: true })
+      await writeFile(this.retiredPath(), JSON.stringify(this.retiredSessionIds, null, 2), 'utf8')
+    } catch (error) {
+      this.deps.log('warn', 'retired-sessions save failed: ' + (error instanceof Error ? error.message : String(error)))
+    }
+  }
+
   /**
    * Recover from a session-log collision: the live session cannot append to
    * the mismatched on-disk log, so dispose the agent and rebuild the chat on
@@ -1170,7 +1241,7 @@ export class ChatBridge {
   private async healSessionCollision(chatId: ChatId): Promise<void> {
     const chat = this.chats.get(chatId)
     if (chat === undefined) return
-    this.brokenSessions.add(chat.sessionId)
+    this.retireSession(chat.sessionId)
     this.chats.delete(chatId)
     this.bySession.delete(chat.sessionId)
     this.stopTyping(chat)
@@ -1268,7 +1339,7 @@ export class ChatBridge {
     const chat = this.chats.get(chatId)
     if (chat !== undefined) {
       this.stopTyping(chat)
-      this.brokenSessions.add(chat.sessionId)
+      this.retireSession(chat.sessionId)
       this.chats.delete(chatId)
       this.bySession.delete(chat.sessionId)
       try {
