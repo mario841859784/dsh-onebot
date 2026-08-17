@@ -8,20 +8,21 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import WebSocket from 'ws'
 
 import { OneBotConnection } from '../src/connection.js'
-import { ChatBridge } from '../src/bridge.js'
+import { ChatBridge, resolveRecordedPreset } from '../src/bridge.js'
 import { MediaStore } from '../src/media.js'
 import { Transcriber } from '../src/stt.js'
 
 /** A fake agent handle for the bridge. */
 function makeFakeAgents(
   sessionIds: string[],
-  captured: { followups: Array<{ text: string; sessionId: string }> },
+  captured: { followups: Array<{ text: string; sessionId: string }>; createdMeta?: Array<{ cwd?: string; agentPreset?: string }> },
   opts?: { failCreateFor?: string },
 ) {
   const agents = {
-    create: vi.fn(async (options: { sessionId: string; meta?: { cwd?: string }; setup?: (agentCtx: unknown) => unknown }) => {
+    create: vi.fn(async (options: { sessionId: string; meta?: { cwd?: string; agentPreset?: string }; setup?: (agentCtx: unknown) => unknown }) => {
       const sessionId = String(options.sessionId)
       sessionIds.push(sessionId)
+      captured.createdMeta?.push({ ...options.meta })
       if (opts?.failCreateFor !== undefined && sessionId === opts.failCreateFor) {
         throw new Error('session "' + sessionId + '" already has a persisted log on disk that does not match this live session (id collision)')
       }
@@ -910,7 +911,10 @@ describe('ChatBridge', () => {
   it('joins the configured agent preset and attaches the session to its workspace', async () => {
     const ctx = new Context()
     const sessionIds: string[] = []
-    const captured = { followups: [] as Array<{ text: string; sessionId: string }> }
+    const captured = {
+      followups: [] as Array<{ text: string; sessionId: string }>,
+      createdMeta: [] as Array<{ cwd?: string; agentPreset?: string }>,
+    }
     const agents = makeFakeAgents(sessionIds, captured)
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
@@ -920,6 +924,8 @@ describe('ChatBridge', () => {
 
     const mountedPresets: Array<string | undefined> = []
     const agentPresets = {
+      defaultId: 'standard',
+      resolve: vi.fn(async (id?: string) => ({ id: id ?? 'standard' })),
       mount: vi.fn(async (_agentCtx: unknown, id?: string) => {
         mountedPresets.push(id)
         return { id: id ?? 'standard' }
@@ -983,6 +989,9 @@ describe('ChatBridge', () => {
     // The agent joined the configured preset (standard), so its tools resolve
     // against the preset composition instead of the empty global layer.
     expect(mountedPresets).toEqual(['standard'])
+    // The session header records the resolved preset id (config in this case),
+    // so the Web surface can label the session without a second lookup.
+    expect(captured.createdMeta[0].agentPreset).toBe('standard')
     // The session was attached to the workspace owning its header cwd
     // (creating the workspace when unowned) instead of landing ungrouped.
     expect(workspaceRegistry.resolveByPath).toHaveBeenCalledWith(mediaDir)
@@ -992,6 +1001,142 @@ describe('ChatBridge', () => {
     client.close()
     await bridge.stop()
     await connection.stop()
+  })
+
+  it('records the deployment default preset on the header when the config leaves it unset', async () => {
+    const ctx = new Context()
+    const sessionIds: string[] = []
+    const captured = {
+      followups: [] as Array<{ text: string; sessionId: string }>,
+      createdMeta: [] as Array<{ cwd?: string; agentPreset?: string }>,
+    }
+    const agents = makeFakeAgents(sessionIds, captured)
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
+    const mountedPresets: Array<string | undefined> = []
+    const agentPresets = {
+      defaultId: 'router-flash',
+      resolve: vi.fn(async (id?: string) => ({ id: id ?? 'router-flash' })),
+      mount: vi.fn(async (_agentCtx: unknown, id?: string) => {
+        mountedPresets.push(id)
+        return { id: id ?? 'router-flash' }
+      }),
+    }
+    const bridge = new ChatBridge({
+      ctx,
+      connection: new OneBotConnection({
+        mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      }),
+      media: new MediaStore(join(mediaDir, 'media'), 6),
+      transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
+      agents: agents as never,
+      sessions: { flush: vi.fn(async () => undefined) } as never,
+      agentPresets: agentPresets as never,
+      sessionPersistence: undefined,
+      workspaceRegistry: undefined as never,
+      defaultModel: undefined,
+      config: {
+        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
+        sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
+        maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
+        textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
+        agentPreset: '', workspacePath: mediaDir,
+      },
+      policy: {
+        dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
+        adminUsers: ['10001'], allowAllUsers: false, requireMention: true,
+      },
+      log: () => undefined,
+    })
+    await (bridge as unknown as { ensureChat(chatId: string, nickname: string): Promise<unknown> })
+      .ensureChat('private:10001', '小明')
+    // The effective preset (deployment default) was resolved and recorded on
+    // the session header even though the plugin config names no preset.
+    expect(agentPresets.resolve).toHaveBeenCalledWith('router-flash')
+    expect(captured.createdMeta[0].agentPreset).toBe('router-flash')
+    // The setup joins the same composition via the default mount path.
+    expect(mountedPresets).toEqual([undefined])
+    await bridge.stop()
+  })
+
+  it('resume rejoins the preset a session recorded, over a conflicting config', async () => {
+    const ctx = new Context()
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
+    await import('node:fs/promises').then(async ({ mkdir, writeFile }) => {
+      await mkdir(mediaDir, { recursive: true })
+      await writeFile(join(mediaDir, 'chat-sessions.json'), JSON.stringify({ 'private:10001': 'onebot-private-10001' }), 'utf8')
+    })
+    const mountedPresets: Array<string | undefined> = []
+    const logLines: string[] = []
+    const agentPresets = {
+      defaultId: 'router-flash',
+      resolve: vi.fn(async (id?: string) => ({ id: id ?? 'router-flash' })),
+      mount: vi.fn(async (_agentCtx: unknown, id?: string) => {
+        mountedPresets.push(id)
+        return { id: id ?? 'router-flash' }
+      }),
+    }
+    const agents = {
+      create: vi.fn(),
+      resume: vi.fn(async (options: { resumeSessionId: string; setup?: (agentCtx: unknown) => unknown }) => {
+        if (typeof options.setup === 'function') await options.setup({ on: () => () => undefined })
+        return {
+          agent: {
+            id: String(options.resumeSessionId),
+            session: { id: String(options.resumeSessionId), header: { cwd: mediaDir } },
+            whenIdle: async () => undefined,
+          },
+          dispose: async () => undefined,
+        }
+      }),
+    }
+    const sessionPersistence = {
+      inspect: vi.fn(async () => ({ meta: { agentPreset: 'router-flash' }, events: [] })),
+    }
+    const bridge = new ChatBridge({
+      ctx,
+      connection: new OneBotConnection({
+        mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      }),
+      media: new MediaStore(join(mediaDir, 'media'), 6),
+      transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
+      agents: agents as never,
+      sessions: { flush: vi.fn(async () => undefined) } as never,
+      agentPresets: agentPresets as never,
+      sessionPersistence: sessionPersistence as never,
+      workspaceRegistry: undefined as never,
+      defaultModel: undefined,
+      config: {
+        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
+        sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
+        maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
+        textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
+        agentPreset: 'standard', workspacePath: mediaDir,
+      },
+      policy: {
+        dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
+        adminUsers: ['10001'], allowAllUsers: false, requireMention: true,
+      },
+      log: (level, message) => { logLines.push(level + ': ' + message) },
+    })
+    await (bridge as unknown as { loadMapping(): Promise<void> }).loadMapping()
+    // The session's own record wins over the conflicting plugin config.
+    expect(sessionPersistence.inspect).toHaveBeenCalled()
+    expect(mountedPresets).toEqual(['router-flash'])
+    expect(logLines.some(line => line.includes('records preset router-flash') && line.includes('standard'))).toBe(true)
+    await bridge.stop()
+  })
+
+  it('resolveRecordedPreset: newest logged selection wins, else the creation header', () => {
+    const events = [
+      { type: 'user/message', data: { content: [] } },
+      { type: 'agent-preset/selected', data: { agentPreset: 'minimal' } },
+      { type: 'agent-preset/selected', data: { agentPreset: 'router-flash' } },
+    ]
+    expect(resolveRecordedPreset({ meta: { agentPreset: 'standard' }, events })).toBe('router-flash')
+    expect(resolveRecordedPreset({ meta: { agentPreset: 'standard' }, events: [] })).toBe('standard')
+    expect(resolveRecordedPreset({ meta: {}, events: [] })).toBeUndefined()
   })
 
   it('does not auto-create a workspace for a session whose cwd differs from workspacePath', async () => {

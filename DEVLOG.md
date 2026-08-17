@@ -80,6 +80,13 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 晚 | **修复后复验通过（用户截图确认）**：重启加载新代码后实测——3 轮工具调用 3 条中间文本：合并卡片正好 3 条、撤回提示 3 条、无重复、中间文本即时出现。三连修（排空队列/立即发送/去重）全部生效 |
 | 晚 | **/new 后开不了新对话（用户上报）**：`session "onebot-private-841859784" already has a persisted log on disk that does not match this live session (id collision)`。排查：会话 id 按 chat 确定性派生，/new 只把旧 id 记进**内存** brokenSessions 并清空 mapping，重启后裸 id 被复用撞上磁盘旧日志。修复：废弃 id 持久化（retired-sessions.json）+ 兜底记账修复（用真实 session id 收尾）；102/102 全过，详见 §3.14 |
 
+### 2026-08-17（会话字段对齐 Web：preset 记录）
+
+| 时间 | 工作 |
+|---|---|
+| 晚 | **Web 上不显示 QQ 会话的 preset（用户提问）**：查证 Web 会话标题旁 preset 标签（AgentPresetLabel）只渲染 session summary 里的 agentPreset 值，该值来自会话 header 的 agentPreset 字段；Web 创建路径（api-proxy sessions.create）总是 resolve 默认/指定 preset 写入 header，而 onebot 创建路径只在插件配置 agentPreset 非空时写入（默认空）→ 该会话 header 无记录、Web 无从显示（会话实际仍按默认 router-flash 组装）。诊断详见 §3.15 |
+| 晚 | **补齐字段与行为**：`ensureChat` 改为总是 `resolvePresetId()`（配置非空用配置，否则部署默认 defaultId）并写入 `meta.agentPreset`——新会话 header 固定记录有效 preset id，Web 标签可见；`loadMapping` resume 改为先 `sessionPersistence.inspect` 读会话自己记录的 preset（最新 `agent-preset/selected` 事件优先，否则 header），有记录时以记录为准并在与插件配置冲突时 warn（防配置变更致老会话组装漂移）；新增 `resolveRecordedPreset` 纯函数与 `resolvePresetId`/`recordedPresetFor`；Config 文案修正（原写「当前为 standard」，实际部署默认 router-flash）；inject 增加 `sessionPersistence`。存量会话 header 无记录 → resume 回落配置/默认，行为不变（不做迁移）。105/105 全过（新增 3 测试），构建上线，详见 §3.15 |
+
 ---
 
 ## 3. 关键决策与坑（按价值排序）
@@ -187,6 +194,16 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
   - **兜底记账修复**：ensureChat 的 catch 分支兜底成功后，`chat.sessionId`/`bySession`/日志原本仍记**原始裸 id**（真实 session 是后缀 id）→ 会话事件全查不到（不回消息、mapping 写错 id）。改为统一用 `handle.agent.session.id`（真实 id）收尾；loadMapping 同步修正
 - **验证**：102/102 vitest 全绿。新增/扩展 3 例：/new 后 retired-sessions.json 落盘 + 同一 mediaDir 新 bridge 模拟重启首条消息直接用后缀 id（不再用裸 id）；create 碰撞兜底 → mapping/事件路由指向真实后缀 id；turn/end 碰撞 → retired 落盘 + mapping 清空。线上：预置 retired-sessions.json 两个已知废弃 id 后重启实测
 
+### 3.15 会话 header 缺 agentPreset → Web 上不显示 preset（2026-08-17，已修复）
+- **症状**：Web GUI 打开/列表看 QQ 创建的会话，标题旁没有 preset 标签（Web 创建的会话有）
+- **根因**（代码级对照）：Web 会话 header 的 `agentPreset` 由 host api-proxy `sessions.create` 写入——`composeAgent(presetId)` 对缺省请求也 `resolve(undefined)` 出部署默认（router-flash）并写进 `meta.agentPreset`，创建 RPC 再把解析值回给前端存 session summary（AgentPresetLabel 只在该值存在时渲染）。onebot 的 `ensureChat` 只在插件配置 `agentPreset` 非空时写 meta（默认空字符串）→ header 无字段、summary 无值、Web 标签不渲染；**会话实际组装仍是默认 preset**（joinPreset 的 mount(undefined) 回落 defaultId），只是没记录
+- **修复**：
+  - **创建记录**：`ensureChat` 新增 `resolvePresetId()`——配置非空用配置（先 resolve 校验），否则用 `agentPresets.defaultId`；总是写入 `meta.agentPreset`（resolve 失败 warn + 不写，保持降级语义）。新会话 header 固定记录有效 preset id
+  - **resume 按记录重建**：`loadMapping` 新增 `recordedPresetFor()`——经 `sessionPersistence.inspect` 冷读持久 header+log，`resolveRecordedPreset`（最新 `agent-preset/selected` 事件优先，否则 header.agentPreset，与 dsh-agent-presets 的官方解析一致）；有记录时 setup 以记录为准，与插件配置冲突仅 warn（防改配置后老会话组装漂移，违反 model-visible ⟺ logged）；无记录（存量）回落配置/默认，行为不变——**存量不迁移**（用户决策）
+  - 依赖：inject 增加 `sessionPersistence`（base bundle 已挂 session-persistence-jsonl，`ctx.sessionPersistence`）
+  - Config 文案修正：agentPreset 描述原写「当前为 standard」，实际部署默认 router-flash
+- **验证**：105/105 vitest 全绿。新增 3 例：配置留空 → header 记录默认 router-flash 且 mount 走默认；resume 读记录 preset 覆盖冲突配置（mount 收到 router-flash、warn 冲突）；resolveRecordedPreset 纯函数（log 最新优先/header 兜底/无记录 undefined）。更新 1 例：配置 preset 的创建断言 header 记录该 id。构建上线（生产热加载验证中）
+
 ---
 ## 4. 功能清单（当前状态）
 
@@ -214,7 +231,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 ### 运维
 - [x] 会话映射持久化 + 重启 resume（含引导期模型选择等待）
 - [x] 热加载：改 patch 文件/touch 即生效（无需重启 dsh）
-- [x] 测试：102 vitest（单元 + 真实 WS 对端 + 全管线 + t2i 像素扫描 + 预设/工作区回归 + loop 合并/斜杠命令回归 + 图片压缩 + 废弃会话 id 持久化/重启回归）
+- [x] 测试：105 vitest（单元 + 真实 WS 对端 + 全管线 + t2i 像素扫描 + 预设/工作区回归 + loop 合并/斜杠命令回归 + 图片压缩 + 废弃会话 id 持久化/重启回归 + preset 记录/恢复回归）
 
 ---
 

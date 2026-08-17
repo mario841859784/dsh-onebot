@@ -69,7 +69,33 @@ export interface BridgeConfig {
 
 /** Agent-preset service (dsh-agent-presets): joins agents to a preset composition. */
 export interface AgentPresetsLike {
+  /** The preset id a new session gets when none is named (deployment default). */
+  readonly defaultId: string
+  /** Resolve one preset by id (undefined = default); throws when no root supplies it. */
+  resolve(id?: string): Promise<{ id: string }>
   mount(agentCtx: unknown, id?: string): Promise<{ id: string }>
+}
+
+/** Durable session persistence (dsh-session-persistence): cold-read what a session recorded. */
+export interface SessionPersistenceLike {
+  inspect(id: SessionId, signal?: AbortSignal): Promise<{
+    meta: { agentPreset?: string }
+    events: readonly { type?: string; data?: { agentPreset?: string } }[]
+  }>
+}
+
+/** The preset id a session's own record names: newest logged selection, else the creation header. */
+export function resolveRecordedPreset(
+  inspection: { meta: { agentPreset?: string }; events: readonly { type?: string; data?: { agentPreset?: string } }[] },
+): string | undefined {
+  const events = inspection.events
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event?.type === 'agent-preset/selected' && typeof event.data?.agentPreset === 'string') {
+      return event.data.agentPreset
+    }
+  }
+  return inspection.meta.agentPreset
 }
 
 /** Workspace registry (dsh-workspace): durable workspace membership. */
@@ -102,6 +128,8 @@ export interface BridgeDeps {
   agents: AgentRegistry
   sessions: SessionStore
   agentPresets: AgentPresetsLike
+  /** Durable persistence for cold-reading a session's recorded preset; absent = config/default fallback. */
+  sessionPersistence: SessionPersistenceLike | undefined
   workspaceRegistry: WorkspaceRegistryLike
   agentDefaultModel: AgentDefaultModelLike | undefined
   defaultModel: (() => ModelSelection | undefined) | undefined
@@ -1024,9 +1052,9 @@ export class ChatBridge {
       agentOptions.model = selection.model
     }
     const cwd = this.effectiveCwd(chatId)
+    const presetId = await this.resolvePresetId()
     const meta: { cwd: string; agentPreset?: string } = { cwd }
-    const preset = this.deps.config.agentPreset
-    if (preset !== undefined && preset !== '') meta.agentPreset = preset
+    if (presetId !== undefined) meta.agentPreset = presetId
     const selectionRef = selection !== undefined
       ? { current: selection, assembled: undefined }
       : undefined
@@ -1107,11 +1135,12 @@ export class ChatBridge {
             agentOptions.provider = selection.provider
             agentOptions.model = selection.model
           }
+          const recordedPreset = await this.recordedPresetFor(makeSessionId(sessionId))
           const handle = await this.deps.agents.resume({
             resumeSessionId: makeSessionId(sessionId),
             agentOptions,
             setup: async agentCtx => {
-              await this.joinPreset(agentCtx)
+              await this.joinPreset(agentCtx, recordedPreset)
               if (selectionRef !== undefined) {
                 installModelSelection(agentCtx, selectionRef)
               }
@@ -1271,20 +1300,63 @@ export class ChatBridge {
   }
 
   /**
+   * The preset id a NEW session records and joins: the configured id when set,
+   * else the deployment default — the same resolution the Web surface applies,
+   * so cross-channel sessions carry the same header fact. A roster that cannot
+   * resolve the effective id leaves the header bare and the session uncomposed,
+   * exactly like a failed mount.
+   */
+  private async resolvePresetId(): Promise<string | undefined> {
+    const presets = this.deps.agentPresets
+    if (presets === undefined) return undefined
+    const configured = this.deps.config.agentPreset
+    const wanted = configured !== undefined && configured !== '' ? configured : presets.defaultId
+    try {
+      const preset = await presets.resolve(wanted)
+      return preset.id
+    } catch (error) {
+      this.deps.log('warn', 'agent preset resolve failed; session header records no preset: ' + (error instanceof Error ? error.message : String(error)))
+      return undefined
+    }
+  }
+
+  /**
+   * The preset id a persisted session recorded for itself (newest logged
+   * selection wins, else the creation header), or undefined when it recorded
+   * none or the record cannot be read — a legacy session resumes under the
+   * config/default, preserving its original behavior.
+   */
+  private async recordedPresetFor(sessionId: SessionId): Promise<string | undefined> {
+    const persistence = this.deps.sessionPersistence
+    if (persistence === undefined) return undefined
+    try {
+      const inspection = await persistence.inspect(sessionId)
+      return resolveRecordedPreset(inspection)
+    } catch (error) {
+      this.deps.log('warn', 'preset record read failed for ' + sessionId + ' (falling back to config/default): ' + (error instanceof Error ? error.message : String(error)))
+      return undefined
+    }
+  }
+
+  /**
    * Join the QQ agent to the configured agent preset (the deployment default
    * when unset) so its tools/prompt sections/skill catalog resolve against the
-   * preset composition instead of the empty global layer. Best-effort: a
+   * preset composition instead of the empty global layer. `preferred` — the
+   * preset the session itself recorded — overrides the config (its history was
+   * produced under that composition; replaying it differently would break the
+   * recorded tool calls); a conflicting config only logs. Best-effort: a
    * broken preset falls back to the previous behavior rather than failing the
    * chat.
    */
-  private async joinPreset(agentCtx: unknown): Promise<void> {
+  private async joinPreset(agentCtx: unknown, preferred?: string): Promise<void> {
     if (this.deps.agentPresets === undefined) return
+    const configured = this.deps.config.agentPreset
+    if (preferred !== undefined && configured !== undefined && configured !== '' && configured !== preferred) {
+      this.deps.log('warn', 'session records preset ' + preferred + ' but plugin config names ' + configured + '; resuming under the recorded preset')
+    }
+    const selected = preferred ?? (configured !== undefined && configured !== '' ? configured : undefined)
     try {
-      const configured = this.deps.config.agentPreset
-      const preset = await this.deps.agentPresets.mount(
-        agentCtx,
-        configured !== undefined && configured !== '' ? configured : undefined,
-      )
+      const preset = await this.deps.agentPresets.mount(agentCtx, selected)
       this.deps.log('debug', 'agent joined preset ' + preset.id)
     } catch (error) {
       this.deps.log('warn', 'agent preset mount failed (tools fall back to the global layer): ' + (error instanceof Error ? error.message : String(error)))

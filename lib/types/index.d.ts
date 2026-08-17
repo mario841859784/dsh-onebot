@@ -25,8 +25,26 @@ type Context = CordisContext & {
         saveSelection(next: ModelSelection): Promise<void>;
     };
     agentPresets: {
+        readonly defaultId: string;
+        resolve(id?: string): Promise<{
+            id: string;
+        }>;
         mount(agentCtx: unknown, id?: string): Promise<{
             id: string;
+        }>;
+    };
+    sessionPersistence: {
+        inspect(id: string): Promise<{
+            meta: {
+                agentPreset?: string;
+                cwd?: string;
+            };
+            events: readonly {
+                type?: string;
+                data?: {
+                    agentPreset?: string;
+                };
+            }[];
         }>;
     };
     workspaceRegistry: {

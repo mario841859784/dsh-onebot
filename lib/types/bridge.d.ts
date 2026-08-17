@@ -8,7 +8,7 @@
  * @module dsh-onebot/bridge
  */
 import type { AgentRegistry, ModelSelection } from '@deepseek-ai/dsh-agent';
-import type { SessionStore } from '@deepseek-ai/dsh-session';
+import type { SessionId, SessionStore } from '@deepseek-ai/dsh-session';
 import type { Context } from '@deepseek-ai/cordis';
 import type { OneBotConnection, OneBotEvent } from './connection.js';
 import { OneBotActionError, OneBotNotConnectedError } from './connection.js';
@@ -50,10 +50,42 @@ export interface BridgeConfig {
 }
 /** Agent-preset service (dsh-agent-presets): joins agents to a preset composition. */
 export interface AgentPresetsLike {
+    /** The preset id a new session gets when none is named (deployment default). */
+    readonly defaultId: string;
+    /** Resolve one preset by id (undefined = default); throws when no root supplies it. */
+    resolve(id?: string): Promise<{
+        id: string;
+    }>;
     mount(agentCtx: unknown, id?: string): Promise<{
         id: string;
     }>;
 }
+/** Durable session persistence (dsh-session-persistence): cold-read what a session recorded. */
+export interface SessionPersistenceLike {
+    inspect(id: SessionId, signal?: AbortSignal): Promise<{
+        meta: {
+            agentPreset?: string;
+        };
+        events: readonly {
+            type?: string;
+            data?: {
+                agentPreset?: string;
+            };
+        }[];
+    }>;
+}
+/** The preset id a session's own record names: newest logged selection, else the creation header. */
+export declare function resolveRecordedPreset(inspection: {
+    meta: {
+        agentPreset?: string;
+    };
+    events: readonly {
+        type?: string;
+        data?: {
+            agentPreset?: string;
+        };
+    }[];
+}): string | undefined;
 /** Workspace registry (dsh-workspace): durable workspace membership. */
 export interface WorkspaceLike {
     id: string;
@@ -81,6 +113,8 @@ export interface BridgeDeps {
     agents: AgentRegistry;
     sessions: SessionStore;
     agentPresets: AgentPresetsLike;
+    /** Durable persistence for cold-reading a session's recorded preset; absent = config/default fallback. */
+    sessionPersistence: SessionPersistenceLike | undefined;
     workspaceRegistry: WorkspaceRegistryLike;
     agentDefaultModel: AgentDefaultModelLike | undefined;
     defaultModel: (() => ModelSelection | undefined) | undefined;
@@ -255,9 +289,27 @@ export declare class ChatBridge {
      */
     private effectiveCwd;
     /**
+     * The preset id a NEW session records and joins: the configured id when set,
+     * else the deployment default — the same resolution the Web surface applies,
+     * so cross-channel sessions carry the same header fact. A roster that cannot
+     * resolve the effective id leaves the header bare and the session uncomposed,
+     * exactly like a failed mount.
+     */
+    private resolvePresetId;
+    /**
+     * The preset id a persisted session recorded for itself (newest logged
+     * selection wins, else the creation header), or undefined when it recorded
+     * none or the record cannot be read — a legacy session resumes under the
+     * config/default, preserving its original behavior.
+     */
+    private recordedPresetFor;
+    /**
      * Join the QQ agent to the configured agent preset (the deployment default
      * when unset) so its tools/prompt sections/skill catalog resolve against the
-     * preset composition instead of the empty global layer. Best-effort: a
+     * preset composition instead of the empty global layer. `preferred` — the
+     * preset the session itself recorded — overrides the config (its history was
+     * produced under that composition; replaying it differently would break the
+     * recorded tool calls); a conflicting config only logs. Best-effort: a
      * broken preset falls back to the previous behavior rather than failing the
      * chat.
      */

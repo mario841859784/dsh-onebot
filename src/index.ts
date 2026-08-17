@@ -35,7 +35,15 @@ type Context = CordisContext & {
   sessions: SessionStore
   agentDefaultModel: { currentSelection(): ModelSelection | undefined; saveSelection(next: ModelSelection): Promise<void> }
   agentPresets: {
+    readonly defaultId: string
+    resolve(id?: string): Promise<{ id: string }>
     mount(agentCtx: unknown, id?: string): Promise<{ id: string }>
+  }
+  sessionPersistence: {
+    inspect(id: string): Promise<{
+      meta: { agentPreset?: string; cwd?: string }
+      events: readonly { type?: string; data?: { agentPreset?: string } }[]
+    }>
   }
   workspaceRegistry: {
     resolveByPath(path: string): Promise<{ id: string; path: string; sessionIds: readonly string[]; attachSession(sessionId: string): Promise<void> } | undefined>
@@ -45,7 +53,7 @@ type Context = CordisContext & {
 }
 
 export const name = 'dsh-onebot'
-export const inject = ['tools', 'systemPrompt', 'agents', 'sessions', 'agentDefaultModel', 'agentPresets', 'workspaceRegistry']
+export const inject = ['tools', 'systemPrompt', 'agents', 'sessions', 'agentDefaultModel', 'agentPresets', 'sessionPersistence', 'workspaceRegistry']
 
 /** Plugin configuration (validated by schemastery). */
 export interface Config {
@@ -169,7 +177,7 @@ export const Config: z<Config> = z.object({
   fontFamilies: z.array(z.string()).default([])
     .description('t2i 渲染器优先使用的字体家族名（覆盖平台默认）'),
   agentPreset: z.string().default('')
-    .description('QQ 会话加入的 agent 预设 id；留空用部署默认（当前为 standard，提供 bash/fs/subagent 等全部工具；minimal 仅持久 bash + str_replace_editor）'),
+    .description('QQ 会话加入的 agent 预设 id；留空用部署默认（settings 的 agent-presets.default，当前为 router-flash）。创建时总是解析有效预设并写入会话 header，Web 界面可见；resume 优先恢复会话自己记录的预设'),
   workspacePath: z.string().default('')
     .description('QQ 会话的工作区目录（写入会话 cwd，并自动归入该工作区，不存在则创建）；留空用宿主进程 cwd'),
   maxInboundFileBytes: z.number().default(20 * 1024 * 1024)
@@ -231,6 +239,7 @@ export function apply(ctx: Context, config: Config): void {
     agents: ctx.agents,
     sessions: ctx.sessions,
     agentPresets: ctx.agentPresets,
+    sessionPersistence: ctx.sessionPersistence,
     workspaceRegistry: ctx.workspaceRegistry as unknown as WorkspaceRegistryLike,
     agentDefaultModel: ctx.agentDefaultModel,
     defaultModel: () => {
