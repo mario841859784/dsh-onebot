@@ -86,6 +86,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 |---|---|
 | 晚 | **Web 上不显示 QQ 会话的 preset（用户提问）**：查证 Web 会话标题旁 preset 标签（AgentPresetLabel）只渲染 session summary 里的 agentPreset 值，该值来自会话 header 的 agentPreset 字段；Web 创建路径（api-proxy sessions.create）总是 resolve 默认/指定 preset 写入 header，而 onebot 创建路径只在插件配置 agentPreset 非空时写入（默认空）→ 该会话 header 无记录、Web 无从显示（会话实际仍按默认 router-flash 组装）。诊断详见 §3.15 |
 | 晚 | **补齐字段与行为**：`ensureChat` 改为总是 `resolvePresetId()`（配置非空用配置，否则部署默认 defaultId）并写入 `meta.agentPreset`——新会话 header 固定记录有效 preset id，Web 标签可见；`loadMapping` resume 改为先 `sessionPersistence.inspect` 读会话自己记录的 preset（最新 `agent-preset/selected` 事件优先，否则 header），有记录时以记录为准并在与插件配置冲突时 warn（防配置变更致老会话组装漂移）；新增 `resolveRecordedPreset` 纯函数与 `resolvePresetId`/`recordedPresetFor`；Config 文案修正（原写「当前为 standard」，实际部署默认 router-flash）；inject 增加 `sessionPersistence`。存量会话 header 无记录 → resume 回落配置/默认，行为不变（不做迁移）。105/105 全过（新增 3 测试），构建上线，详见 §3.15 |
+| 晚 | **宿主升级 dsh rc.6→rc.7（用户要求先做冲突检测）**：逐行对比 rc.6/rc.7 的 12 个运行时包 + bundle 组成 + 存储格式，结论：依赖无增删、8 个核心包零差异、base/web-app 组合逐行一致、SESSION_FORMAT_VERSION 仍 0、preset 相关 API 全兼容 → 无冲突。升级执行中发现 **link-host.sh 解析 bug**：`resolve_dsh_root` 在 nvm 全局布局（bin 在 <node>/bin、包在 @deepseek-ai/dsh/node_modules 内嵌）下先命中 `~/.npm/_npx/*/node_modules` 残留 store，把插件链到 npx store 副本（dual-package 隐患）→ 修复：bin 祖先循环增加 `lib/node_modules/@deepseek-ai/dsh/node_modules` 检测优先于 npx store。升级 + 重链 + launchd 重启（kill 主进程 → ai.dsh.web KeepAlive 自动拉起）后验证：bridge ready (1 resumed)、agent joined preset router-flash、heartbeat 恢复、bin --version = 0.1.0-rc.7，详见 §3.16 |
 
 ---
 
@@ -203,6 +204,12 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
   - 依赖：inject 增加 `sessionPersistence`（base bundle 已挂 session-persistence-jsonl，`ctx.sessionPersistence`）
   - Config 文案修正：agentPreset 描述原写「当前为 standard」，实际部署默认 router-flash
 - **验证**：105/105 vitest 全绿。新增 3 例：配置留空 → header 记录默认 router-flash 且 mount 走默认；resume 读记录 preset 覆盖冲突配置（mount 收到 router-flash、warn 冲突）；resolveRecordedPreset 纯函数（log 最新优先/header 兜底/无记录 undefined）。更新 1 例：配置 preset 的创建断言 header 记录该 id。构建上线（生产热加载验证中）
+
+### 3.16 link-host 在 nvm 全局布局下链到 npx store 副本（2026-08-17，已修复）
+- **症状**：dsh 升级到 rc.7 后重跑 link-host.sh，插件 node_modules/@deepseek-ai/* 被链到 `~/.npm/_npx/dsh-onebot/node_modules/@deepseek-ai/*`（一个历史 npx store 残留），而非宿主进程实际加载的全局安装（`<nvm>/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai`）
+- **根因**：`resolve_dsh_root` 第一路按 bin 祖先找 `node_modules/@deepseek-ai`——nvm 全局布局下 bin 在 `<node>/bin`、包在 `lib/node_modules/@deepseek-ai/dsh/node_modules` 内嵌，祖先循环命中不了；于是落入第二路 npx store 扫描，先到先得（store 是旧的都可能）。**宿主进程用全局副本、插件用 npx store 副本 = 同一版本号的物理两份实例**（dual-package hazard：brand Symbol/instanceof 可能断裂）
+- **修复**：bin 祖先循环增加 `$dir/lib/node_modules/@deepseek-ai/dsh/node_modules` 检测（存在即优先返回，脚本调用处再拼 `/@deepseek-ai/<pkg>`），npx store 仅作最后回退。幂等重跑验证：链接目标变为 `<nvm>/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-agent`，tsc 零错误、23/23 bridge 测试过（rc.7 类型）
+- **升级联动**：npm 全局装 rc.7 → link-host 修复重链 → kill 主进程由 launchd ai.dsh.web KeepAlive 自动拉起 → 日志确认 bridge ready (1 resumed)、agent joined preset router-flash、heartbeat 恢复、bin --version = 0.1.0-rc.7
 
 ---
 ## 4. 功能清单（当前状态）

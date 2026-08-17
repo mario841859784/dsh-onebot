@@ -9,8 +9,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-# Locate the dsh install's node_modules root: via the dsh binary on PATH,
-# else via the npm/npx store pattern (works in restricted shells).
+# Locate the dsh install's node_modules root: via the dsh binary on PATH
+# (including the npm/nvm global layout where packages live under the bin's
+# `lib/node_modules` ancestor), else via the npm/npx store pattern (works in
+# restricted shells). The FIRST resolution keeps the plugin on the SAME module
+# instances the host process loads — a npx-store copy would be a second,
+# physically distinct copy of the same version (dual-package hazard).
 resolve_dsh_root() {
   local bin=""
   if command -v dsh >/dev/null 2>&1; then
@@ -22,6 +26,16 @@ resolve_dsh_root() {
     while [ "$dir" != "/" ]; do
       if [ -d "$dir/node_modules/@deepseek-ai" ]; then
         echo "$dir/node_modules"
+        return 0
+      fi
+      # npm/nvm global: the bin sits in <node>/bin and the packages live
+      # INSIDE @deepseek-ai/dsh/node_modules — the location the host process
+      # actually loads its services from. The plain lib/node_modules/@deepseek-ai
+      # ancestor holds only the dsh package itself, so descend into the dsh
+      # install's own dependency tree (the caller appends /@deepseek-ai/<pkg>).
+      local global_dsh="$dir/lib/node_modules/@deepseek-ai/dsh/node_modules"
+      if [ -d "$global_dsh/@deepseek-ai" ]; then
+        echo "$global_dsh"
         return 0
       fi
       dir=$(dirname "$dir")
