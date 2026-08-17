@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
+import { mkdir, readFile, readdir, realpathSync, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -1137,6 +1138,182 @@ describe('ChatBridge', () => {
     expect(resolveRecordedPreset({ meta: { agentPreset: 'standard' }, events })).toBe('router-flash')
     expect(resolveRecordedPreset({ meta: { agentPreset: 'standard' }, events: [] })).toBe('standard')
     expect(resolveRecordedPreset({ meta: {}, events: [] })).toBeUndefined()
+  })
+
+  it('ensureChat avoids a bare id that still owns a persisted log (stale retiring lost)', async () => {
+    const ctx = new Context()
+    const sessionIds: string[] = []
+    const captured = {
+      followups: [] as Array<{ text: string; sessionId: string }>,
+      createdMeta: [] as Array<{ cwd?: string; agentPreset?: string }>,
+    }
+    const agents = makeFakeAgents(sessionIds, captured)
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
+    const inspect = vi.fn(async (id: string) => {
+      if (id === 'onebot-private-10001') return { meta: {}, events: [] }
+      throw new Error('no such session')
+    })
+    const agentPresets = {
+      defaultId: 'router-flash',
+      resolve: vi.fn(async (id?: string) => ({ id: id ?? 'router-flash' })),
+      mount: vi.fn(async (_agentCtx: unknown, id?: string) => ({ id: id ?? 'router-flash' })),
+    }
+    const bridge = new ChatBridge({
+      ctx,
+      connection: new OneBotConnection({
+        mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      }),
+      media: new MediaStore(join(mediaDir, 'media'), 6),
+      transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
+      agents: agents as never,
+      sessions: { flush: vi.fn(async () => undefined) } as never,
+      agentPresets: agentPresets as never,
+      sessionPersistence: { inspect } as never,
+      workspaceRegistry: {
+        resolveByPath: vi.fn(async () => undefined),
+        create: vi.fn(async () => ({ attachSession: vi.fn(async () => undefined) })),
+      } as never,
+      defaultModel: undefined,
+      config: {
+        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
+        sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
+        maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
+        textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
+        agentPreset: '', workspacePath: mediaDir,
+      },
+      policy: {
+        dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
+        adminUsers: ['10001'], allowAllUsers: false, requireMention: true,
+      },
+      log: () => undefined,
+    })
+    await (bridge as unknown as { ensureChat(chatId: string, nickname: string): Promise<unknown> })
+      .ensureChat('private:10001', '小明')
+    // The bare id owns a stale log: the chat must NOT reuse it — it retires
+    // the bare id and creates on a suffixed id instead of failing later.
+    expect(inspect).toHaveBeenCalled()
+    expect(sessionIds[0]).toMatch(/^onebot-private-10001-[a-z0-9]+$/)
+    expect(sessionIds[0]).not.toBe('onebot-private-10001')
+    const retired = (bridge as unknown as { retiredSessionIds: string[] }).retiredSessionIds
+    expect(retired).toContain('onebot-private-10001')
+    await bridge.stop()
+  })
+
+  it('resetChat retires the bare derived id alongside the current session id', async () => {
+    const ctx = new Context()
+    const sessionIds: string[] = []
+    const captured = { followups: [] as Array<{ text: string; sessionId: string }> }
+    const agents = makeFakeAgents(sessionIds, captured)
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
+    const bridge = new ChatBridge({
+      ctx,
+      connection: new OneBotConnection({
+        mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      }),
+      media: new MediaStore(join(mediaDir, 'media'), 6),
+      transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
+      agents: agents as never,
+      sessions: { flush: vi.fn(async () => undefined) } as never,
+      agentPresets: {
+        defaultId: 'router-flash',
+        resolve: vi.fn(async (id?: string) => ({ id: id ?? 'router-flash' })),
+        mount: vi.fn(async (_agentCtx: unknown, id?: string) => ({ id: id ?? 'router-flash' })),
+      } as never,
+      sessionPersistence: {
+        inspect: vi.fn(async () => { throw new Error('no such session') }),
+      } as never,
+      workspaceRegistry: {
+        resolveByPath: vi.fn(async () => undefined),
+        create: vi.fn(async () => ({ attachSession: vi.fn(async () => undefined) })),
+      } as never,
+      defaultModel: undefined,
+      config: {
+        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
+        sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
+        maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
+        textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
+        agentPreset: '', workspacePath: mediaDir,
+      },
+      policy: {
+        dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
+        adminUsers: ['10001'], allowAllUsers: false, requireMention: true,
+      },
+      log: () => undefined,
+    })
+    const chat = await (bridge as unknown as { ensureChat(chatId: string, nickname: string): Promise<unknown> })
+      .ensureChat('private:10001', '小明')
+    // First session of the chat: no stale log, so it legitimately uses the
+    // bare id. /new then retires the bare id as well, so any restart cannot
+    // rebuild it on a colliding id.
+    expect(String((chat as { sessionId: string }).sessionId)).toBe('onebot-private-10001')
+    await (bridge as unknown as { resetChat(chatId: string): Promise<void> }).resetChat('private:10001')
+    const retired = (bridge as unknown as { retiredSessionIds: string[] }).retiredSessionIds
+    expect(retired).toContain('onebot-private-10001')
+    await bridge.stop()
+  })
+
+  it('loadRetired keeps the current set on a corrupt file and saves atomically', async () => {
+    await vi.waitFor(() => expect(1).toBe(1))
+    const ctx = new Context()
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
+    await mkdir(mediaDir, { recursive: true })
+    await writeFile(join(mediaDir, 'retired-sessions.json'), '{not json', 'utf8')
+    const logLines: string[] = []
+    const bridge = new ChatBridge({
+      ctx,
+      connection: new OneBotConnection({
+        mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      }),
+      media: new MediaStore(join(mediaDir, 'media'), 6),
+      transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
+      agents: { create: vi.fn(), resume: vi.fn() } as never,
+      sessions: { flush: vi.fn() } as never,
+      agentPresets: undefined as never,
+      sessionPersistence: undefined,
+      workspaceRegistry: undefined as never,
+      defaultModel: undefined,
+      config: {
+        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
+        sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
+        maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
+        textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
+        agentPreset: '', workspacePath: mediaDir,
+      },
+      policy: {
+        dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
+        adminUsers: ['10001'], allowAllUsers: false, requireMention: true,
+      },
+      log: (level, message) => { logLines.push(level + ': ' + message) },
+    })
+    await (bridge as unknown as { loadRetired(): Promise<void> }).loadRetired()
+    const logLinesSnapshot = [...logLines]
+    const retiredIds = (bridge as unknown as { retiredSessionIds: string[] }).retiredSessionIds
+    const retiredSnapshot = [...retiredIds]
+    // Corrupt JSON must NOT be treated as an empty retired set (the 2026-08-17
+    // regression): the load warns, keeps the in-memory array, and later saves
+    // atomically (temp + rename, no half-written file).
+    // (Assertions run inside waitFor: vitest 3.2.7's matcher state is only
+    // reliably re-bound inside its polling/async callbacks.)
+    await vi.waitFor(() => {
+      expect(logLinesSnapshot.some(line => line.startsWith('warn') && line.includes('unparsable'))).toBe(true)
+      expect(JSON.stringify(retiredSnapshot)).toBe('[]')
+    })
+    // Atomic save: retire one id, then the file holds exactly it and no .tmp.
+    // (Leading `;` guards against ASI joining this `(bridge...)` line onto the
+    // waitFor statement above — the result would be waitFor(cb)(...) called.)
+    ;(bridge as unknown as { retireSession(id: string): void }).retireSession('onebot-private-10001')
+    await vi.waitFor(async () => {
+      const content = await readFile(join(mediaDir, 'retired-sessions.json'), 'utf8')
+      expect(content).toContain('onebot-private-10001')
+    })
+    const files = await readdir(mediaDir)
+    await vi.waitFor(() => {
+      expect(files.some(f => f.endsWith('.tmp'))).toBe(false)
+    })
+    await bridge.stop()
   })
 
   it('does not auto-create a workspace for a session whose cwd differs from workspacePath', async () => {

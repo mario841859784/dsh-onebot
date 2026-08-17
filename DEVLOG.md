@@ -211,6 +211,22 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 - **修复**：bin 祖先循环增加 `$dir/lib/node_modules/@deepseek-ai/dsh/node_modules` 检测（存在即优先返回，脚本调用处再拼 `/@deepseek-ai/<pkg>`），npx store 仅作最后回退。幂等重跑验证：链接目标变为 `<nvm>/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-agent`，tsc 零错误、23/23 bridge 测试过（rc.7 类型）
 - **升级联动**：npm 全局装 rc.7 → link-host 修复重链 → kill 主进程由 launchd ai.dsh.web KeepAlive 自动拉起 → 日志确认 bridge ready (1 resumed)、agent joined preset router-flash、heartbeat 恢复、bin --version = 0.1.0-rc.7
 
+### 3.17 /new 后 id collision 复发：裸 id 永久退休 + retired 三条防线加固（2026-08-18，已修复）
+- **症状**：§3.14 修复上线后仍复发——`/new` 后新会话创建在**裸 id**（`onebot-private-841859784`）上，下一条消息 `turn/end: error`（`session flush failed: ... id collision`），heal 后需再补发一条才恢复，跟 §3.14 一模一样
+- **现场还原**（日志 3239-3421 行 + 磁盘证据链）：
+  1. 裸 id 的磁盘日志 `~/.dsh/sessions/--Users-mario--/onebot-private-841859784/session.jsonl.zstd` 从 8/16 起就是**存量残留**，这个 id 必须永久退休
+  2. **防线①(loadRetired) 失效**：8/17 22:40 重启段（日志 `mounted` 到 `bridge ready` 之间）**没有** `retired-sessions file has N id(s)` debug 行（更早启动有「4 id(s)」）→ `loadRetired()` 读取 retired-sessions.json 失败被 `catch{}` 静默吞掉（把一切错误当「首次启动」）→ 内存 `retiredSessionIds` 变空
+  3. **防线②(saveRetired) 非原子 + 覆盖丢史**：22:54 用户 `/new` → `resetChat` 只用内存数组 retire 当前会话 id（`-msx93frw`）并 `saveRetired()` **用空数组覆盖文件** → 4 个历史 retired id 全部丢失（文件 4→1）
+  4. 22:56 用户发消息 → `ensureChat` 用回裸 id → 持久层抛 id collision → turn/end error → 报错 + `healSessionCollision` 补 retire 裸 id（文件 1→2，mtime 22:56:22 与报错同刻）
+- **缺陷本质**：三条防线各自都不可靠——load 静默吞错 / save 非原子会以空数组覆盖历史 / `/new` 与自愈都不 retire 裸 id；§3.14 只堵了「重启后裸 id 被复用」却没堵「本次运行内 /new 就用裸 id」
+- **修复**（src/bridge.ts）：
+  - **`/new` 与自愈 retire 裸 id**：`resetChat()`、`healSessionCollision()` 在 retire 当前会话 id 之外追加 `retireSession(sessionIdForChat(chatId))` —— 裸 id 一旦要被替换，其磁盘日志永远与新会话冲突，必须永久禁（本次 bug 的直接根治）
+  - **`loadRetired()` 区分真·首次 vs 真·错误**：仅 `ENOENT` 静默（真·fresh start）；文件读出失败/JSON 损坏/非数组一律 `log('warn', ...)` 并**保持内存+磁盘数组不动**——绝不静默后由下一次 `saveRetired` 用空数组覆盖
+  - **`saveRetired()` 原子写**：写 `retired-sessions.json.tmp` 后 `rename` 覆盖，防半截文件/并发写坏（配合上一条：文件要么完整要么不存在）
+  - **`ensureChat()` 创建前探测残余日志（最终兜底）**：新增 `hasPersistedLog(id)`（用注入的 `sessionPersistence.inspect(id)` 试读：成功=true、抛错=false）；裸 id 未被 blocked 时先探测，有残留日志 → `retireSession(bareId)` 再走 `freshSessionId` —— 即使 retired 文件被清空也绝不再撞盘
+- **验证**：tsc 零错误；vitest 108/108 全绿（26 例 bridge）。新增 3 例：mapping 空 + 裸 id 磁盘有日志 → ensureChat 用带时间戳后缀新 id 且裸 id 落入 retired 集；resetChat 后 retiredSessionIds 同时含裸 id 与当前会话 id；loadRetired 遇损坏 JSON → warn 且不覆盖既有内存数组 + save 原子落盘（无 .tmp 残留）。另修测试自身一个 ASI 陷阱（`await vi.waitFor(...)` 后接 `(bridge...)` 行被吞进前一表达式报 `vi.waitFor(...) is not a function`，加前置 `;`）
+- **不做**：存量裸 id 磁盘日志不迁移/清理（用户此前决策「存量不迁移」；裸 id 靠 continue 退休永久避开）；不动宿主 dsh（本次为 onebot 插件缺陷）
+
 ---
 ## 4. 功能清单（当前状态）
 

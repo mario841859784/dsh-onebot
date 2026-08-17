@@ -273,6 +273,11 @@ export declare class ChatBridge {
     /** Permanently retire a session id: in-memory plus durable on-disk record,
      * so a restart never reuses an id whose log collides with a fresh session. */
     private retireSession;
+    /** Whether the persistence layer already owns a durable log for this id —
+     * true means reusing the id would collide (stale on-disk log or live entry).
+     * A read failure counts as no log so the caller falls back to the normal
+     * path rather than blocking an id on a transient error. */
+    private hasPersistedLog;
     private retiredPath;
     private loadRetired;
     private saveRetired;

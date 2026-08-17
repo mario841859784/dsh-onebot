@@ -14,6 +14,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionId, SessionStore } from '@deepseek-ai/dsh-session'
 import { SessionId as makeSessionId } from '@deepseek-ai/dsh-session'
 import type { Context } from '@deepseek-ai/cordis'
+import { mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises'
 
 import type { OneBotConnection, OneBotEvent } from './connection.js'
 import { OneBotActionError, OneBotNotConnectedError } from './connection.js'
@@ -588,7 +589,6 @@ export class ChatBridge {
       return
     }
     try {
-      const { realpath, stat } = await import('node:fs/promises')
       const path = await realpath(arg)
       const s = await stat(path)
       if (!s.isDirectory()) {
@@ -783,7 +783,6 @@ export class ChatBridge {
   /** Write bytes into the local media dir; returns the path or ''. */
   private async writeMediaFile(buffer: Buffer, safeName: string): Promise<string> {
     try {
-      const { writeFile, mkdir } = await import('node:fs/promises')
       await mkdir(this.deps.config.mediaDir, { recursive: true })
       const localPath = this.deps.config.mediaDir.endsWith('/')
         ? this.deps.config.mediaDir + safeName
@@ -1044,6 +1043,12 @@ export class ChatBridge {
     let sessionId = makeSessionId(sessionIdForChat(chatId))
     if (this.isSessionIdBlocked(sessionId)) {
       sessionId = this.freshSessionId(chatId)
+    } else if (await this.hasPersistedLog(sessionId)) {
+      // The bare id still owns a stale on-disk log (e.g. the retired record
+      // was lost in an earlier crash): reusing it would collide, so retire it
+      // NOW and move to a suffixed id instead of failing the chat later.
+      this.retireSession(sessionId)
+      sessionId = this.freshSessionId(chatId)
     }
     const selection = this.deps.defaultModel?.()
     const agentOptions: { provider?: string; model?: string } = {}
@@ -1118,7 +1123,6 @@ export class ChatBridge {
   /** Resume persisted chats from the mapping file (best-effort). */
   private async loadMapping(): Promise<void> {
     try {
-      const { readFile } = await import('node:fs/promises')
       const content = await readFile(this.mappingPath(), 'utf8')
       const mapping = JSON.parse(content) as Record<string, string>
       this.deps.log('debug', 'mapping file has ' + Object.keys(mapping).length + ' chat(s)')
@@ -1183,7 +1187,6 @@ export class ChatBridge {
 
   private async saveMapping(): Promise<void> {
     try {
-      const { mkdir, writeFile } = await import('node:fs/promises')
       await mkdir(this.deps.config.mediaDir, { recursive: true })
       const mapping: Record<string, string> = {}
       for (const chat of this.chats.values()) {
@@ -1229,6 +1232,21 @@ export class ChatBridge {
     void this.saveRetired()
   }
 
+  /** Whether the persistence layer already owns a durable log for this id —
+   * true means reusing the id would collide (stale on-disk log or live entry).
+   * A read failure counts as no log so the caller falls back to the normal
+   * path rather than blocking an id on a transient error. */
+  private async hasPersistedLog(id: SessionId): Promise<boolean> {
+    const persistence = this.deps.sessionPersistence
+    if (persistence === undefined) return false
+    try {
+      await persistence.inspect(id)
+      return true
+    } catch {
+      return false
+    }
+  }
+
   private retiredPath(): string {
     return this.deps.config.mediaDir.endsWith('/') || this.deps.config.mediaDir.endsWith('\\')
       ? this.deps.config.mediaDir + RETIRED_FILE
@@ -1236,9 +1254,21 @@ export class ChatBridge {
   }
 
   private async loadRetired(): Promise<void> {
+    let content: string
     try {
-      const { readFile } = await import('node:fs/promises')
-      const content = await readFile(this.retiredPath(), 'utf8')
+      content = await readFile(this.retiredPath(), 'utf8')
+    } catch (error) {
+      // Only a missing file means "fresh start". ANY other read failure must
+      // not be treated as an empty retired set — a later saveRetired() would
+      // then OVERWRITE the on-disk record with nothing, silently dropping
+      // every retired id (exactly the 2026-08-17 regression: the bare id
+      // lost its retire record and /new collided on the stale log).
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        this.deps.log('warn', 'retired-sessions read failed; keeping the current set: ' + (error instanceof Error ? error.message : String(error)))
+      }
+      return
+    }
+    try {
       const parsed = JSON.parse(content) as unknown
       if (Array.isArray(parsed)) {
         this.retiredSessionIds = parsed.filter((id): id is string => typeof id === 'string')
@@ -1247,16 +1277,21 @@ export class ChatBridge {
       } else {
         this.deps.log('warn', 'retired-sessions file is not a JSON array; ignoring')
       }
-    } catch {
-      // No retired file yet — fresh start.
+    } catch (error) {
+      // Corrupt JSON: keep the current in-memory set (never replace it with
+      // an empty array) and warn so a future save does not obliterate history.
+      this.deps.log('warn', 'retired-sessions file is unparsable; keeping the current set: ' + (error instanceof Error ? error.message : String(error)))
     }
   }
 
   private async saveRetired(): Promise<void> {
     try {
-      const { mkdir, writeFile } = await import('node:fs/promises')
       await mkdir(this.deps.config.mediaDir, { recursive: true })
-      await writeFile(this.retiredPath(), JSON.stringify(this.retiredSessionIds, null, 2), 'utf8')
+      // Atomic write: a temp file + rename never leaves a half-written file
+      // that a concurrent/future loadRetired could parse into a broken empty set.
+      const tmpPath = this.retiredPath() + '.tmp'
+      await writeFile(tmpPath, JSON.stringify(this.retiredSessionIds, null, 2), 'utf8')
+      await rename(tmpPath, this.retiredPath())
     } catch (error) {
       this.deps.log('warn', 'retired-sessions save failed: ' + (error instanceof Error ? error.message : String(error)))
     }
@@ -1271,6 +1306,9 @@ export class ChatBridge {
     const chat = this.chats.get(chatId)
     if (chat === undefined) return
     this.retireSession(chat.sessionId)
+    // The bare derived id shares the chat's stale log; retire it too so the
+    // next ensureChat can never pick it again in this run OR after a restart.
+    this.retireSession(sessionIdForChat(chatId))
     this.chats.delete(chatId)
     this.bySession.delete(chat.sessionId)
     this.stopTyping(chat)
@@ -1412,6 +1450,11 @@ export class ChatBridge {
     if (chat !== undefined) {
       this.stopTyping(chat)
       this.retireSession(chat.sessionId)
+      // The bare derived id is forever unsafe for this chat once its history
+      // has moved to a suffixed id: its on-disk log (if any) would collide
+      // with any future bare-id session. Retire it up front so a /new after a
+      // restart — when only the retired file protects us — stays safe.
+      this.retireSession(sessionIdForChat(chatId))
       this.chats.delete(chatId)
       this.bySession.delete(chat.sessionId)
       try {
