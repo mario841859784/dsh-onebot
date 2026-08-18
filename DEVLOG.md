@@ -248,7 +248,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
   - **方案 B（workspace 回填）**：`loadMapping` resume 成功后，若 `handle.agent.session.header?.cwd` 非空且 != `effectiveCwd()` 默认，回填 `chatWorkspacePaths.set(chatId, header.cwd)`。重启后该 chat 的 /workspace 显示原目录、/new 新会话也用回原目录；cwd==默认的旧 chat 不产生多余覆盖。不动 mapping 结构、无迁移
   - **计划/提问中继**：`onSessionEvent` 的 assistant/message 分支，dedupe 之后、`text === ''` 早返回之前调用 `relayHostCards`——扫描 content 的 tool-call 块：`exit_plan_mode` → renderPlanCard（「【📋 计划书】…plan 全文」）、`ask_user_question` → renderQuestionCard（编号问题 + 选项 + 多选标注），走 sendToChat 出站管线（自动分段/t2i）。independent of interim 模式；沿用 lastHandledMessageId 去重；arguments 解析失败降级静默。边界：QQ 回复暂不能操作宿主 plan-review/option 确认（宿主平面，不动宿主），只保证用户能获知内容
 - **验证**：tsc 零错误；vitest 115/115 全绿（33 例 bridge，+2：resume 非默认 cwd → 覆盖回填 + cwd==默认 → 无覆盖；计划书/提问中继内容 + 同 id 连续重发去重）。测试注意：dedupe 只记「最近一次」message id，重发必须紧跟原发、中间不能插新 id
-- **待上线**：构建 lib → kill 由 launchd 拉起 → 真机：重启后 /workspace 是否记住 + 一次真实计划书/提问看 QQ 是否收到中继
+- **真机（已上线验证）**：中继生效——ask_user_question 提问以 **t2i 卡片**到达 QQ、可 QQ 直接作答，且 QQ 作答能解析上游 ask_user_question（工具调用返回了 QQ 文本答案，对话不卡死）。**已知限制**：Web 端提问/计划卡视觉上不自动清除——宿主平面 UI（ctx.userQuestions），onebot 不动宿主无法处理，仅保证 QQ 端可获知+可作答。`/workspace` 跨重启真机：当前 chat 为默认 cwd 不触发回填（符合设计），需用户 /workspace 切非默认目录后重启实测
 
 ---
 ## 4. 功能清单（当前状态）
