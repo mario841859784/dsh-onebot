@@ -76,6 +76,8 @@ export interface Config {
   allowAllUsers: boolean
   ignoreSelf: boolean
   interimMessages: boolean
+  /** Per-interim auto-recall delay (ms) from each interim's send completion. */
+  interimRecallMs: number
   sendErrorNotice: boolean
   restrictedMemberPrefix: boolean
   sensitivePatterns: string[]
@@ -145,7 +147,9 @@ export const Config: z<Config> = z.object({
   ignoreSelf: z.boolean().default(true)
     .description('忽略机器人自己发出的消息（防自循环）'),
   interimMessages: z.boolean().default(true)
-    .description('是否把模型每步（含工具调用之间的中间回复）的文本立即发出；false 则只发最终回复'),
+    .description('是否把模型每步（含工具调用之间的中间回复）的文本立即发出；false 则只发最终回复。true 时：中间消息实时可见、每条在 interimRecallMs 后自动单独撤回、回合结束先发一张整轮 t2i 小结卡再发最终回复'),
+  interimRecallMs: z.number().default(90_000)
+    .description('中间消息各自发送完成后多久自动单独撤回（毫秒；QQ 撤回时限约 2 分钟，建议 ≤110000）'),
   sendErrorNotice: z.boolean().default(true)
     .description('一轮运行出错时向用户发送 ⚠️ 错误提示'),
   restrictedMemberPrefix: z.boolean().default(true)
@@ -265,6 +269,7 @@ export function apply(ctx: Context, config: Config): void {
       splitLength: config.splitLength,
       requireMention: config.requireMention,
       interimMessages: config.interimMessages,
+      interimRecallMs: config.interimRecallMs,
       sendErrorNotice: config.sendErrorNotice,
       restrictedMemberPrefix: config.restrictedMemberPrefix,
       sensitivePatterns: config.sensitivePatterns,

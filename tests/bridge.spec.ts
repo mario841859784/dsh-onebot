@@ -161,13 +161,14 @@ describe('ChatBridge', () => {
     const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
 
-    // Respond to every action so pending calls resolve.
+    // Respond to every action so pending calls resolve (unique message ids).
     const outbound: Array<Record<string, unknown>> = []
+    let nextId = 1
     client.on('message', data => {
       const frame = JSON.parse(data.toString()) as Record<string, unknown>
       outbound.push(frame)
       if (typeof frame.echo === 'string') {
-        client.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 7 }, echo: frame.echo }))
+        client.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: nextId++ }, echo: frame.echo }))
       }
     })
 
@@ -1412,13 +1413,14 @@ describe('ChatBridge', () => {
     const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
 
-    // Respond to every action so pending calls resolve.
+    // Respond to every action so pending calls resolve (unique message ids).
     const outbound: Array<Record<string, unknown>> = []
+    let nextId = 1
     client.on('message', data => {
       const frame = JSON.parse(data.toString()) as Record<string, unknown>
       outbound.push(frame)
       if (typeof frame.echo === 'string') {
-        client.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 7 }, echo: frame.echo }))
+        client.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: nextId++ }, echo: frame.echo }))
       }
     })
 
@@ -1452,31 +1454,27 @@ describe('ChatBridge', () => {
     })
     ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
 
-    // Settlement order on the chain: merged forward first, then the final
-    // text, then the originals recalled.
+    // Settlement: one t2i summary image card first (all interims), then the
+    // originals recalled immediately, then the final text. No merged-forward.
     await vi.waitFor(() => {
-      expect(outbound.filter(f => f.action === 'send_private_forward_msg')).toHaveLength(1)
+      expect(outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('"type":"image"'))).toBe(true)
     })
-    const fwd = outbound.find(f => f.action === 'send_private_forward_msg')!
-    const params = fwd.params as { messages: Array<{ data: { content: Array<{ data: { text: string } }> } }> }
-    expect(params.messages).toHaveLength(2)
-    expect(params.messages[0].data.content[0].data.text).toBe('第一步：先查资料')
-    expect(params.messages[1].data.content[0].data.text).toBe('第二步：找到了，开始总结')
-    const fwdIdx = outbound.findIndex(f => f.action === 'send_private_forward_msg')
+    const summaryIdx = outbound.findIndex(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('"type":"image"'))
 
-    // Final text delivered after the forward.
+    // Final text delivered after the summary card.
     await vi.waitFor(() => {
       expect(outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('第三步'))).toBe(true)
     })
     const finalIdx = outbound.findIndex(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('第三步'))
-    expect(finalIdx).toBeGreaterThan(fwdIdx)
+    expect(finalIdx).toBeGreaterThan(summaryIdx)
+    expect(outbound.some(f => f.action === 'send_private_forward_msg')).toBe(false)
 
-    // Originals recalled last, after the final text.
+    // Originals recalled immediately (after the summary card).
     await vi.waitFor(() => {
       expect(outbound.filter(f => f.action === 'delete_msg')).toHaveLength(2)
     })
     const delIdx = outbound.findIndex(f => f.action === 'delete_msg')
-    expect(delIdx).toBeGreaterThan(finalIdx)
+    expect(delIdx).toBeGreaterThan(summaryIdx)
 
     client.close()
     await bridge.stop()
@@ -1530,11 +1528,12 @@ describe('ChatBridge', () => {
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
 
     const outbound: Array<Record<string, unknown>> = []
+    let nextId = 1
     client.on('message', data => {
       const frame = JSON.parse(data.toString()) as Record<string, unknown>
       outbound.push(frame)
       if (typeof frame.echo === 'string') {
-        client.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 7 }, echo: frame.echo }))
+        client.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: nextId++ }, echo: frame.echo }))
       }
     })
 
@@ -1566,14 +1565,11 @@ describe('ChatBridge', () => {
       expect(outbound.filter(f => f.action === 'send_msg')).toHaveLength(2)
     })
     ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    // No merged forward: a t2i summary image plus immediate recalls instead.
     await vi.waitFor(() => {
-      expect(outbound.filter(f => f.action === 'send_private_forward_msg')).toHaveLength(1)
+      expect(outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('"type":"image"'))).toBe(true)
     })
-    const fwd = outbound.find(f => f.action === 'send_private_forward_msg')!
-    const params = fwd.params as { messages: Array<{ data: { content: Array<{ data: { text: string } }> } }> }
-    expect(params.messages).toHaveLength(2)
-    expect(params.messages[0].data.content[0].data.text).toBe('第一条：查资料')
-    expect(params.messages[1].data.content[0].data.text).toBe('第二条：总结')
+    expect(outbound.filter(f => f.action === 'send_private_forward_msg')).toHaveLength(0)
     await vi.waitFor(() => {
       expect(outbound.filter(f => f.action === 'delete_msg')).toHaveLength(2)
     })
@@ -1581,6 +1577,38 @@ describe('ChatBridge', () => {
     client.close()
     await bridge.stop()
     await connection.stop()
+  })
+
+  it('auto-recalls each interim individually after interimRecallMs even before turn/end', async () => {
+    const h = await makeCmdHarness({ interimRecallMs: 40 })
+    h.sendText('开始长任务')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const session = { id: h.sessionIds[0] }
+
+    // A tool-carrying interim is sent live immediately.
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 1, message: { role: 'assistant', id: 'im-1', content: [
+        { type: 'text', text: '第一步：查资料' },
+        { type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{}' },
+      ] },
+    }))
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('第一步'))).toBe(true)
+    })
+
+    // Its own 40ms timer recalls it while the turn is still running.
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'delete_msg')).toBe(true)
+    }, { timeout: 3000 })
+
+    // turn/end settles without throwing; the interim is already revoked.
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(h.outbound.filter(f => f.action === 'send_private_forward_msg')).toHaveLength(0)
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
   })
 
   it('leaves a single interim as-is: no merge, no recall', async () => {
@@ -1961,6 +1989,7 @@ describe('ChatBridge', () => {
     dshHome?: string
     ocrResult?: unknown
     interimMessages?: boolean
+    interimRecallMs?: number
     commands?: unknown
   }) {
     const ctx = new Context()
@@ -1988,7 +2017,9 @@ describe('ChatBridge', () => {
       defaultModel: () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
       config: {
         botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
-        interimMessages: opts?.interimMessages ?? true, sendErrorNotice: true, restrictedMemberPrefix: false,
+        interimMessages: opts?.interimMessages ?? true,
+        ...(opts?.interimRecallMs !== undefined ? { interimRecallMs: opts.interimRecallMs } : {}),
+        sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
         textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],

@@ -32,6 +32,10 @@ export interface BridgeConfig {
     splitLength: number;
     requireMention: boolean;
     interimMessages: boolean;
+    /** Per-interim auto-recall delay (ms) from each interim's send completion
+     * while the turn is still running (QQ recall window ~2 min); absent → 90s.
+     * At turn/end the remaining originals are recalled immediately regardless. */
+    interimRecallMs?: number;
     sendErrorNotice: boolean;
     restrictedMemberPrefix: boolean;
     sensitivePatterns: readonly string[];
@@ -302,29 +306,32 @@ export declare class ChatBridge {
         name: string;
         content: string;
     }>): Promise<void>;
+    /** Cancel a message's pending 90s auto-recall timer. */
+    private clearInterimTimer;
+    /** Clear every pending interim auto-recall timer for a chat (dispose path). */
+    private clearInterimTimers;
     /**
-     * Merge ≥2 sent interim texts into one forward message (turn/end step 1).
-     * Throws on failure so the caller keeps the original messages.
-     */
-    private sendLoopForward;
-    /**
-     * Recall the original interim messages (turn/end step 3, only after the
-     * forward succeeded). Recall failure is logged only — content is never lost.
+     * Recall the still-on-screen interim originals (turn/end step 2). Ids the
+     * 90s timer already revoked during the turn are skipped (already gone).
+     * Recall failure is logged only — the summary card still carries the text.
      */
     private recallLoopMessages;
-    /** Send one interim text and record its ids for the turn/end loop merge. */
+    /** Fire when an interim's own 90s timer elapses mid-turn: revoke it alone. */
+    private revokeInterim;
+    /** Render this turn's interims into one t2i image (summary card, before final). */
+    private sendInterimSummary;
+    /** Send one interim live and record it: text for the turn/end summary card,
+     * plus a per-message auto-recall timer (config interimRecallMs) so long turns
+     * clean up their early messages even before the summary arrives. */
     private sendInterim;
     /**
-     * Settle a finished turn's interim trail (interimMessages on): merge ≥2
-     * interim messages into one forward card, send the deferred final text,
-     * then recall the original interim messages — only when the merge
-     * succeeded (a failed merge keeps everything visible).
-     *
-     * The chat's send chain is drained FIRST: an interim's message id lands in
-     * loopBuffer only after its send actually completed (async push), so
-     * snapshotting before the queue settles would drop the last interim
-     * (unmerged + unrecalled). Settlement runs outside the send chain — each
-     * step is a raw connection/send call, never a nested enqueue.
+     * Settle a finished turn's interim trail (interimMessages on): drain the send
+     * chain so every interim id is recorded, then render ONE t2i summary card of
+     * all interims, immediately recall the still-on-screen originals, and finally
+     * send the deferred final text. No merged-forward any more — QQ refuses to
+     * recall messages older than ~2 min, and a forward of aged interims would
+     * leave the originals plus a duplicate card, so interims are surfaced live
+     * and auto-revoked per message (90s) during long turns.
      */
     private settleLoop;
     private onSessionEvent;

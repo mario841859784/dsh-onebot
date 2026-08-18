@@ -295,6 +295,13 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 - **并发合流**：期间另一次会话把 safe_edit 拆为独立插件 dsh-safe-edit（§3.21，用户拍板），onebot 移除 code_* 注册与源码；本改动在其上叠加（commands 注入与拆分移除共存），onebot 内 safe-edit 死拷贝已清理，118/118 仍绿
 - **验证**：tsc 0；vitest 118/118；待上线：kill 由 launchd 拉起 → QQ 实测 /plan 进宿主模式→文本计划→/plan off 直退→继续执行（全程无 Web 审批卡）
 
+### 3.23 实时中间消息 + 各自的 90s 单独撤回 + 回合末整轮 t2i 小结卡（2026-08-18，已实现待上线）
+- **症状（用户报 + 截图确认）**：推送回复那轮「少撤回文本 + 合并转发里有重复内容」。根因：回合 29 从首个中间消息到 turn/end 耗时 **280s**，最早中间消息已 4.7 分钟；QQ 撤回时限约 2 分钟 → NapCat `recallMsg retcode 1200 Timeout`，日志大量 `loop recall delete_msg failed`；回合末合并转发把 4 条已撤不回的原文收进卡里 → 原文残留 + 卡片重复（截图：4 条原文 +「群聊的聊天记录」卡 4 个同名节点 + 仅 2 条「对方撤回了一条消息」）
+- **需求（用户拍板 4 点）**：① 中间消息实时可见；② 每条到 90 秒单独撤回（各自独立定时器）；③ 回合结束先把**整轮所有中间消息**渲染一张 t2i 小结卡、再发 final（final 保持现状阈值：>150 转图、短文文本）；④ 发小结卡时残留原文**立即撤回**（无重叠）
+- **实现**（src/bridge.ts + index.ts）：弃用回合末合并转发（sendLoopForward 删除）；`loopBuffer` 条目加 `sentAt`；新增 `ChatAgent.recallTimers: Map<id,timer>` 与 `recalledInterimIds: Set<id>`；`sendInterim` 记 sentAt + 每条设 `interimRecallMs`（默认 90_000，新配置项，可调）定时器 → `revokeInterim` 单独撤回并标记；`settleLoop` 改为：排空队列 → `sendInterimSummary`（renderTextImage 出「📋 本轮中间记录」图卡，超 maxImageBytes 回退文本）→ `recallLoopMessages`（跳过已被 90s 撤过的，clearTimeout 残留定时器，delete_msg 间 60ms 间隔）→ 发送 final；`clearInterimTimers` 在 stop()/resetChat 清理
+- **验证**：tsc 0；vitest 119/119（重写合并测试为「小结图卡→立即撤回→final」、去重测试断言无 send_private_forward_msg、新增「40ms interimRecallMs 回合中自动单独撤回」用例）；测试注意：echo 必须给增序 message_id，否则两条 interim 同 id 被「已撤回」集合误跳过
+- **待上线**：构建 → kill 由 launchd 拉起 → 真机：长回合看中间消息实时出现、90s 后各自消失、回合末出整轮小结卡 + final
+
 ---
 ## 4. 功能清单（当前状态）
 

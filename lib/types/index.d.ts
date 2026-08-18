@@ -93,6 +93,8 @@ export interface Config {
     allowAllUsers: boolean;
     ignoreSelf: boolean;
     interimMessages: boolean;
+    /** Per-interim auto-recall delay (ms) from each interim's send completion. */
+    interimRecallMs: number;
     sendErrorNotice: boolean;
     restrictedMemberPrefix: boolean;
     sensitivePatterns: string[];

@@ -54,6 +54,10 @@ export interface BridgeConfig {
   splitLength: number
   requireMention: boolean
   interimMessages: boolean
+  /** Per-interim auto-recall delay (ms) from each interim's send completion
+   * while the turn is still running (QQ recall window ~2 min); absent → 90s.
+   * At turn/end the remaining originals are recalled immediately regardless. */
+  interimRecallMs?: number
   sendErrorNotice: boolean
   restrictedMemberPrefix: boolean
   sensitivePatterns: readonly string[]
@@ -160,8 +164,16 @@ interface ChatAgent {
   /** Loop merge (interimMessages on): text deferred one step, awaiting the
    * next assistant/message to prove it interim — the last one is the final. */
   loopPending: string | null
-  /** Sent interim messages awaiting turn/end settlement (≥2 → merge+recall). */
-  loopBuffer: Array<{ id: string; text: string }>
+  /** Sent interim messages awaiting turn/end summary (text kept for the recap
+   * t2i card). `sentAt` drives the per-message auto-recall scheduled after
+   * each interim's send completes. */
+  loopBuffer: Array<{ id: string; text: string; sentAt: number }>
+  /** Per-interim 90s (config interimRecallMs) auto-recall timers, keyed by
+   * message id; cleared when turn/end recalls the originals immediately. */
+  recallTimers: Map<string, ReturnType<typeof setTimeout>>
+  /** Interim message ids already auto-revoked by their 90s timer during a long
+   * turn — skipped by the turn/end immediate recall (already gone from QQ). */
+  recalledInterimIds: Set<string>
   /** Last assistant message id already handled — duplicate session events
    * (streaming/usage re-emits of the same message) must not re-send it. */
   lastHandledMessageId: string | undefined
@@ -182,6 +194,9 @@ interface ChatAgent {
 const MAPPING_FILE = 'chat-sessions.json'
 /** The retired-session-id file name inside the media dir (append-only). */
 const RETIRED_FILE = 'retired-sessions.json'
+/** Spacing between recall delete_msg calls (NapCat recallMsg is slow; bursting
+ * them pushes borderline-late recalls over the server timeout). */
+const RECALL_SPACING_MS = 60
 
 /**
  * Bridge between OneBot events and dsh agents. Create via the constructor and
@@ -251,6 +266,7 @@ export class ChatBridge {
     await this.saveMapping()
     for (const chat of this.chats.values()) {
       this.stopTyping(chat)
+      this.clearInterimTimers(chat)
       try {
         await chat.dispose()
       } catch (error) {
@@ -1322,54 +1338,102 @@ export class ChatBridge {
     }
   }
 
-  /**
-   * Merge ≥2 sent interim texts into one forward message (turn/end step 1).
-   * Throws on failure so the caller keeps the original messages.
-   */
-  private async sendLoopForward(chatId: ChatId, buf: Array<{ id: string; text: string }>): Promise<void> {
-    const nodes = buf.map(({ text }) => ({
-      name: '助手',
-      content: stripMarkdown(text).slice(0, 500) || '(中间消息)',
-    }))
-    await this.sendForward(chatId, nodes)
+  /** Cancel a message's pending 90s auto-recall timer. */
+  private clearInterimTimer(chat: ChatAgent, id: string): void {
+    const timer = chat.recallTimers.get(id)
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      chat.recallTimers.delete(id)
+    }
+  }
+
+  /** Clear every pending interim auto-recall timer for a chat (dispose path). */
+  private clearInterimTimers(chat: ChatAgent): void {
+    for (const timer of chat.recallTimers.values()) clearTimeout(timer)
+    chat.recallTimers.clear()
   }
 
   /**
-   * Recall the original interim messages (turn/end step 3, only after the
-   * forward succeeded). Recall failure is logged only — content is never lost.
+   * Recall the still-on-screen interim originals (turn/end step 2). Ids the
+   * 90s timer already revoked during the turn are skipped (already gone).
+   * Recall failure is logged only — the summary card still carries the text.
    */
-  private async recallLoopMessages(chatId: ChatId, buf: Array<{ id: string; text: string }>): Promise<void> {
+  private async recallLoopMessages(chatId: ChatId, chat: ChatAgent, buf: Array<{ id: string; text: string }>): Promise<void> {
     for (const { id } of buf) {
+      if (chat.recalledInterimIds.has(id)) continue
+      this.clearInterimTimer(chat, id)
       try {
         await this.deps.connection.call('delete_msg', { message_id: id })
+        chat.recalledInterimIds.add(id)
+        await new Promise(resolve => setTimeout(resolve, RECALL_SPACING_MS))
       } catch (error) {
         this.deps.log('debug', 'loop recall delete_msg failed for ' + id + ': ' + (error instanceof Error ? error.message : String(error)))
       }
     }
   }
 
+  /** Fire when an interim's own 90s timer elapses mid-turn: revoke it alone. */
+  private revokeInterim(chatId: ChatId, chat: ChatAgent, id: string): void {
+    chat.recallTimers.delete(id)
+    this.deps.connection.call('delete_msg', { message_id: id }).then(() => {
+      chat.recalledInterimIds.add(id)
+    }).catch(error => {
+      this.deps.log('debug', 'interim auto-recall failed for ' + id + ': ' + (error instanceof Error ? error.message : String(error)))
+    })
+  }
+
+  /** Render this turn's interims into one t2i image (summary card, before final). */
+  private async sendInterimSummary(chatId: ChatId, buf: Array<{ id: string; text: string }>): Promise<void> {
+    const body = buf.map((item, index) => (index + 1) + '. ' + item.text.trim()).filter(line => line !== '').join('\n\n')
+    if (body === '') return
+    let png: Buffer
+    try {
+      png = renderTextImage(body, {
+        title: '📋 本轮中间记录',
+        footerBrand: this.deps.config.cardFooter,
+        fontFiles: this.deps.config.fontFiles,
+        fontFamilies: this.deps.config.fontFamilies,
+      })
+    } catch (error) {
+      this.deps.log('warn', 'interim summary t2i failed, sending as text: ' + (error instanceof Error ? error.message : String(error)))
+      await this.sendToChat(chatId, body)
+      return
+    }
+    const b64 = 'base64://' + png.toString('base64')
+    if (b64.length <= this.deps.config.maxImageBytes) {
+      await this.sendMsg(chatId, [{ type: 'image', data: { file: b64 } }], {})
+    } else {
+      await this.sendToChat(chatId, body)
+    }
+  }
+
   // ------------------------------------------------------------ session events
 
-  /** Send one interim text and record its ids for the turn/end loop merge. */
+  /** Send one interim live and record it: text for the turn/end summary card,
+   * plus a per-message auto-recall timer (config interimRecallMs) so long turns
+   * clean up their early messages even before the summary arrives. */
   private sendInterim(chatId: ChatId, chat: ChatAgent, text: string): void {
     this.sendToChat(chatId, text).then(ids => {
-      for (const id of ids) chat.loopBuffer.push({ id, text })
+      const sentAt = Date.now()
+      for (const id of ids) {
+        chat.loopBuffer.push({ id, text, sentAt })
+        const delay = this.deps.config.interimRecallMs ?? 90_000
+        const timer = setTimeout(() => this.revokeInterim(chatId, chat, id), delay)
+        chat.recallTimers.set(id, timer)
+      }
     }).catch(error => {
       this.deps.log('warn', 'interim send failed: ' + (error instanceof Error ? error.message : String(error)))
     })
   }
 
   /**
-   * Settle a finished turn's interim trail (interimMessages on): merge ≥2
-   * interim messages into one forward card, send the deferred final text,
-   * then recall the original interim messages — only when the merge
-   * succeeded (a failed merge keeps everything visible).
-   *
-   * The chat's send chain is drained FIRST: an interim's message id lands in
-   * loopBuffer only after its send actually completed (async push), so
-   * snapshotting before the queue settles would drop the last interim
-   * (unmerged + unrecalled). Settlement runs outside the send chain — each
-   * step is a raw connection/send call, never a nested enqueue.
+   * Settle a finished turn's interim trail (interimMessages on): drain the send
+   * chain so every interim id is recorded, then render ONE t2i summary card of
+   * all interims, immediately recall the still-on-screen originals, and finally
+   * send the deferred final text. No merged-forward any more — QQ refuses to
+   * recall messages older than ~2 min, and a forward of aged interims would
+   * leave the originals plus a duplicate card, so interims are surfaced live
+   * and auto-revoked per message (90s) during long turns.
    */
   private async settleLoop(chatId: ChatId, chat: ChatAgent): Promise<void> {
     try {
@@ -1377,16 +1441,18 @@ export class ChatBridge {
     } catch {
       // failures already settle the enqueue chain; keep going
     }
-    if (chat.loopBuffer.length < 2 && chat.loopPending === null) return
     const buf = chat.loopBuffer
     chat.loopBuffer = []
-    let forwardOk = false
-    if (buf.length >= 2) {
+    if (buf.length >= 1) {
       try {
-        await this.sendLoopForward(chatId, buf)
-        forwardOk = true
+        await this.sendInterimSummary(chatId, buf)
       } catch (error) {
-        this.deps.log('info', 'loop merge failed, keeping original messages: ' + (error instanceof Error ? error.message : String(error)))
+        this.deps.log('warn', 'interim summary send failed: ' + (error instanceof Error ? error.message : String(error)))
+      }
+      try {
+        await this.recallLoopMessages(chatId, chat, buf)
+      } catch (error) {
+        this.deps.log('warn', 'loop recall failed: ' + (error instanceof Error ? error.message : String(error)))
       }
     }
     if (chat.loopPending !== null) {
@@ -1396,13 +1462,6 @@ export class ChatBridge {
         await this.sendToChat(chatId, final)
       } catch (error) {
         this.deps.log('warn', 'final send failed: ' + (error instanceof Error ? error.message : String(error)))
-      }
-    }
-    if (buf.length >= 2 && forwardOk) {
-      try {
-        await this.recallLoopMessages(chatId, buf)
-      } catch (error) {
-        this.deps.log('warn', 'loop recall failed: ' + (error instanceof Error ? error.message : String(error)))
       }
     }
   }
@@ -1563,6 +1622,8 @@ export class ChatBridge {
       pendingFinal: '',
       loopPending: null,
       loopBuffer: [],
+      recallTimers: new Map(),
+      recalledInterimIds: new Set(),
       lastHandledMessageId: undefined,
       busy: false,
       typingTimer: undefined,
@@ -1629,6 +1690,8 @@ export class ChatBridge {
             pendingFinal: '',
             loopPending: null,
             loopBuffer: [],
+            recallTimers: new Map(),
+            recalledInterimIds: new Set(),
             lastHandledMessageId: undefined,
             busy: false,
             typingTimer: undefined,
@@ -1924,6 +1987,7 @@ export class ChatBridge {
     const chat = this.chats.get(chatId)
     if (chat !== undefined) {
       this.stopTyping(chat)
+      this.clearInterimTimers(chat)
       this.retireSession(chat.sessionId)
       // The bare derived id is forever unsafe for this chat once its history
       // has moved to a suffixed id: its on-disk log (if any) would collide
