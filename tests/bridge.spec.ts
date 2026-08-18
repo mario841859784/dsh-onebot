@@ -2244,6 +2244,8 @@ describe('ChatBridge', () => {
     const overrides = () => (bridge as unknown as { chatWorkspacePaths: Map<string, string> }).chatWorkspacePaths
     // Resume carried a non-default cwd → the override map must be restored.
     await vi.waitFor(() => expect(overrides().get('private:10001')).toBe(otherDir))
+    // A resumed QQ chat with no inbound caller yet has no owner → file edits denied.
+    expect(bridge.canEditFiles('onebot-private-10001-aabbcc')).toBe(false)
     // A chat whose session cwd equals the configured default must NOT get an override.
     const { realpathSync } = await import('node:fs')
     await writeFile(join(mediaDir, 'chat-sessions.json'), JSON.stringify({ 'private:10001': 'onebot-private-10001-zzzz' }), 'utf8')
@@ -2327,6 +2329,21 @@ describe('ChatBridge', () => {
       expect(h.outbound.some(f => JSON.stringify(f.params).includes('方案A'))).toBe(true)
       expect(h.outbound.some(f => JSON.stringify(f.params).includes('可多选'))).toBe(true)
     })
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('gates file edits by QQ admin for onebot chats (A1: non-QQ allowed)', async () => {
+    const h = await makeCmdHarness()
+    // Non-QQ session id: not in the chat mapping → allowed.
+    expect(h.bridge.canEditFiles('some-web-session')).toBe(true)
+
+    // An admin (10001) message marks the chat owner as admin → allowed.
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    expect(h.bridge.canEditFiles(h.sessionIds[0])).toBe(true)
 
     h.client.close()
     await h.bridge.stop()

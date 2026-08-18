@@ -250,6 +250,19 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 - **验证**：tsc 零错误；vitest 115/115 全绿（33 例 bridge，+2：resume 非默认 cwd → 覆盖回填 + cwd==默认 → 无覆盖；计划书/提问中继内容 + 同 id 连续重发去重）。测试注意：dedupe 只记「最近一次」message id，重发必须紧跟原发、中间不能插新 id
 - **真机（已上线验证）**：中继生效——ask_user_question 提问以 **t2i 卡片**到达 QQ、可 QQ 直接作答，且 QQ 作答能解析上游 ask_user_question（工具调用返回了 QQ 文本答案，对话不卡死）。**已知限制**：Web 端提问/计划卡视觉上不自动清除——宿主平面 UI（ctx.userQuestions），onebot 不动宿主无法处理，仅保证 QQ 端可获知+可作答。`/workspace` 跨重启真机：当前 chat 为默认 cwd 不触发回填（符合设计），需用户 /workspace 切非默认目录后重启实测
 
+### 3.20 受守卫文件编辑 code_safe_edit/rollback/list_backups + code-safe-edit skill（2026-08-18，已实现待上线）
+- **需求**：用户问可否借鉴 irmia_devkit 的 safe_edit（AGPL-3.0）→ 定方案 A1：全渠道可用 + QQ 管理员门控 + skill 引导模型默认优先
+- **实现**（src/safe-edit.ts + src/tools.ts + src/bridge.ts + src/index.ts + src/prompt.ts + skill）：
+  - `safe-edit.ts`：`checkPathAllowed`（根内 + .. 穿越 + 符号链接逃逸）→ read（CRLF 归一）→ `backupFor`（时间戳 .bak + 惰性剪枝 50 份）→ 匹配链（精确 → `stripLineNumberPrefixes` 剥读输出行号前缀 → `alignWhitespace` Aider 式缩进增量对齐）→ 多匹配返回 `{matches:[{line,col,preview}]}` + occurrence=N/replace_all → replace/insert_at_line/delete_lines → 原子写（tmp+rename）→ 语法检查（js/cjs/mjs `node --check`，可注入桩）→ 失败 `finishEdit` 自动回滚 + 结构化错误；`safeRollback`（回滚前再备份当前状态，可撤销）；`listBackups`（≤50）
+  - `tools.ts`：注册三工具（仅当 `safeEditRoot` 非空）；门控走 `bridge.canEditFiles(sessionId)`（A1：onebot chat 需最近入站用户是管理员，非 QQ 会话默认放行；chat 存在但无入站者 → 拒绝）
+  - `bridge.ts`：ChatAgent 加 `lastUserId`（processInbound 写回），新增公共 `canEditFiles`
+  - `index.ts`：Config 加 `safeEditRoot`/`backupDir`（schema 默认 ''=禁）
+  - `prompt.ts`：QQ 平台说明加「改文件优先 code_safe_edit」
+  - skill：`code-safe-edit`（全渠道：优先 tool、流程、回滚、坑）
+  - 部署配置 `~/dsh/profiles/web/cordis.patch.yml` 设 `safeEditRoot: /Users/mario/workspace`
+- **验证**：tsc 0 错误；vitest 128/128 全绿（12 文件，+safe-edit 10 例 + 门控 1 例）。测试注意：align 后须回写对齐后的 newText（否则替换丢缩进）；insert_at_line 的 insert 不能自带尾 \n（join 会再补一个）
+- **待上线**：构建 → kill 由 launchd 拉起 → 真机：QQ 让 bot 用 code_safe_edit 改 workspace 下文件测一次（含一次改坏语法看自动回滚）
+
 ---
 ## 4. 功能清单（当前状态）
 

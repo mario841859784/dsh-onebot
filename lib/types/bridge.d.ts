@@ -165,6 +165,10 @@ export declare class ChatBridge {
     stop(): Promise<void>;
     /** Map an agent session id back to its chat (for model tools). */
     chatForSession(sessionId: string): ChatId | undefined;
+    /** Whether a caller backing an agent session may perform file edits. QQ chats
+     * require the most recent inbound user to be an admin; non-QQ sessions (Web
+     * and other channels) are trusted by default (A1 scoping). */
+    canEditFiles(sessionId: string): boolean;
     /** Whether the connection is usable for sends. */
     get connected(): boolean;
     /**

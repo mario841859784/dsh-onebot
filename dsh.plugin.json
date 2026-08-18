@@ -12,7 +12,10 @@
       "qq_send_file",
       "qq_send_forward",
       "qq_napcat_api",
-      "qq_group_history"
+      "qq_group_history",
+      "code_safe_edit",
+      "code_safe_rollback",
+      "code_list_backups"
     ],
     "skills": []
   }

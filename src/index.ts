@@ -95,6 +95,10 @@ export interface Config {
   agentPreset: string
   workspacePath: string
   maxInboundFileBytes: number
+  /** Editable root for the guarded code_safe_edit tools (empty = disabled). */
+  safeEditRoot: string
+  /** Backup dir for code_safe_edit (empty = <safeEditRoot>/.backups). */
+  backupDir: string
 }
 
 const ENV = (name: string): string => process.env[name] ?? ''
@@ -187,6 +191,10 @@ export const Config: z<Config> = z.object({
     .description('QQ 会话的工作区目录（写入会话 cwd，并自动归入该工作区，不存在则创建）；留空用宿主进程 cwd'),
   maxInboundFileBytes: z.number().default(20 * 1024 * 1024)
     .description('QQ 入站文件最大字节数（直链/base64 拉取，0 = 不限制）'),
+  safeEditRoot: z.string().default('')
+    .description('受守卫的文件编辑工具（code_safe_edit/code_safe_rollback/code_list_backups）的可编辑根目录；留空 = 禁用整个工具组。QQ 渠道仅管理员可用，其他渠道默认可用（A1）'),
+  backupDir: z.string().default('')
+    .description('code_safe_edit 备份目录；留空默认 <safeEditRoot>/.backups'),
 })
 
 /** Resolve env-var fallbacks into the effective access policy. */
@@ -293,6 +301,9 @@ export function apply(ctx: Context, config: Config): void {
       maxImageBytes: config.maxImageBytes,
       maxVoiceBytes: config.maxVoiceBytes,
       maxFileBytes: config.maxFileBytes,
+    }, {
+      safeEditRoot: config.safeEditRoot,
+      backupDir: config.backupDir,
     })
     ctx.systemPrompt.section({
       name: 'channel:dsh-onebot',

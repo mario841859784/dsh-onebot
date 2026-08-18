@@ -167,6 +167,8 @@ interface ChatAgent {
   busy: boolean
   typingTimer: ReturnType<typeof setInterval> | undefined
   lastNickname: string
+  /** The most recent inbound QQ user id for this chat (edit-tool gating). */
+  lastUserId: string
   /** The last user message text actually fed to the agent (for /retry). */
   lastFollowup: string | undefined
   /** Mutable per-agent model selection (installModelSelection-bound); the
@@ -262,6 +264,18 @@ export class ChatBridge {
   /** Map an agent session id back to its chat (for model tools). */
   chatForSession(sessionId: string): ChatId | undefined {
     return this.bySession.get(sessionId)
+  }
+
+  /** Whether a caller backing an agent session may perform file edits. QQ chats
+   * require the most recent inbound user to be an admin; non-QQ sessions (Web
+   * and other channels) are trusted by default (A1 scoping). */
+  canEditFiles(sessionId: string): boolean {
+    const chatId = this.bySession.get(sessionId)
+    if (chatId === undefined) return true
+    const chat = this.chats.get(chatId)
+    const lastUserId = chat?.lastUserId ?? ''
+    if (lastUserId === '') return false
+    return classifyUserRole(lastUserId, this.deps.policy.adminUsers) === 'admin'
   }
 
   /** Whether the connection is usable for sends. */
@@ -454,6 +468,8 @@ export class ChatBridge {
     if (final === '') return
 
     await this.dispatchFollowup(chatId, final, nickname)
+    const chat = this.chats.get(chatId)
+    if (chat !== undefined) chat.lastUserId = userId
   }
 
   /** Feed one user message into a chat's agent (create on demand). Records
@@ -1547,6 +1563,7 @@ export class ChatBridge {
       busy: false,
       typingTimer: undefined,
       lastNickname: nickname,
+      lastUserId: '',
       lastFollowup: undefined,
       selectionRef,
     }
@@ -1612,6 +1629,7 @@ export class ChatBridge {
             busy: false,
             typingTimer: undefined,
             lastNickname: '',
+            lastUserId: '',
             lastFollowup: undefined,
             selectionRef,
           }
