@@ -134,6 +134,8 @@ export interface BridgeDeps {
   agents: AgentRegistry
   sessions: SessionStore
   agentPresets: AgentPresetsLike
+  /** Host command runtime: forwards /plan so QQ reaches the native plan command. */
+  commands?: { execute(agent: unknown, line: string, signal?: AbortSignal): Promise<{ kind?: string; text?: string }> } | undefined
   /** Durable persistence for cold-reading a session's recorded preset; absent = config/default fallback. */
   sessionPersistence: SessionPersistenceLike | undefined
   workspaceRegistry: WorkspaceRegistryLike
@@ -197,8 +199,6 @@ export class ChatBridge {
   /** Per-chat outbound-mode override set by /mode (true=interim, false=instant);
    * undefined defers to the global config. */
   private readonly chatInterimOverrides = new Map<ChatId, boolean>()
-  /** Per-chat plan mode set by /plan (prefixes turns with a plan-only directive). */
-  private readonly chatPlanModes = new Map<ChatId, boolean>()
   /** Per-chat goal set by /goal (reminds the model of the objective each turn). */
   private readonly chatGoals = new Map<ChatId, string>()
   /** Per-chat most recent inbound image path (for /ocr), survives /new resets. */
@@ -491,16 +491,14 @@ export class ChatBridge {
     this.startTyping(chat)
   }
 
-  /** Prepend per-chat context directives (/goal reminder, /plan plan-only
-   * instruction) to a turn's user text. */
+  /** Prepend per-chat context directives (/goal reminder) to a turn's user
+   * text. Plan mode is host-owned now (/plan forwards to the host command),
+   * so the agent's own plan-mode instruction section governs planning. */
   private prefixTurn(chatId: ChatId, text: string): string {
     let out = text
     const goal = this.chatGoals.get(chatId)
     if (goal !== undefined && goal.trim() !== '') {
       out = '【当前目标】' + goal + '\n' + out
-    }
-    if (this.chatPlanModes.get(chatId) === true) {
-      out = '【计划模式】请先输出完整实现计划/方案（可按子系统分组、包含验收标准），不要修改任何文件、不要执行命令，等待确认后再行动。\n' + out
     }
     return out.trim()
   }
@@ -664,7 +662,7 @@ export class ChatBridge {
       return true
     }
     if (name === 'help') {
-      await this.sendToChat(chatId, '可用命令：\n/new 开启新会话（清空上下文）\n/stop 停止当前生成\n/model [provider/model] 查看或切换模型\n/workspace [路径|list] 查看或切换工作区\n/preset [id] 查看或切换 agent 预设\n/status 会话全景状态\n/retry 重跑上一条\n/id 查看 session/chat id\n/ver 插件版本\n/ocr 识别最近一张图片\n/mode [interim|instant] 切换出站模式\n/plan [on|off|内容] 计划模式\n/goal [目标|clear] 查看/设置目标\n/help 本帮助\n\n其他 / 开头的文本会直接交给模型。')
+      await this.sendToChat(chatId, '可用命令：\n/new 开启新会话（清空上下文）\n/stop 停止当前生成\n/model [provider/model] 查看或切换模型\n/workspace [路径|list] 查看或切换工作区\n/preset [id] 查看或切换 agent 预设\n/status 会话全景状态\n/retry 重跑上一条\n/id 查看 session/chat id\n/ver 插件版本\n/ocr 识别最近一张图片\n/mode [interim|instant] 切换出站模式\n/plan [off|内容] 宿主计划模式（/plan off 退出）\n/goal [目标|clear] 查看/设置目标\n/help 本帮助\n\n其他 / 开头的文本会直接交给模型。')
       return true
     }
     return false
@@ -944,26 +942,32 @@ export class ChatBridge {
   }
 
   /** /plan: per-chat plan mode — turns are prefixed with a plan-only directive. */
+  /** /plan: forward to the HOST plan command so QQ enters/leaves host plan
+   * mode (the host `/plan off` path exits directly, no Web review card). The
+   * plugin no longer runs its own prefix plan mode — that duplicated the host
+   * semantic and shadowed the host `/plan off` exit. */
   private async handlePlanCommand(chatId: ChatId, arg: string): Promise<void> {
-    const v = arg.trim().toLowerCase()
-    if (v === '') {
-      const on = this.chatPlanModes.get(chatId) === true
-      await this.sendToChat(chatId, '计划模式：' + (on ? '开启' : '关闭') + '\n用法：/plan on|off 开关；/plan <内容> 以计划模式处理该内容')
+    const chat = this.chats.get(chatId)
+    if (chat === undefined) {
+      await this.sendToChat(chatId, '请先发一条消息建立会话，再 /plan。')
       return
     }
-    if (v === 'on') {
-      this.chatPlanModes.set(chatId, true)
-      await this.sendToChat(chatId, '✅ 计划模式已开启：后续回复只出方案不执行。')
+    const commands = this.deps.commands
+    if (commands === undefined) {
+      await this.sendToChat(chatId, '❌ 宿主未提供 commands 服务，无法切换计划模式。')
       return
     }
-    if (v === 'off') {
-      this.chatPlanModes.set(chatId, false)
-      await this.sendToChat(chatId, '✅ 计划模式已关闭。')
-      return
+    const line = arg.trim() === '' ? '/plan' : '/plan ' + arg.trim()
+    try {
+      const result = await commands.execute(chat.agent as never, line)
+      const text = result?.text !== undefined && result.text !== '' ? result.text : (arg.trim().toLowerCase() === 'off' ? '已退出计划模式。' : '已进入计划模式。')
+      const hint = arg.trim().toLowerCase() === 'off' ? '' : '\n（QQ 退出计划模式：发 /plan off）'
+      await this.sendToChat(chatId, text + hint)
+      this.deps.log('info', 'host plan command for ' + chatId + ': ' + line)
+    } catch (error) {
+      this.deps.log('warn', 'host plan command failed: ' + String(error))
+      await this.sendToChat(chatId, '❌ 计划模式切换失败：' + (error instanceof Error ? error.message : String(error)))
     }
-    // /plan <内容> — enable plan mode and treat the rest as a user turn.
-    this.chatPlanModes.set(chatId, true)
-    await this.dispatchFollowup(chatId, arg, this.chats.get(chatId)?.lastNickname)
   }
 
   /** /goal: per-chat objective — recorded and reminded on each turn. */

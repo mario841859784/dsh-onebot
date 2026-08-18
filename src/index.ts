@@ -21,7 +21,7 @@ import { join } from 'node:path'
 import { OneBotConnection } from './connection.js'
 import type { OneBotEvent } from './connection.js'
 import { ChatBridge } from './bridge.js'
-import type { WorkspaceRegistryLike } from './bridge.js'
+import type { BridgeDeps, WorkspaceRegistryLike } from './bridge.js'
 import { MediaStore, IMAGE_MAX_BYTES, VOICE_MAX_BYTES, MEDIA_MAX_BYTES } from './media.js'
 import { Transcriber } from './stt.js'
 import { registerTools } from './tools.js'
@@ -50,10 +50,13 @@ type Context = CordisContext & {
     create(path: string, title?: string): Promise<{ id: string; path: string; sessionIds: readonly string[]; attachSession(sessionId: string): Promise<void> }>
     list(): Array<{ id: string; path: string; sessionIds: readonly string[] }>
   }
+  commands: {
+    execute(agent: unknown, line: string, signal?: AbortSignal): Promise<{ kind?: string; text?: string }>
+  }
 }
 
 export const name = 'dsh-onebot'
-export const inject = ['tools', 'systemPrompt', 'agents', 'sessions', 'agentDefaultModel', 'agentPresets', 'sessionPersistence', 'workspaceRegistry']
+export const inject = ['tools', 'systemPrompt', 'agents', 'sessions', 'agentDefaultModel', 'agentPresets', 'sessionPersistence', 'workspaceRegistry', 'commands']
 
 /** Plugin configuration (validated by schemastery). */
 export interface Config {
@@ -95,10 +98,6 @@ export interface Config {
   agentPreset: string
   workspacePath: string
   maxInboundFileBytes: number
-  /** Editable root for the guarded code_safe_edit tools (empty = disabled). */
-  safeEditRoot: string
-  /** Backup dir for code_safe_edit (empty = <safeEditRoot>/.backups). */
-  backupDir: string
 }
 
 const ENV = (name: string): string => process.env[name] ?? ''
@@ -191,10 +190,6 @@ export const Config: z<Config> = z.object({
     .description('QQ 会话的工作区目录（写入会话 cwd，并自动归入该工作区，不存在则创建）；留空用宿主进程 cwd'),
   maxInboundFileBytes: z.number().default(20 * 1024 * 1024)
     .description('QQ 入站文件最大字节数（直链/base64 拉取，0 = 不限制）'),
-  safeEditRoot: z.string().default('')
-    .description('受守卫的文件编辑工具（code_safe_edit/code_safe_rollback/code_list_backups）的可编辑根目录；留空 = 禁用整个工具组。QQ 渠道仅管理员可用，其他渠道默认可用（A1）'),
-  backupDir: z.string().default('')
-    .description('code_safe_edit 备份目录；留空默认 <safeEditRoot>/.backups'),
 })
 
 /** Resolve env-var fallbacks into the effective access policy. */
@@ -253,6 +248,7 @@ export function apply(ctx: Context, config: Config): void {
     agents: ctx.agents,
     sessions: ctx.sessions,
     agentPresets: ctx.agentPresets,
+    commands: ctx.commands as BridgeDeps['commands'],
     sessionPersistence: ctx.sessionPersistence,
     workspaceRegistry: ctx.workspaceRegistry as unknown as WorkspaceRegistryLike,
     agentDefaultModel: ctx.agentDefaultModel,
@@ -301,9 +297,6 @@ export function apply(ctx: Context, config: Config): void {
       maxImageBytes: config.maxImageBytes,
       maxVoiceBytes: config.maxVoiceBytes,
       maxFileBytes: config.maxFileBytes,
-    }, {
-      safeEditRoot: config.safeEditRoot,
-      backupDir: config.backupDir,
     })
     ctx.systemPrompt.section({
       name: 'channel:dsh-onebot',

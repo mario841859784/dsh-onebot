@@ -1961,6 +1961,7 @@ describe('ChatBridge', () => {
     dshHome?: string
     ocrResult?: unknown
     interimMessages?: boolean
+    commands?: unknown
   }) {
     const ctx = new Context()
     const sessionIds: string[] = []
@@ -1981,6 +1982,7 @@ describe('ChatBridge', () => {
       agents: agents as never,
       sessions: sessions as never,
       agentPresets: opts?.agentPresets as never,
+      commands: (opts?.commands ?? { execute: vi.fn(async () => ({ kind: 'success', text: 'Plan mode on. Use /plan off to leave.' })) }) as never,
       workspaceRegistry: undefined as never,
       agentDefaultModel: undefined,
       defaultModel: () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
@@ -2061,9 +2063,11 @@ describe('ChatBridge', () => {
     await h.connection.stop()
   })
 
-  it('slash /goal /plan /mode set per-chat state and prefix turns', async () => {
-    const h = await makeCmdHarness()
+  it('slash /goal /plan /mode set per-chat state and forward to host plan command', async () => {
+    const commands = { execute: vi.fn(async () => ({ kind: 'success', text: 'Plan mode on. Use /plan off to leave.' })) }
+    const h = await makeCmdHarness({ commands })
 
+    // /goal stays a native per-chat prefix.
     h.sendText('/goal 验证 9 个命令')
     await vi.waitFor(() => {
       expect(h.outbound.some(f => JSON.stringify(f.params).includes('目标已记录'))).toBe(true)
@@ -2072,27 +2076,24 @@ describe('ChatBridge', () => {
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
     expect(h.captured.followups[0].text).toContain('【当前目标】验证 9 个命令')
 
-    h.sendText('/plan on')
+    // /plan forwards to the host plan command (no 【计划模式】 prefix anymore).
+    h.sendText('/plan')
     await vi.waitFor(() => {
-      expect(h.outbound.some(f => JSON.stringify(f.params).includes('计划模式已开启'))).toBe(true)
+      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/plan')
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('Plan mode on. Use /plan off to leave.'))).toBe(true)
     })
-    h.sendText('再来一轮')
-    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
-    expect(h.captured.followups[1].text).toContain('【计划模式】')
-    expect(h.captured.followups[1].text).toContain('再来一轮')
-
     h.sendText('/plan 写一个新模块')
-    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(3))
-    expect(h.captured.followups[2].text).toContain('【计划模式】')
-    expect(h.captured.followups[2].text).toContain('写一个新模块')
-
+    await vi.waitFor(() => {
+      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/plan 写一个新模块')
+    })
     h.sendText('/plan off')
     await vi.waitFor(() => {
-      expect(h.outbound.some(f => JSON.stringify(f.params).includes('计划模式已关闭'))).toBe(true)
+      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/plan off')
     })
-    h.sendText('没有计划了')
-    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(4))
-    expect(h.captured.followups[3].text).not.toContain('【计划模式】')
+    // No 【计划模式】 prefix on normal turns.
+    h.sendText('再来一轮')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    expect(h.captured.followups[1].text).not.toContain('【计划模式】')
 
     h.sendText('/mode instant')
     await vi.waitFor(() => {

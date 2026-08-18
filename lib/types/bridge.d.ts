@@ -115,6 +115,13 @@ export interface BridgeDeps {
     agents: AgentRegistry;
     sessions: SessionStore;
     agentPresets: AgentPresetsLike;
+    /** Host command runtime: forwards /plan so QQ reaches the native plan command. */
+    commands?: {
+        execute(agent: unknown, line: string, signal?: AbortSignal): Promise<{
+            kind?: string;
+            text?: string;
+        }>;
+    } | undefined;
     /** Durable persistence for cold-reading a session's recorded preset; absent = config/default fallback. */
     sessionPersistence: SessionPersistenceLike | undefined;
     workspaceRegistry: WorkspaceRegistryLike;
@@ -141,8 +148,6 @@ export declare class ChatBridge {
     /** Per-chat outbound-mode override set by /mode (true=interim, false=instant);
      * undefined defers to the global config. */
     private readonly chatInterimOverrides;
-    /** Per-chat plan mode set by /plan (prefixes turns with a plan-only directive). */
-    private readonly chatPlanModes;
     /** Per-chat goal set by /goal (reminds the model of the objective each turn). */
     private readonly chatGoals;
     /** Per-chat most recent inbound image path (for /ocr), survives /new resets. */
@@ -203,8 +208,9 @@ export declare class ChatBridge {
     /** Feed one user message into a chat's agent (create on demand). Records
      * the base text for /retry and applies per-chat /goal + /plan prefixes. */
     private dispatchFollowup;
-    /** Prepend per-chat context directives (/goal reminder, /plan plan-only
-     * instruction) to a turn's user text. */
+    /** Prepend per-chat context directives (/goal reminder) to a turn's user
+     * text. Plan mode is host-owned now (/plan forwards to the host command),
+     * so the agent's own plan-mode instruction section governs planning. */
     private prefixTurn;
     /** Per-chat outbound-mode override (/mode), falling back to the global config. */
     private effectiveInterim;
@@ -246,6 +252,10 @@ export declare class ChatBridge {
     /** /preset: show available agent presets and the current one, or switch. */
     private handlePresetCommand;
     /** /plan: per-chat plan mode — turns are prefixed with a plan-only directive. */
+    /** /plan: forward to the HOST plan command so QQ enters/leaves host plan
+     * mode (the host `/plan off` path exits directly, no Web review card). The
+     * plugin no longer runs its own prefix plan mode — that duplicated the host
+     * semantic and shadowed the host `/plan off` exit. */
     private handlePlanCommand;
     /** /goal: per-chat objective — recorded and reminded on each turn. */
     private handleGoalCommand;

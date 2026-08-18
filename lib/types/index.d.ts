@@ -66,6 +66,12 @@ type Context = CordisContext & {
             sessionIds: readonly string[];
         }>;
     };
+    commands: {
+        execute(agent: unknown, line: string, signal?: AbortSignal): Promise<{
+            kind?: string;
+            text?: string;
+        }>;
+    };
 };
 export declare const name = "dsh-onebot";
 export declare const inject: string[];
@@ -109,10 +115,6 @@ export interface Config {
     agentPreset: string;
     workspacePath: string;
     maxInboundFileBytes: number;
-    /** Editable root for the guarded code_safe_edit tools (empty = disabled). */
-    safeEditRoot: string;
-    /** Backup dir for code_safe_edit (empty = <safeEditRoot>/.backups). */
-    backupDir: string;
 }
 /** Default media dir: <dsh-home>/media/onebot (dsh-home = $DSH_HOME or ~/.dsh). */
 export declare function defaultMediaDir(): string;

@@ -23,7 +23,8 @@ export function buildPlatformPrompt(restrictedMembers: boolean): string {
   }
   text += '- 长回复会自动分段发送，无需自行截断。\n'
   text += '- 语音消息会附带「（语音转写：...）」文本，优先依据转写内容回复。\n'
-  text += '- 本通道为 QQ，宿主无 Web 交互卡：**禁止调用 ask_user_question 与 exit_plan_mode**（它们会阻塞对话、等待 Web 端确认）。需要向用户提问/确认/给出计划时，直接在回复中用纯文本提问并等待用户回复即可。\n'
+  text += '- 本通道为 QQ，宿主无 Web 交互卡：**禁止调用 ask_user_question 与 exit_plan_mode**（它们的确认卡仅 Web 端可用，会阻塞对话）。需要提问/确认时直接纯文本提问并等待用户回复。\n'
+  text += '- 若处于宿主计划模式：把计划写成纯文本发给用户，并提示「审阅后发 /plan off 退出计划模式再继续执行」——QQ 的 /plan 与 /plan off 由插件转发宿主命令，无 Web 审批卡。\n'
   text += '- 修改宿主文件请优先使用 code_safe_edit（自动备份/回滚/模糊匹配），不要直接用内置 edit/write。\n'
   text += '- 斜杠命令（/new 开新会话、/stop 停止生成、/help 帮助）由插件在发给模型前拦截；你收到以 / 开头的内容通常是用户想让模型处理的话题，正常回答即可。\n'
   return text

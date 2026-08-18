@@ -13,8 +13,6 @@ import type { ChatBridge } from './bridge.js'
 import type { OneBotConnection } from './connection.js'
 import { fileToBase64, isUrl } from './media.js'
 import { splitChatId } from './chat.js'
-import { safeEdit, safeRollback, listBackups } from './safe-edit.js'
-import type { SafeEditRequest, SafeEditOutcome } from './safe-edit.js'
 import type { OneBotSegment } from './cq.js'
 import { parseMessage, cqUnescape } from './cq.js'
 
@@ -66,7 +64,6 @@ function resolveChat(bridge: ChatBridge, exec: ToolRunContext, chatIdArg: unknow
  * @param bridge - the chat bridge.
  * @param connection - the OneBot connection.
  * @param limits - media size caps.
- * @param editing - guarded file-edit surface (root + backup dir).
  * @returns the disposer.
  */
 export function registerTools(
@@ -74,7 +71,6 @@ export function registerTools(
   bridge: ChatBridge,
   connection: OneBotConnection,
   limits: { maxImageBytes: number; maxVoiceBytes: number; maxFileBytes: number },
-  editing?: { safeEditRoot: string; backupDir: string },
 ): () => void {
   const disposers: Array<() => void> = []
   const register = (tool: Parameters<typeof ctx.tools.register>[0]): void => {
@@ -299,108 +295,6 @@ export function registerTools(
       })
     },
   }))
-
-  // ── guarded file editing (safe_edit approach) ───────────────────────────
-  if (editing !== undefined && editing.safeEditRoot !== '') {
-    const renderEdit = (_args: unknown, value: unknown) => {
-      const v = value as SafeEditOutcome
-      if (v.ok) {
-        return [{ type: 'text' as const, text: '✅ 已修改：' + (v.file ?? '') + (v.whitespaceAligned === true ? '（空白已对齐匹配）' : '') + (v.lineNumbersStripped === true ? '（已剥行号前缀）' : '') }]
-      }
-      const detail = (v.error ?? '') + (v.proposal !== undefined ? '\n' + String(v.proposal) : '')
-      return [{ type: 'text' as const, text: '❌ 未修改：' + detail }]
-    }
-
-    const assertEditingAllowed = (sessionId: string | undefined): void => {
-      if (!bridge.canEditFiles(String(sessionId ?? ''))) {
-        throw new Error('仅管理员可编辑文件。')
-      }
-    }
-
-    register(defineTool({
-      name: 'code_safe_edit',
-      description: '安全编辑宿主文件（自动备份→精确/模糊匹配→替换→语法检查→失败回滚）。修改文件应优先使用本工具而非内置 edit/write。old 缺一个空格缩进会自动对齐重试；多匹配可用 occurrence=N 消歧。支持 replace / insert_at_line / delete_lines 三种模式。',
-      parameters: {
-        filepath: { type: 'string', required: true, description: '目标文件绝对路径（必须在 safeEditRoot 内）' },
-        old: { type: 'string', description: '被替换的旧文本（replace 模式必填）' },
-        new: { type: 'string', description: '替换后的新文本' },
-        occurrence: { type: 'number', description: '替换第 N 次出现（多匹配消歧，0=默认首次/需指定）' },
-        replace_all: { type: 'boolean', description: '是否替换所有匹配' },
-        mode: { type: 'string', description: 'replace（默认）| insert_at_line | delete_lines' },
-        line: { type: 'number', description: 'insert_at_line 目标行号（1-based，0=文件开头）' },
-        start_line: { type: 'number', description: 'delete_lines 起始行号（1-based 闭区间）' },
-        end_line: { type: 'number', description: 'delete_lines 结束行号（1-based 闭区间）' },
-      },
-      output: { schema: { type: 'json' }, render: renderEdit },
-      isConcurrencySafe: () => true,
-      execute: async (args, exec) => {
-        const a = args as Record<string, unknown>
-        if (typeof a.filepath !== 'string' || a.filepath === '') throw new Error('code_safe_edit: filepath 必填')
-        assertEditingAllowed(exec.agent?.session?.id)
-        const request: SafeEditRequest = {
-          filepath: a.filepath,
-          ...(typeof a.old === 'string' ? { old: a.old } : {}),
-          ...(typeof a.new === 'string' ? { new: a.new } : {}),
-          ...(typeof a.occurrence === 'number' ? { occurrence: a.occurrence } : {}),
-          ...(typeof a.replace_all === 'boolean' ? { replaceAll: a.replace_all } : {}),
-          ...(typeof a.mode === 'string' ? { mode: a.mode as SafeEditRequest['mode'] } : {}),
-          ...(typeof a.line === 'number' ? { line: a.line } : {}),
-          ...(typeof a.start_line === 'number' ? { startLine: a.start_line } : {}),
-          ...(typeof a.end_line === 'number' ? { endLine: a.end_line } : {}),
-        }
-        return await safeEdit(request, {
-          root: editing.safeEditRoot,
-          backupDir: editing.backupDir !== '' ? editing.backupDir : editing.safeEditRoot + '/.backups',
-        }) as unknown as JsonValue
-      },
-    }))
-
-    register(defineTool({
-      name: 'code_safe_rollback',
-      description: '把文件回滚到某个备份（code_safe_edit 生成 .bak）。不指定 backup_name 用最近一个；回滚前会先备份当前状态以便撤销。',
-      parameters: {
-        filepath: { type: 'string', required: true, description: '目标文件绝对路径' },
-        backup_name: { type: 'string', description: '备份文件名（不填用最近一个）' },
-      },
-      output: { schema: { type: 'json' }, render: (_a, value) => {
-        const v = value as { ok?: boolean; error?: string; file?: string }
-        return [{ type: 'text' as const, text: v.ok === true ? '✅ 已回滚：' + (v.file ?? '') : '❌ 回滚失败：' + (v.error ?? '') }]
-      } },
-      isConcurrencySafe: () => true,
-      execute: async (args, exec) => {
-        const a = args as Record<string, unknown>
-        if (typeof a.filepath !== 'string' || a.filepath === '') throw new Error('code_safe_rollback: filepath 必填')
-        assertEditingAllowed(exec.agent?.session?.id)
-        return await safeRollback(
-          a.filepath,
-          editing.backupDir !== '' ? editing.backupDir : editing.safeEditRoot + '/.backups',
-          editing.safeEditRoot,
-          typeof a.backup_name === 'string' && a.backup_name !== '' ? a.backup_name : undefined,
-        ) as unknown as JsonValue
-      },
-    }))
-
-    register(defineTool({
-      name: 'code_list_backups',
-      description: '列出 code_safe_edit 生成的备份（可按文件过滤）。',
-      parameters: {
-        filepath: { type: 'string', description: '可选：按文件路径过滤备份' },
-      },
-      output: { schema: { type: 'json' }, render: (_a, value) => {
-        const v = value as { backups?: Array<{ name: string }>; total?: number }
-        return [{ type: 'text' as const, text: (v.total ?? 0) + ' 个备份：' + (v.backups ?? []).map(b => b.name).join(', ') }]
-      } },
-      isConcurrencySafe: () => true,
-      execute: async (args, exec) => {
-        const a = args as Record<string, unknown>
-        assertEditingAllowed(exec.agent?.session?.id)
-        return await listBackups(
-          editing.backupDir !== '' ? editing.backupDir : editing.safeEditRoot + '/.backups',
-          typeof a.filepath === 'string' && a.filepath !== '' ? a.filepath : undefined,
-        ) as unknown as JsonValue
-      },
-    }))
-  }
 
   return () => {
     for (const dispose of disposers) dispose()

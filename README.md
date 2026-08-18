@@ -25,8 +25,8 @@
 | 文字图 | t2i 卡片渲染器（@napi-rs/canvas）：标题/粗斜体/删除线/引用/列表/代码块/表格/行内 code 胶囊/彩色 emoji/中文标点禁则；与 Hermes 原版同款数值（800px/26px/禁则集合/右缘 790） |
 | 出站 | 长消息按句号分段（默认 ≤100 字/条）、**>150 字渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji，渲染失败自动回退分段）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、loop 中间消息自动合并转发+撤回（interimMessages：带工具调用的中间文本**立即发送**，无工具调用的纯文本延迟一步以区分最终回复；一轮结束时缓冲 ≥2 条收敛为合并转发卡片并撤回原消息，单条直接发出；结算前先排空发送队列，不漏最后一条）、**宿主「计划书/提问卡」自动中继**（模型调用 exit_plan_mode / ask_user_question 时把计划全文/问题选项发到 QQ，避免只有 Web 端可见而 QQ 静默）、正在输入提示（set_input_status，仅私聊） |
 | 命令 | 斜杠命令（仅管理员）：`/new` 开新会话、`/stop` 停止生成、`/model` 查看/切换模型、`/workspace` 查看/切换工作区、`/preset` 查看/切换 agent 预设、`/status` 会话全景、`/retry` 重跑上一条、`/id` 会话标识、`/ver` 版本、`/ocr` 识别最近图片、`/mode` 切换出站模式、`/plan` 计划模式、`/goal` 目标记录、`/help` 帮助 |
-| 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_napcat_api`（14 个白名单 action）、`qq_group_history`、受守卫文件编辑 `code_safe_edit` `code_safe_rollback` `code_list_backups`（见下文「安全编辑」） |
-| 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计、`code_*` 编辑工具 QQ 渠道仅管理员 |
+| 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_napcat_api`（14 个白名单 action）、`qq_group_history`（文件编辑工具 `code_safe_edit` 等已拆至独立插件 dsh-safe-edit，见下文「安全编辑」） |
+| 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计 |
 | 会话 | 每个 QQ 会话一个持久 Agent（session id 稳定派生），重启后自动 resume；按 `agentPreset`/`workspacePath` 挂载到 preset 与工作区；每轮结束 flush 落盘 |
 | 运维 | 热加载（改 patch 配置/touch 即生效，无需重启 dsh）；临时媒体 TTL 过期清理 |
 | 提示词 | 自动注入 QQ 平台说明（纯文本输出、图片走 view_image、工具指引） |
@@ -154,7 +154,7 @@ header cwd 回填（会话 cwd 创建时冻结）：只要该 chat 用的是非�
 | `/ver` | 插件版本 + git commit |
 | `/ocr` | 识别本会话最近一张入站图片（NapCat ocr_image） |
 | `/mode [interim\|instant]` | 切换本会话出站模式（per-chat 覆盖） |
-| `/plan [on\|off\|内容]` | 计划模式开关；`/plan <内容>` 以计划模式处理该内容 |
+| `/plan [off\|内容]` | 宿主计划模式（`/plan` 进入；`/plan off` 直接退出，无 Web 审批卡；`/plan <内容>` 进入并处理该内容） |
 | `/goal [目标\|clear]` | 记录/更新本会话目标（每轮自动附带提醒） |
 
 `/preset` 切换为进程内 per-chat 覆盖（跨 `/new` 保留）：下一条消息重建会话并以新 preset
@@ -163,17 +163,12 @@ header cwd 回填（会话 cwd 创建时冻结）：只要该 chat 用的是非�
 
 ## 安全编辑（code_safe_edit）
 
-受守卫的宿主文件编辑，思路借鉴 [irmia_devkit_open](https://github.com/irmia2026/irmia_devkit_open)
-的 safe_edit（AGPL-3.0，此处为独立 TypeScript 清洁实现，未复制其代码）。三个工具：
+受守卫的宿主文件编辑由**独立插件 dsh-safe-edit** 提供（`~/dsh-plugins/dsh-safe-edit/`，2026-08-18 从本插件拆出，对所有通道全局注册）。三个工具：
+思路借鉴 [irmia_devkit_open](https://github.com/irmia2026/irmia_devkit_open) 的 safe_edit（AGPL-3.0，独立 TypeScript 清洁实现）。工具与边界见 dsh-safe-edit 仓库/说明：
 
-- `code_safe_edit`：read → 路径白名单 → **自动备份** → 匹配（精确 → 剥行号前缀 → 空白对齐/Aider 式）→ 替换 → 语法检查（js/cjs/mjs 走 `node --check`）→ **失败自动回滚**。支持 `occurrence=N` 多匹配消歧、`replace_all`、`insert_at_line`、`delete_lines`
-- `code_safe_rollback`：从备份恢复（回滚前先备份当前状态，可撤销）
-- `code_list_backups`：列备份
-
-启用与边界：
-- 配置 `safeEditRoot`（可编辑根目录，**空 = 整个工具组禁用**）；`backupDir` 可选（默认 `<safeEditRoot>/.backups`）
-- 路径必须在 `safeEditRoot` 内（`..` 穿越/符号链接逃逸拒绝）；单文件 ≤5MB；`old` 禁止为空
-- 权限（A1 范围）：**QQ 渠道仅管理员可用**（以最近入站用户判定）；Web 等其他渠道默认可用；非管理员不可见/不可用
+- `code_safe_edit`：read → 路径白名单 → **自动备份** → 匹配（精确 → 剥行号前缀 → 空白对齐/Aider 式）→ 替换 → 语法检查（js/cjs/mjs 走 `node --check`）→ **失败自动回滚**
+- `code_safe_rollback` / `code_list_backups`
+- 边界随会话 sandbox 策略：`danger-full-access` 无限制、`workspace-write` 限会话工作区、`read-only` 拒绝；无策略服务回落 `safeEditRoot`（默认 `/Users/mario/workspace`）
 - 模型默认优先此工具（QQ 平台提示词已注入引导；另有 `code-safe-edit` skill 全渠道引导）
 
 ## dm / group 访问策略（初始化必选）

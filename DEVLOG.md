@@ -80,6 +80,12 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 晚 | **修复后复验通过（用户截图确认）**：重启加载新代码后实测——3 轮工具调用 3 条中间文本：合并卡片正好 3 条、撤回提示 3 条、无重复、中间文本即时出现。三连修（排空队列/立即发送/去重）全部生效 |
 | 晚 | **/new 后开不了新对话（用户上报）**：`session "onebot-private-841859784" already has a persisted log on disk that does not match this live session (id collision)`。排查：会话 id 按 chat 确定性派生，/new 只把旧 id 记进**内存** brokenSessions 并清空 mapping，重启后裸 id 被复用撞上磁盘旧日志。修复：废弃 id 持久化（retired-sessions.json）+ 兜底记账修复（用真实 session id 收尾）；102/102 全过，详见 §3.14 |
 
+### 2026-08-18（safe-edit 拆分为独立插件 dsh-safe-edit）
+| 时间 | 工作 |
+|---|---|
+| 午 | **code_safe_edit / code_safe_rollback / code_list_backups 拆分出本插件**（用户要求）：新建独立插件 `~/dsh-plugins/dsh-safe-edit/`，安全编辑工具改为对所有通道（QQ/Web/其他）全局注册；可编辑根跟随会话 sandbox 策略——`danger-full-access` 无限制、`workspace-write` 限会话工作区、`read-only` 拒绝、无策略服务回落 `safeEditRoot`。本插件（onebot）删除 src/safe-edit.ts、tests/safe-edit.spec.ts 及 tools.ts 中相关注册块、index.ts 的 safeEditRoot/backupDir 配置项；相关测试并入 dsh-safe-edit（7/7 全过）。挂载配置：`~/.dsh/profiles/web/cordis.patch.yml` 移除 onebot 的 safeEditRoot，新增 dsh-safe-edit 条目。详见 §3.21 |
+| 午 | **真机排查 + 修复 sandbox policy bug + 重启上线**：首次给 `SandboxPolicyService.resolve()` 传 `{id}` stub 导致 `session.events` undefined → `Cannot read ... (reading 'length')`；按 dsh-tool-bash 改为传完整 `exec.agent.session` 对象。KEY 认知：**HMR 只重应用配置快照、不重新 require 插件 JS**，改 lib 必须重启 dsh（launchd 拉起）。重启后实测全链路：编辑→备份→回滚 通过；full-access 会话跨 /tmp 编辑成功。onebot 118/118、dsh-safe-edit 7/7 全绿。详见 §3.21 |
+
 ### 2026-08-17（会话字段对齐 Web：preset 记录）
 
 | 时间 | 工作 |
@@ -250,7 +256,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 - **验证**：tsc 零错误；vitest 115/115 全绿（33 例 bridge，+2：resume 非默认 cwd → 覆盖回填 + cwd==默认 → 无覆盖；计划书/提问中继内容 + 同 id 连续重发去重）。测试注意：dedupe 只记「最近一次」message id，重发必须紧跟原发、中间不能插新 id
 - **真机（已上线验证）**：中继生效——ask_user_question 提问以 **t2i 卡片**到达 QQ、可 QQ 直接作答，且 QQ 作答能解析上游 ask_user_question（工具调用返回了 QQ 文本答案，对话不卡死）。**已知限制**：Web 端提问/计划卡视觉上不自动清除——宿主平面 UI（ctx.userQuestions），onebot 不动宿主无法处理，仅保证 QQ 端可获知+可作答。`/workspace` 跨重启真机：当前 chat 为默认 cwd 不触发回填（符合设计），需用户 /workspace 切非默认目录后重启实测
 
-### 3.20 受守卫文件编辑 code_safe_edit/rollback/list_backups + code-safe-edit skill（2026-08-18，已实现待上线）
+### 3.20 受守卫文件编辑 code_safe_edit/rollback/list_backups + code-safe-edit skill（2026-08-18，已上线后拆至 dsh-safe-edit）
 - **需求**：用户问可否借鉴 irmia_devkit 的 safe_edit（AGPL-3.0）→ 定方案 A1：全渠道可用 + QQ 管理员门控 + skill 引导模型默认优先
 - **实现**（src/safe-edit.ts + src/tools.ts + src/bridge.ts + src/index.ts + src/prompt.ts + skill）：
   - `safe-edit.ts`：`checkPathAllowed`（根内 + .. 穿越 + 符号链接逃逸）→ read（CRLF 归一）→ `backupFor`（时间戳 .bak + 惰性剪枝 50 份）→ 匹配链（精确 → `stripLineNumberPrefixes` 剥读输出行号前缀 → `alignWhitespace` Aider 式缩进增量对齐）→ 多匹配返回 `{matches:[{line,col,preview}]}` + occurrence=N/replace_all → replace/insert_at_line/delete_lines → 原子写（tmp+rename）→ 语法检查（js/cjs/mjs `node --check`，可注入桩）→ 失败 `finishEdit` 自动回滚 + 结构化错误；`safeRollback`（回滚前再备份当前状态，可撤销）；`listBackups`（≤50）
@@ -262,6 +268,32 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
   - 部署配置 `~/dsh/profiles/web/cordis.patch.yml` 设 `safeEditRoot: /Users/mario/workspace`
 - **验证**：tsc 0 错误；vitest 128/128 全绿（12 文件，+safe-edit 10 例 + 门控 1 例）。测试注意：align 后须回写对齐后的 newText（否则替换丢缩进）；insert_at_line 的 insert 不能自带尾 \n（join 会再补一个）
 - **待上线**：构建 → kill 由 launchd 拉起 → 真机：QQ 让 bot 用 code_safe_edit 改 workspace 下文件测一次（含一次改坏语法看自动回滚）
+- **后续**：2026-08-18 已上线，随后按用户要求拆分为独立插件 dsh-safe-edit（见 §3.21），本段保留为拆分前 A1 实现的历史记录
+
+### 3.21 安全编辑从 onebot 拆分为独立插件 dsh-safe-edit（2026-08-18，已完成上线）
+- **需求**：用户问"全局生效"——code_safe_edit 原只随 onebot 在 QQ 通道注册，规则也只在 QQ 平台提示词注入；想把安全编辑拆成独立插件，让 Web 等其他通道也能用；同时要"全局规则注入"（~/.dsh/AGENTS.md）
+- **三个决策（用户拍板）**：① 权限策略**默认允许所有会话编辑**（去掉原 A1 的 QQ 管理员门控）；② 可编辑根**跟随会话 sandbox 策略**：`danger-full-access` 无限制、`workspace-write` 限会话工作区、`read-only` 拒绝；③ 仅本机落地（不做 git/npm 发布）
+- **实现**（独立插件 `~/dsh-plugins/dsh-safe-edit/`，Cordis 直挂 patch）：
+  - `src/safe-edit.ts`：从 onebot 原样搬运（零 onebot 依赖，只 import node:*）；`checkPathAllowed` 语义改为 `root===''`=无限制（原为禁）
+  - `src/policy.ts`：`resolveRoot(policy, configRoot, configBackupDir)`——policy 三档映射 + 无策略服务回落 config、空根拒绝
+  - `src/tools.ts`：注册三工具，`rootFor(exec)` 每次按 `ctx.get('sandboxPolicy').resolve({session})` 解析边界；`inject: ['tools']`
+  - `src/index.ts`：Config `safeEditRoot`（默认 `/Users/mario/workspace`）/`backupDir`
+  - 挂载：`~/dsh/profiles/web/cordis.patch.yml` 移除 onebot 的 safeEditRoot 条目、新增 `dsh-safe-edit` 条目
+  - onebot 侧删除：src/safe-edit.ts、tests/safe-edit.spec.ts、tools.ts 注册块（含 assertEditingAllowed/bridge.canEditFiles 依赖）、index.ts 的 safeEditRoot/backupDir 配置；prompt.ts 的「优先 code_safe_edit」提示保留（工具已全局，指引仍有效）；README/DEVLOG 同步
+  - 测试迁到 dsh-safe-edit（7/7 全绿：原 6 例 + 新增 resolveRoot 三档映射 1 例；空 root 语义断言更新为"unrestricted"）
+- **坑（真机排查出根因）**：首次实现 `resolvePolicy` 只给 sandbox-policy 的 `resolve()` 传 `{id}` stub——但 dsh 的 `SandboxPolicyService.resolve` 会读 `session.events`/`session.header.cwd`，stub 无 events → `Cannot read properties of undefined (reading 'length')`。**修复**：按 dsh-tool-bash 的做法直接传完整 `exec.agent.session` 对象。另外 HMR 只重应用配置快照、**不重新 require 插件 JS**，改完 `lib/*.js` 必须重启 dsh（launchd `ai.dsh.web` kill 自动拉起）才生效
+- **验证**：onebot tsc 0 错误 + 118/118 全绿（safe-edit 相关 10 例移除后无回归）；dsh-safe-edit 7/7 全绿；真机（重启后）code_safe_edit 编辑 /Users/mario/workspace 文件成功、自动生成 .bak、code_safe_rollback 恢复；~/.dsh/AGENTS.md 已注入生效
+
+### 3.22 /plan 转发宿主命令：修复 QQ 无法退出宿主计划模式（2026-08-18，已实现待上线）
+- **症状（用户报告并确认）**：QQ 无法退出 plan 模式。根因双重锁死：① 插件 `/plan`（3.18 版自建「前缀计划模式」）劫持了宿主同名命令，QQ 发 `/plan off` 只关前缀 flag，宿主 plan-mode 的 `/plan off` 命令收不到；② 3.17(方案 A) 的 prompt 明令禁用 `exit_plan_mode` → 宿主 plan-mode 唯一工具退路被堵 → 只剩 Web 切换 session 模式
+- **关键事实（源码核实 dsh-plan-mode）**：宿主 `/plan` 命令 `handler` 里 `/plan off` 走 `set(agent,false)` **纯文本直退、无 userQuestions/审批卡**；`/plan <内容>` 会 `agent.steer` 自动把内容当用户消息注入。所以 QQ 退出宿主 plan 完全可走 `/plan off`，不依赖 Web
+- **修法（收敛到宿主语义）**：
+  - `bridge.ts`：删除 `chatPlanModes` map 与 `prefixTurn` 的【计划模式】前缀注入；`handlePlanCommand` 改为**转发** `ctx.commands.execute(chat.agent, '/plan [off|内容]')` 并把宿主返回文本（Plan mode on/off…）中继到 QQ（off 时附提示）；`BridgeDeps` 增可选 `commands`
+  - `index.ts`：inject 增加 `commands`；Context 类型化；deps 传入 `ctx.commands`
+  - `prompt.ts`：仍禁 `ask_user_question` 与 `exit_plan_mode`（审批卡仅 Web）；新增「处于宿主计划模式时输出纯文本计划并提示 /plan off 退出」→ **不会**重引入「Web 计划书手机 QQ 无法审批」问题
+  - 测试改写：/plan 断言改为「转发到 commands.execute(路径/内容)+中继宿主文本」；prompt 断言 /plan off 引导；删除 chatPlanModes 断言
+- **并发合流**：期间另一次会话把 safe_edit 拆为独立插件 dsh-safe-edit（§3.21，用户拍板），onebot 移除 code_* 注册与源码；本改动在其上叠加（commands 注入与拆分移除共存），onebot 内 safe-edit 死拷贝已清理，118/118 仍绿
+- **验证**：tsc 0；vitest 118/118；待上线：kill 由 launchd 拉起 → QQ 实测 /plan 进宿主模式→文本计划→/plan off 直退→继续执行（全程无 Web 审批卡）
 
 ---
 ## 4. 功能清单（当前状态）
@@ -279,6 +311,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 - [x] loop 中间消息自动合并转发+撤回（interimMessages：带 tool-call 的中间文本立即发送、无工具调用延迟一步判定；缓冲 ≥2 条收敛为合并转发卡片并撤回原消息；顺序：合并转发 → t2i/final → 撤回；结算前排空发送队列不漏最后一条）
 - [x] 图片（路径/URL，≤9 张）、语音、视频、文件工具；正在输入提示（私聊）
 - [x] qq_napcat_api 白名单代理（14 个 action）、qq_group_history
+- [x] ~~受守卫文件编辑 code_safe_edit/rollback/list_backups~~（**2026-08-18 已拆至独立插件 dsh-safe-edit**，随会话 sandbox 策略动态边界，跨通道全局；见 §3.21）
 
 ### t2i 渲染（2026-08-14 移植，对照 T2I_DEV_DOC）
 - [x] AstrBot 元素化两遍流程（先算高再绘制）；800px/26px/右缘 790
@@ -290,7 +323,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 ### 运维
 - [x] 会话映射持久化 + 重启 resume（含引导期模型选择等待）
 - [x] 热加载：改 patch 文件/touch 即生效（无需重启 dsh）
-- [x] 测试：105 vitest（单元 + 真实 WS 对端 + 全管线 + t2i 像素扫描 + 预设/工作区回归 + loop 合并/斜杠命令回归 + 图片压缩 + 废弃会话 id 持久化/重启回归 + preset 记录/恢复回归）
+- [x] 测试：118 vitest（单元 + 真实 WS 对端 + 全管线 + t2i 像素扫描 + 预设/工作区回归 + loop 合并/斜杠命令回归 + 图片压缩 + 废弃会话 id 持久化/重启回归 + preset 记录/恢复回归；safe-edit 测试已随拆分迁移至 dsh-safe-edit）
 
 ---
 
