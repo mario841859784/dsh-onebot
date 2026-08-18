@@ -204,6 +204,12 @@ export declare class ChatBridge {
     private prefixTurn;
     /** Per-chat outbound-mode override (/mode), falling back to the global config. */
     private effectiveInterim;
+    /** Tool calls whose host-plane UI has no QQ equivalent; relay them to the chat. */
+    private relayHostCards;
+    /** Render an exit_plan_mode tool-call's plan for QQ, or undefined when unusable. */
+    private renderPlanCard;
+    /** Render an ask_user_question tool-call's questions for QQ, or undefined when unusable. */
+    private renderQuestionCard;
     /**
      * Slash-command router. Commands are admin-only (the Hermes member
      * slash-command block) and are matched on the first word; a leading

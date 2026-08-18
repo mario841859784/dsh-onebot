@@ -23,7 +23,7 @@
 | 入站 | 私聊/群聊、段数组优先解析（CQ 字符串回退）、CQ 反转义、@/回复触发检测（fail-closed）、图片四路解析（url/base64/file/hash）、大图自动压缩（长边 ≤`imageMaxSize`，GIF 不压）、文件段双通道接收（CDN 直链 get_private_file_url + get_file base64/url 回退）、表情 id→emoji/卡片/戳一戳段类型、引用消息自动取原文（get_msg）、合并转发自动展开（get_forward_msg） |
 | 语音 | ffmpeg 转 16kHz WAV + whisper 转写（openai-whisper / whisper.cpp / 自定义命令），失败降级 [语音] 占位 |
 | 文字图 | t2i 卡片渲染器（@napi-rs/canvas）：标题/粗斜体/删除线/引用/列表/代码块/表格/行内 code 胶囊/彩色 emoji/中文标点禁则；与 Hermes 原版同款数值（800px/26px/禁则集合/右缘 790） |
-| 出站 | 长消息按句号分段（默认 ≤100 字/条）、**>150 字渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji，渲染失败自动回退分段）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、loop 中间消息自动合并转发+撤回（interimMessages：带工具调用的中间文本**立即发送**，无工具调用的纯文本延迟一步以区分最终回复；一轮结束时缓冲 ≥2 条收敛为合并转发卡片并撤回原消息，单条直接发出；结算前先排空发送队列，不漏最后一条）、正在输入提示（set_input_status，仅私聊） |
+| 出站 | 长消息按句号分段（默认 ≤100 字/条）、**>150 字渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji，渲染失败自动回退分段）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、loop 中间消息自动合并转发+撤回（interimMessages：带工具调用的中间文本**立即发送**，无工具调用的纯文本延迟一步以区分最终回复；一轮结束时缓冲 ≥2 条收敛为合并转发卡片并撤回原消息，单条直接发出；结算前先排空发送队列，不漏最后一条）、**宿主「计划书/提问卡」自动中继**（模型调用 exit_plan_mode / ask_user_question 时把计划全文/问题选项发到 QQ，避免只有 Web 端可见而 QQ 静默）、正在输入提示（set_input_status，仅私聊） |
 | 命令 | 斜杠命令（仅管理员）：`/new` 开新会话、`/stop` 停止生成、`/model` 查看/切换模型、`/workspace` 查看/切换工作区、`/preset` 查看/切换 agent 预设、`/status` 会话全景、`/retry` 重跑上一条、`/id` 会话标识、`/ver` 版本、`/ocr` 识别最近图片、`/mode` 切换出站模式、`/plan` 计划模式、`/goal` 目标记录、`/help` 帮助 |
 | 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_napcat_api`（14 个白名单 action）、`qq_group_history` |
 | 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计 |
@@ -131,6 +131,10 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 `/workspace <目录>` 切换（realpath + 目录校验）：记录覆盖后会 retire 当前 agent，
 下一条消息以新目录重建会话，旧会话保留在磁盘。`/workspace` 无参数查看当前目录，
 `/workspace list` 列出全部 workspace 记录。
+
+`/workspace` 的 per-chat 覆盖是进程内记录，但重启后会自动从 resume 会话的
+header cwd 回填（会话 cwd 创建时冻结）：只要该 chat 用的是非默认目录，重启后
+`/workspace` 与新会话都会继续使用原目录；cwd 等于配置默认的 chat 不受影响。
 
 会话自动挂载到 GUI 工作区：仅当会话 cwd 等于配置的 `workspacePath`（未配置时为宿主 cwd）
 才自动创建 workspace；沿用旧 cwd 的遗留会话只在已有 workspace 拥有该路径时挂载，不会自动新建。

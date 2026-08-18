@@ -242,6 +242,14 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 - **验证**：tsc 零错误；vitest 113/113 全绿（31 例 bridge，+5：/id /ver /status 信息、/goal /plan /mode per-chat 状态与前缀、/retry 重放与 /new 后清除、/preset 切换重建（mock resolve）与无效拒绝、/ocr 无图提示 + mock ocr_image 成功）
 - **待上线**：构建 lib → kill 主进程由 launchd ai.dsh.web 拉起 → `/ver` `/status` `/id` 真机看输出；`/ocr` 需用户发图实测（NapCat ocr_image 对 base64 的接受度以真机为准，失败则退 file/直链）
 
+### 3.19 /workspace 跨重启持久化（方案 B）+ 宿主计划书/提问卡中继到 QQ（2026-08-18，已实现待上线）
+- **需求**：① `/workspace` 指定工作区后重启应默认继续使用；② 宿主弹「计划书/选项卡」时 QQ 端静默、对话停住——exit_plan_mode 的 plan-review 卡与 ask_user_question 走宿主平面 ctx.userQuestions，不经 session 事件流；模型调用时文本块为空，原 `text === ''` 早返回让 QQ 静默
+- **实现**（src/bridge.ts）：
+  - **方案 B（workspace 回填）**：`loadMapping` resume 成功后，若 `handle.agent.session.header?.cwd` 非空且 != `effectiveCwd()` 默认，回填 `chatWorkspacePaths.set(chatId, header.cwd)`。重启后该 chat 的 /workspace 显示原目录、/new 新会话也用回原目录；cwd==默认的旧 chat 不产生多余覆盖。不动 mapping 结构、无迁移
+  - **计划/提问中继**：`onSessionEvent` 的 assistant/message 分支，dedupe 之后、`text === ''` 早返回之前调用 `relayHostCards`——扫描 content 的 tool-call 块：`exit_plan_mode` → renderPlanCard（「【📋 计划书】…plan 全文」）、`ask_user_question` → renderQuestionCard（编号问题 + 选项 + 多选标注），走 sendToChat 出站管线（自动分段/t2i）。independent of interim 模式；沿用 lastHandledMessageId 去重；arguments 解析失败降级静默。边界：QQ 回复暂不能操作宿主 plan-review/option 确认（宿主平面，不动宿主），只保证用户能获知内容
+- **验证**：tsc 零错误；vitest 115/115 全绿（33 例 bridge，+2：resume 非默认 cwd → 覆盖回填 + cwd==默认 → 无覆盖；计划书/提问中继内容 + 同 id 连续重发去重）。测试注意：dedupe 只记「最近一次」message id，重发必须紧跟原发、中间不能插新 id
+- **待上线**：构建 lib → kill 由 launchd 拉起 → 真机：重启后 /workspace 是否记住 + 一次真实计划书/提问看 QQ 是否收到中继
+
 ---
 ## 4. 功能清单（当前状态）
 

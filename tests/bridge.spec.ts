@@ -2194,4 +2194,142 @@ describe('ChatBridge', () => {
     await h.bridge.stop()
     await h.connection.stop()
   })
+
+  it('restores the /workspace override from a resumed session cwd (方案 B)', async () => {
+    const ctx = new Context()
+    const sessions = { flush: vi.fn(async () => undefined) }
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
+    const otherDir = mkdtempSync(join(tmpdir(), 'onebot-other-'))
+    await writeFile(join(mediaDir, 'chat-sessions.json'), JSON.stringify({ 'private:10001': 'onebot-private-10001-aabbcc' }), 'utf8')
+    const resume = vi.fn(async () => ({
+      agent: {
+        session: { id: 'onebot-private-10001-aabbcc', seq: 1, header: { cwd: otherDir } },
+        status: 'idle',
+        cancel: () => undefined,
+        followup: () => undefined,
+        whenIdle: async () => undefined,
+      },
+      dispose: async () => undefined,
+    }))
+    const agents = { create: vi.fn(), resume } as never
+    const connection = new OneBotConnection({
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+    })
+    const bridge = new ChatBridge({
+      ctx,
+      connection,
+      media: new MediaStore(join(mediaDir, 'media'), 6),
+      transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
+      agents,
+      sessions: sessions as never,
+      agentPresets: undefined as never,
+      workspaceRegistry: undefined as never,
+      agentDefaultModel: undefined,
+      defaultModel: undefined,
+      config: {
+        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
+        sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
+        maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
+        textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
+        agentPreset: 'standard', workspacePath: mediaDir,
+      },
+      policy: {
+        dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
+        adminUsers: ['10001'], allowAllUsers: false, requireMention: true,
+      },
+      log: () => undefined,
+    })
+    bridge.start()
+    const overrides = () => (bridge as unknown as { chatWorkspacePaths: Map<string, string> }).chatWorkspacePaths
+    // Resume carried a non-default cwd → the override map must be restored.
+    await vi.waitFor(() => expect(overrides().get('private:10001')).toBe(otherDir))
+    // A chat whose session cwd equals the configured default must NOT get an override.
+    const { realpathSync } = await import('node:fs')
+    await writeFile(join(mediaDir, 'chat-sessions.json'), JSON.stringify({ 'private:10001': 'onebot-private-10001-zzzz' }), 'utf8')
+    const bridge2Dir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
+    await writeFile(join(bridge2Dir, 'chat-sessions.json'), JSON.stringify({ 'private:10002': 'onebot-private-10002-zzzz' }), 'utf8')
+    const resume2 = vi.fn(async () => ({
+      agent: { session: { id: 'onebot-private-10002-zzzz', seq: 1, header: { cwd: realpathSync(bridge2Dir) } }, status: 'idle', cancel: () => undefined, followup: () => undefined, whenIdle: async () => undefined },
+      dispose: async () => undefined,
+    }))
+    const ctx2 = new Context()
+    const bridge2 = new ChatBridge({
+      ctx: ctx2,
+      connection: new OneBotConnection({ mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3002', accessToken: '', callTimeoutMs: 3_000 }),
+      media: new MediaStore(join(bridge2Dir, 'media'), 6),
+      transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
+      agents: { create: vi.fn(), resume: resume2 } as never,
+      sessions: { flush: vi.fn(async () => undefined) } as never,
+      agentPresets: undefined as never,
+      workspaceRegistry: undefined as never,
+      agentDefaultModel: undefined,
+      defaultModel: undefined,
+      config: {
+        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
+        sensitivePatterns: [], mediaDir: bridge2Dir, maxImageBytes: 8 * 1024 * 1024,
+        maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
+        textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
+        agentPreset: 'standard', workspacePath: realpathSync(bridge2Dir),
+      },
+      policy: {
+        dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
+        adminUsers: ['10001'], allowAllUsers: false, requireMention: true,
+      },
+      log: () => undefined,
+    })
+    bridge2.start()
+    await vi.waitFor(() => expect((bridge2 as unknown as { chatWorkspacePaths: Map<string, string> }).chatWorkspacePaths.get('private:10002')).toBeUndefined())
+    await bridge.stop()
+    await bridge2.stop()
+    await connection.stop()
+  })
+
+  it('relays host plan books and option cards to the chat (exit_plan_mode / ask_user_question)', async () => {
+    const h = await makeCmdHarness()
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const session = { id: h.sessionIds[0] }
+
+    // A plan review tool call (empty text block) must still reach QQ.
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 1, message: { role: 'assistant', id: 'relay-plan-1', content: [
+        { type: 'text', text: '' },
+        { type: 'tool-call', id: 'c1', name: 'exit_plan_mode', arguments: JSON.stringify({ plan: '# 测试计划\n\n实现 A 与 B。' }) },
+      ] },
+    }))
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('计划书'))).toBe(true)
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('实现 A 与 B'))).toBe(true)
+    })
+
+    // Re-emitting the same message id consecutively (streaming/usage) must not
+    // double-relay — dedupe keys on the latest handled id, re-emits arrive in order.
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 1, message: { role: 'assistant', id: 'relay-plan-1', content: [
+        { type: 'tool-call', id: 'c1', name: 'exit_plan_mode', arguments: JSON.stringify({ plan: '# 测试计划\n\n实现 A 与 B。' }) },
+      ] },
+    }))
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(h.outbound.filter(f => JSON.stringify(f.params).includes('计划书'))).toHaveLength(1)
+
+    // An option card (ask_user_question) with questions/options.
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 2, message: { role: 'assistant', id: 'relay-q-1', content: [
+        { type: 'tool-call', id: 'c2', name: 'ask_user_question', arguments: JSON.stringify({ questions: [
+          { id: 'q1', question: '选哪个方案？', options: [{ label: '方案A' }, { label: '方案B' }], multi_select: true },
+        ] }) },
+      ] },
+    }))
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('选哪个方案？'))).toBe(true)
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('方案A'))).toBe(true)
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('可多选'))).toBe(true)
+    })
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
 })
