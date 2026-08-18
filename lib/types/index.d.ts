@@ -112,6 +112,8 @@ export interface Config {
 }
 /** Default media dir: <dsh-home>/media/onebot (dsh-home = $DSH_HOME or ~/.dsh). */
 export declare function defaultMediaDir(): string;
+/** The dsh data home ($DSH_HOME or ~/.dsh); source of the .agent-presets dir. */
+export declare function dshHome(): string;
 export declare const Config: z<Config>;
 /** Mount the plugin. */
 export declare function apply(ctx: Context, config: Config): void;

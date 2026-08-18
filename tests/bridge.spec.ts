@@ -1954,4 +1954,244 @@ describe('ChatBridge', () => {
     await bridge.stop()
     await connection.stop()
   })
+
+  /** Compact harness for the slash-command tests (options inject stubs). */
+  async function makeCmdHarness(opts?: {
+    agentPresets?: unknown
+    dshHome?: string
+    ocrResult?: unknown
+    interimMessages?: boolean
+  }) {
+    const ctx = new Context()
+    const sessionIds: string[] = []
+    const capturedMeta: Array<{ cwd?: string; agentPreset?: string }> = []
+    const captured = { followups: [] as Array<{ text: string; sessionId: string }>, createdMeta: capturedMeta }
+    const agents = makeFakeAgents(sessionIds, captured)
+    const sessions = { flush: vi.fn(async () => undefined) }
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
+    const connection = new OneBotConnection({
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+    })
+    const bridge = new ChatBridge({
+      ctx,
+      connection,
+      dshHome: opts?.dshHome,
+      media: new MediaStore(join(mediaDir, 'media'), 6),
+      transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
+      agents: agents as never,
+      sessions: sessions as never,
+      agentPresets: opts?.agentPresets as never,
+      workspaceRegistry: undefined as never,
+      agentDefaultModel: undefined,
+      defaultModel: () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+      config: {
+        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        interimMessages: opts?.interimMessages ?? true, sendErrorNotice: true, restrictedMemberPrefix: false,
+        sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
+        maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
+        textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
+        agentPreset: 'standard', workspacePath: mediaDir,
+      },
+      policy: {
+        dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
+        adminUsers: ['10001'], allowAllUsers: false, requireMention: true,
+      },
+      log: () => undefined,
+    })
+    if (opts?.ocrResult !== undefined) {
+      const real = connection.call.bind(connection)
+      connection.call = (async (action: string, params: unknown) => {
+        if (action === 'ocr_image') return opts.ocrResult
+        return await real(action, params)
+      }) as never
+    }
+    connection.onMessage = event => { void bridge.handleInbound(event) }
+    bridge.start()
+    connection.start()
+    await vi.waitFor(() => expect(connection.address()).toBeDefined())
+    const address = connection.address()!
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
+    const outbound: Array<Record<string, unknown>> = []
+    client.on('message', data => {
+      const frame = JSON.parse(data.toString()) as Record<string, unknown>
+      outbound.push(frame)
+      if (typeof frame.echo === 'string') {
+        client.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 7 }, echo: frame.echo }))
+      }
+    })
+    const sendText = (text: string): void => {
+      client.send(JSON.stringify({
+        post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002,
+        message: [{ type: 'text', data: { text } }], raw_message: text,
+        sender: { user_id: 10001, nickname: '小明' },
+      }))
+    }
+    const chats = () => (bridge as unknown as {
+      chats: Map<string, { agent: { session: { id: string } }, lastFollowup: string | undefined, busy: boolean }>
+    }).chats
+    return { ctx, sessionIds, capturedMeta, captured, sessions, mediaDir, connection, bridge, client, outbound, sendText, chats }
+  }
+
+  it('slash /id /ver /status report the session state', async () => {
+    const h = await makeCmdHarness()
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+
+    h.sendText('/id')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('chat    : private:10001'))).toBe(true)
+    })
+
+    h.sendText('/ver')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('dsh-onebot v'))).toBe(true)
+    })
+
+    h.sendText('/status')
+    await vi.waitFor(() => {
+      const joined = h.outbound.map(f => JSON.stringify(f.params)).join('\n')
+      expect(joined).toContain('chat    : private:10001')
+      expect(joined).toContain('model   : deepseek/deepseek-chat')
+      expect(joined).toContain('preset  : （未记录）')
+    })
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('slash /goal /plan /mode set per-chat state and prefix turns', async () => {
+    const h = await makeCmdHarness()
+
+    h.sendText('/goal 验证 9 个命令')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('目标已记录'))).toBe(true)
+    })
+    h.sendText('普通消息')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    expect(h.captured.followups[0].text).toContain('【当前目标】验证 9 个命令')
+
+    h.sendText('/plan on')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('计划模式已开启'))).toBe(true)
+    })
+    h.sendText('再来一轮')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    expect(h.captured.followups[1].text).toContain('【计划模式】')
+    expect(h.captured.followups[1].text).toContain('再来一轮')
+
+    h.sendText('/plan 写一个新模块')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(3))
+    expect(h.captured.followups[2].text).toContain('【计划模式】')
+    expect(h.captured.followups[2].text).toContain('写一个新模块')
+
+    h.sendText('/plan off')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('计划模式已关闭'))).toBe(true)
+    })
+    h.sendText('没有计划了')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(4))
+    expect(h.captured.followups[3].text).not.toContain('【计划模式】')
+
+    h.sendText('/mode instant')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('已切换为 instant'))).toBe(true)
+    })
+    h.sendText('/mode')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('instant（逐条即时）（/mode 覆盖）'))).toBe(true)
+    })
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('slash /retry re-feeds the last user message; /new clears it', async () => {
+    const h = await makeCmdHarness()
+    h.sendText('第一次的问题')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    expect(h.captured.followups[0].text).toContain('第一次的问题')
+
+    h.sendText('/retry')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    expect(h.captured.followups[1].text).toContain('第一次的问题')
+    expect(h.captured.followups[1].sessionId).toBe(h.captured.followups[0].sessionId)
+
+    // /new retires the chat agent; /retry then reports nothing to retry.
+    h.sendText('/new')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('已开启新会话'))).toBe(true)
+    })
+    h.sendText('/retry')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('没有可重试'))).toBe(true)
+    })
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('slash /preset switches the agent preset for the next session', async () => {
+    const resolve = vi.fn(async (id?: string) => {
+      if (id === 'standard' || id === 'router-flash') return { id: id ?? 'standard' }
+      throw new Error('unknown preset ' + id)
+    })
+    const h = await makeCmdHarness({
+      agentPresets: { defaultId: 'standard', resolve, mount: vi.fn(async () => ({ id: 'router-flash' })) },
+    })
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    expect(h.capturedMeta[0].agentPreset).toBe('standard')
+
+    h.sendText('/preset')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('当前预设：standard'))).toBe(true)
+    })
+
+    h.sendText('/preset router-flash')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('预设已切换：router-flash'))).toBe(true)
+    })
+    expect(h.chats().has('private:10001')).toBe(false)
+
+    h.sendText('下一条')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    expect(h.capturedMeta[1].agentPreset).toBe('router-flash')
+
+    h.sendText('/preset nope')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('预设不存在'))).toBe(true)
+    })
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('slash /ocr recognizes the most recent inbound image', async () => {
+    const h = await makeCmdHarness({ ocrResult: { texts: [{ text: '第一行文字' }, { text: '第二行文字' }] } })
+
+    // No image yet → friendly prompt.
+    h.sendText('/ocr')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('请先在对话里发一张图片'))).toBe(true)
+    })
+
+    // Seed a fake image path and OCR it (ocr_image stubbed above).
+    const png = join(h.mediaDir, 'seed.png')
+    await writeFile(png, Buffer.from('89504e470d0a1a0a', 'hex'))
+    ;(h.bridge as unknown as { chatLastImagePaths: Map<string, string> }).chatLastImagePaths.set('private:10001', png)
+    h.sendText('/ocr')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('第一行文字'))).toBe(true)
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('第二行文字'))).toBe(true)
+    })
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
 })

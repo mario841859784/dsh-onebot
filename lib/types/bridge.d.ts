@@ -108,6 +108,8 @@ export interface AgentDefaultModelLike {
 export interface BridgeDeps {
     ctx: Context;
     connection: OneBotConnection;
+    /** The dsh data home (default <home>/.dsh); used to enumerate agent presets. */
+    dshHome?: string | undefined;
     media: MediaStore;
     transcriber: Transcriber;
     agents: AgentRegistry;
@@ -134,6 +136,20 @@ export declare class ChatBridge {
     /** Per-chat workspace override set by /workspace (survives /new resets,
      * so the next agent for the chat is created under the new directory). */
     private readonly chatWorkspacePaths;
+    /** Per-chat agent-preset override set by /preset (survives /new resets). */
+    private readonly chatPresetOverrides;
+    /** Per-chat outbound-mode override set by /mode (true=interim, false=instant);
+     * undefined defers to the global config. */
+    private readonly chatInterimOverrides;
+    /** Per-chat plan mode set by /plan (prefixes turns with a plan-only directive). */
+    private readonly chatPlanModes;
+    /** Per-chat goal set by /goal (reminds the model of the objective each turn). */
+    private readonly chatGoals;
+    /** Per-chat most recent inbound image path (for /ocr), survives /new resets. */
+    private readonly chatLastImagePaths;
+    /** Plugin version + git commit, read once for /ver. */
+    private pluginVersion;
+    private pluginCommit;
     private stopping;
     private mappingSaveTimer;
     /** Resolves once the on-disk chat mapping has been loaded. */
@@ -180,6 +196,14 @@ export declare class ChatBridge {
      */
     handleInbound(event: OneBotEvent): Promise<void>;
     private processInbound;
+    /** Feed one user message into a chat's agent (create on demand). Records
+     * the base text for /retry and applies per-chat /goal + /plan prefixes. */
+    private dispatchFollowup;
+    /** Prepend per-chat context directives (/goal reminder, /plan plan-only
+     * instruction) to a turn's user text. */
+    private prefixTurn;
+    /** Per-chat outbound-mode override (/mode), falling back to the global config. */
+    private effectiveInterim;
     /**
      * Slash-command router. Commands are admin-only (the Hermes member
      * slash-command block) and are matched on the first word; a leading
@@ -197,6 +221,32 @@ export declare class ChatBridge {
     private handleModelCommand;
     /** /workspace: show current cwd, list workspaces, or switch directory. */
     private handleWorkspaceCommand;
+    /** /id: show the chat/session identity (admin debug aid). */
+    private handleIdCommand;
+    /** /ver: plugin version + git commit (each read once and cached). */
+    private handleVerCommand;
+    /** /status: one-shot snapshot of the chat session state. */
+    private handleStatusCommand;
+    /** /mode: per-chat outbound-mode override (interim vs instant). */
+    private handleModeCommand;
+    /** /retry: re-feed the last user message into the agent. */
+    private handleRetryCommand;
+    /** /ocr: OCR the most recent inbound image via NapCat's ocr_image. */
+    private handleOcrCommand;
+    /** /preset: show available agent presets and the current one, or switch. */
+    private handlePresetCommand;
+    /** /plan: per-chat plan mode — turns are prefixed with a plan-only directive. */
+    private handlePlanCommand;
+    /** /goal: per-chat objective — recorded and reminded on each turn. */
+    private handleGoalCommand;
+    /** Enumerate the on-disk agent presets (<dsh-home>/.agent-presets/*). */
+    private listPresets;
+    /** Plugin version from package.json, read once. */
+    private packageVersion;
+    /** Git short commit of the plugin repo, read once (best-effort). */
+    private gitCommit;
+    /** Read the chat→session mapping file (for /id and /status when no live chat). */
+    private sessionIdFromMapping;
     /** Current default model selection, best-effort (absent services return undefined). */
     private safeDefaultModel;
     /**

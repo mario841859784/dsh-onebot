@@ -105,6 +105,11 @@ export function defaultMediaDir(): string {
   return join(home, 'media', 'onebot')
 }
 
+/** The dsh data home ($DSH_HOME or ~/.dsh); source of the .agent-presets dir. */
+export function dshHome(): string {
+  return ENV('DSH_HOME') !== '' ? ENV('DSH_HOME') : join(process.env.HOME ?? '/tmp', '.dsh')
+}
+
 export const Config: z<Config> = z.object({
   mode: z.union([z.const('reverse'), z.const('forward')]).default('reverse')
     .description('连接模式：reverse = NapCat ws-reverse 拨入（本插件监听端口）；forward = 本插件主动连接 NapCat 的 ws 服务'),
@@ -234,6 +239,7 @@ export function apply(ctx: Context, config: Config): void {
   const bridge = new ChatBridge({
     ctx,
     connection,
+    dshHome: dshHome(),
     media,
     transcriber,
     agents: ctx.agents,

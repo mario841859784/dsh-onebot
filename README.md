@@ -24,7 +24,7 @@
 | 语音 | ffmpeg 转 16kHz WAV + whisper 转写（openai-whisper / whisper.cpp / 自定义命令），失败降级 [语音] 占位 |
 | 文字图 | t2i 卡片渲染器（@napi-rs/canvas）：标题/粗斜体/删除线/引用/列表/代码块/表格/行内 code 胶囊/彩色 emoji/中文标点禁则；与 Hermes 原版同款数值（800px/26px/禁则集合/右缘 790） |
 | 出站 | 长消息按句号分段（默认 ≤100 字/条）、**>150 字渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji，渲染失败自动回退分段）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、loop 中间消息自动合并转发+撤回（interimMessages：带工具调用的中间文本**立即发送**，无工具调用的纯文本延迟一步以区分最终回复；一轮结束时缓冲 ≥2 条收敛为合并转发卡片并撤回原消息，单条直接发出；结算前先排空发送队列，不漏最后一条）、正在输入提示（set_input_status，仅私聊） |
-| 命令 | 斜杠命令（仅管理员）：`/new` 开新会话、`/model` 查看/切换模型、`/workspace` 查看/切换工作区、`/stop` 停止生成并清残留、`/help` 帮助 |
+| 命令 | 斜杠命令（仅管理员）：`/new` 开新会话、`/stop` 停止生成、`/model` 查看/切换模型、`/workspace` 查看/切换工作区、`/preset` 查看/切换 agent 预设、`/status` 会话全景、`/retry` 重跑上一条、`/id` 会话标识、`/ver` 版本、`/ocr` 识别最近图片、`/mode` 切换出站模式、`/plan` 计划模式、`/goal` 目标记录、`/help` 帮助 |
 | 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_napcat_api`（14 个白名单 action）、`qq_group_history` |
 | 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计 |
 | 会话 | 每个 QQ 会话一个持久 Agent（session id 稳定派生），重启后自动 resume；按 `agentPreset`/`workspacePath` 挂载到 preset 与工作区；每轮结束 flush 落盘 |
@@ -134,6 +134,28 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 
 会话自动挂载到 GUI 工作区：仅当会话 cwd 等于配置的 `workspacePath`（未配置时为宿主 cwd）
 才自动创建 workspace；沿用旧 cwd 的遗留会话只在已有 workspace 拥有该路径时挂载，不会自动新建。
+
+## 斜杠命令速查（全部仅管理员）
+
+| 命令 | 作用 |
+|---|---|
+| `/new` | 开启新会话（清空上下文，旧会话保留在磁盘） |
+| `/stop` | 停止当前生成 |
+| `/model [provider/model]` | 查看或切换模型 |
+| `/workspace [路径\|list]` | 查看或切换工作区 |
+| `/preset [id]` | 查看当前/可用预设，或切换 preset（重建会话，新会话 header 记录） |
+| `/status` | 会话全景：chat/session/preset/model/cwd/出站模式/agent 状态 |
+| `/retry` | 重跑上一条用户消息（上一轮出错后重试） |
+| `/id` | 只看 chat/session/cwd（排查用） |
+| `/ver` | 插件版本 + git commit |
+| `/ocr` | 识别本会话最近一张入站图片（NapCat ocr_image） |
+| `/mode [interim\|instant]` | 切换本会话出站模式（per-chat 覆盖） |
+| `/plan [on\|off\|内容]` | 计划模式开关；`/plan <内容>` 以计划模式处理该内容 |
+| `/goal [目标\|clear]` | 记录/更新本会话目标（每轮自动附带提醒） |
+
+`/preset` 切换为进程内 per-chat 覆盖（跨 `/new` 保留）：下一条消息重建会话并以新 preset
+写入 header，重启后 resume 按记录恢复；`/plan`、`/goal`、`/mode` 的 per-chat 状态同为进程内
+覆盖，重启回退到配置/默认。
 
 ## dm / group 访问策略（初始化必选）
 

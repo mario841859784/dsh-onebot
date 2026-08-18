@@ -227,6 +227,21 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 - **验证**：tsc 零错误；vitest 108/108 全绿（26 例 bridge）。新增 3 例：mapping 空 + 裸 id 磁盘有日志 → ensureChat 用带时间戳后缀新 id 且裸 id 落入 retired 集；resetChat 后 retiredSessionIds 同时含裸 id 与当前会话 id；loadRetired 遇损坏 JSON → warn 且不覆盖既有内存数组 + save 原子落盘（无 .tmp 残留）。另修测试自身一个 ASI 陷阱（`await vi.waitFor(...)` 后接 `(bridge...)` 行被吞进前一表达式报 `vi.waitFor(...) is not a function`，加前置 `;`）
 - **不做**：存量裸 id 磁盘日志不迁移/清理（用户此前决策「存量不迁移」；裸 id 靠 continue 退休永久避开）；不动宿主 dsh（本次为 onebot 插件缺陷）
 
+### 3.18 新增 9 个斜杠命令：/preset /status /retry /id /ver /ocr /mode /plan /goal（2026-08-18，已实现待上线）
+- **动机**：用户 `/plan` 会话里要求「onebot 支持更多斜杠命令」，确认新增 7 个后又追加 /plan 与 /goal（/plan=per-chat 计划模式开关+计划指令；/goal=per-chat 目标记录提醒。宿主 bundle 无 plan/goal 服务暴露，不做真宿主 goal 创建）
+- **实现**（src/bridge.ts）：
+  - 新增 bridge 级 per-chat map：`chatPresetOverrides` / `chatInterimOverrides` / `chatPlanModes` / `chatGoals` / `chatLastImagePaths`（均跨 /new 保留，进程内态，重启回退配置/默认——与 /workspace 覆盖同语义）；`ChatAgent` 加 `lastFollowup`（/retry 用）
+  - 入站收拢到 `dispatchFollowup(chatId, text, nickname)`：统一记录 lastFollowup + `prefixTurn`（goal 提醒→plan 指令前置）+ followup。`resolveMediaRef` 传入 chatId 并在图片解析成功时记录 `chatLastImagePaths`（/ocr 取最近图）
+  - `/preset`：无参列出可用（扫描 `<dsh-home>/.agent-presets/*/preset.yml` 的 name）+当前（覆盖→resolvePresetId）；`/preset <id>` 用 `agentPresets.resolve` 校验，写覆盖 + resetChat 重建（下一条消息 resolvePresetId 以覆盖优先，header 记录新 preset）
+  - `/status`：chat/session（无活跃会话读 chat-sessions.json）/preset/model/cwd/出站模式（含 /mode 覆盖标注）/agent 忙闲；`/id` 与 `/ver`（package.json version + git short hash，各读一次缓存）为纯读
+  - `/mode [interim|instant]`：`chatInterimOverrides` 覆盖；`effectiveInterim(chatId)` 替换原 `config.interimMessages` 两处分支（assistant/message 与 turn/end）
+  - `/retry`：无 chat/无 lastFollowup → 提示；busy 拒绝；否则清 loop 残留后重放 lastFollowup（prefixTurn 现算，/plan 状态改变后可影响重试结果）
+  - `/ocr`：取 `chatLastImagePaths` → `fileToBase64` → `connection.call('ocr_image', { image: 'base64://'+b64 })` → `data.texts` 拼行回复；无图/读取失败/识别失败各有提示
+  - `/plan`：on/off 开关 + `/plan <内容>` 置 on 并以计划指令处理；`/goal`：显示/设置/`clear` 清除，每轮自动附「【当前目标】」提醒
+  - index.ts 增 `dshHome()` 注入；BridgeDeps 增可选 `dshHome`（供 /preset 枚举）；/help 文案与 README 同步
+- **验证**：tsc 零错误；vitest 113/113 全绿（31 例 bridge，+5：/id /ver /status 信息、/goal /plan /mode per-chat 状态与前缀、/retry 重放与 /new 后清除、/preset 切换重建（mock resolve）与无效拒绝、/ocr 无图提示 + mock ocr_image 成功）
+- **待上线**：构建 lib → kill 主进程由 launchd ai.dsh.web 拉起 → `/ver` `/status` `/id` 真机看输出；`/ocr` 需用户发图实测（NapCat ocr_image 对 base64 的接受度以真机为准，失败则退 file/直链）
+
 ---
 ## 4. 功能清单（当前状态）
 
