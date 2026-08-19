@@ -2011,7 +2011,13 @@ describe('ChatBridge', () => {
       agents: agents as never,
       sessions: sessions as never,
       agentPresets: opts?.agentPresets as never,
-      commands: (opts?.commands ?? { execute: vi.fn(async () => ({ kind: 'success', text: 'Plan mode on. Use /plan off to leave.' })) }) as never,
+      commands: (opts?.commands ?? {
+        execute: vi.fn(async (_agent: unknown, _line: string, signal: AbortSignal | undefined) => {
+          // Mirror the host: execute() reads signal.aborted unconditionally.
+          if (signal === undefined) throw new Error("Cannot read properties of undefined (reading 'aborted')")
+          return { kind: 'success', text: 'Plan mode on. Use /plan off to leave.' }
+        }),
+      }) as never,
       workspaceRegistry: undefined as never,
       agentDefaultModel: undefined,
       defaultModel: () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
@@ -2110,16 +2116,16 @@ describe('ChatBridge', () => {
     // /plan forwards to the host plan command (no 【计划模式】 prefix anymore).
     h.sendText('/plan')
     await vi.waitFor(() => {
-      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/plan')
+      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/plan', expect.any(AbortSignal))
       expect(h.outbound.some(f => JSON.stringify(f.params).includes('Plan mode on. Use /plan off to leave.'))).toBe(true)
     })
     h.sendText('/plan 写一个新模块')
     await vi.waitFor(() => {
-      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/plan 写一个新模块')
+      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/plan 写一个新模块', expect.any(AbortSignal))
     })
     h.sendText('/plan off')
     await vi.waitFor(() => {
-      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/plan off')
+      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/plan off', expect.any(AbortSignal))
     })
     // No 【计划模式】 prefix on normal turns.
     h.sendText('再来一轮')

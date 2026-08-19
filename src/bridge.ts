@@ -138,8 +138,10 @@ export interface BridgeDeps {
   agents: AgentRegistry
   sessions: SessionStore
   agentPresets: AgentPresetsLike
-  /** Host command runtime: forwards /plan so QQ reaches the native plan command. */
-  commands?: { execute(agent: unknown, line: string, signal?: AbortSignal): Promise<{ kind?: string; text?: string }> } | undefined
+  /** Host command runtime: forwards /plan so QQ reaches the native plan command.
+   * `signal` is REQUIRED by the host implementation (it reads `signal.aborted`
+   * unconditionally) — pass a fresh never-aborted one. */
+  commands?: { execute(agent: unknown, line: string, signal: AbortSignal): Promise<{ kind?: string; text?: string; result?: { kind?: string; text?: string } }> } | undefined
   /** Durable persistence for cold-reading a session's recorded preset; absent = config/default fallback. */
   sessionPersistence: SessionPersistenceLike | undefined
   workspaceRegistry: WorkspaceRegistryLike
@@ -975,7 +977,10 @@ export class ChatBridge {
     }
     const line = arg.trim() === '' ? '/plan' : '/plan ' + arg.trim()
     try {
-      const result = await commands.execute(chat.agent as never, line)
+      // The host command runtime requires a signal (it reads `signal.aborted`
+      // unconditionally) — pass a fresh never-aborted one; QQ user-initiated
+      // /plan must not be interruptible by our own cancellation.
+      const result = await commands.execute(chat.agent as never, line, new AbortController().signal)
       const text = result?.text !== undefined && result.text !== '' ? result.text : (arg.trim().toLowerCase() === 'off' ? '已退出计划模式。' : '已进入计划模式。')
       const hint = arg.trim().toLowerCase() === 'off' ? '' : '\n（QQ 退出计划模式：发 /plan off）'
       await this.sendToChat(chatId, text + hint)

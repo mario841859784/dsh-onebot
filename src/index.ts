@@ -51,7 +51,7 @@ type Context = CordisContext & {
     list(): Array<{ id: string; path: string; sessionIds: readonly string[] }>
   }
   commands: {
-    execute(agent: unknown, line: string, signal?: AbortSignal): Promise<{ kind?: string; text?: string }>
+    execute(agent: unknown, line: string, signal: AbortSignal): Promise<{ kind?: string; text?: string }>
   }
 }
 

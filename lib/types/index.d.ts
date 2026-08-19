@@ -67,7 +67,7 @@ type Context = CordisContext & {
         }>;
     };
     commands: {
-        execute(agent: unknown, line: string, signal?: AbortSignal): Promise<{
+        execute(agent: unknown, line: string, signal: AbortSignal): Promise<{
             kind?: string;
             text?: string;
         }>;

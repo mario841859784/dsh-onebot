@@ -119,11 +119,17 @@ export interface BridgeDeps {
     agents: AgentRegistry;
     sessions: SessionStore;
     agentPresets: AgentPresetsLike;
-    /** Host command runtime: forwards /plan so QQ reaches the native plan command. */
+    /** Host command runtime: forwards /plan so QQ reaches the native plan command.
+     * `signal` is REQUIRED by the host implementation (it reads `signal.aborted`
+     * unconditionally) — pass a fresh never-aborted one. */
     commands?: {
-        execute(agent: unknown, line: string, signal?: AbortSignal): Promise<{
+        execute(agent: unknown, line: string, signal: AbortSignal): Promise<{
             kind?: string;
             text?: string;
+            result?: {
+                kind?: string;
+                text?: string;
+            };
         }>;
     } | undefined;
     /** Durable persistence for cold-reading a session's recorded preset; absent = config/default fallback. */
