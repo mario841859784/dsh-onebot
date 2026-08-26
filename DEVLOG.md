@@ -302,6 +302,12 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 - **验证**：tsc 0；vitest 119/119（重写合并测试为「小结图卡→立即撤回→final」、去重测试断言无 send_private_forward_msg、新增「40ms interimRecallMs 回合中自动单独撤回」用例）；测试注意：echo 必须给增序 message_id，否则两条 interim 同 id 被「已撤回」集合误跳过
 - **待上线**：构建 → kill 由 launchd 拉起 → 真机：长回合看中间消息实时出现、90s 后各自消失、回合末出整轮小结卡 + final
 
+### 3.24 平台说明下沉到 agent 自身作用域 + 三条校准（2026-08-26，已上线）
+- **背景**：QQ 平台说明与 qq_* 工具原本注册在插件上下文（index.ts），平台规则对 Web 会话也可见；提示词残留两条失效指引——`view_image`（全仓无此工具）与 `code_safe_edit`（§3.21 已从 onebot 移除、dsh-safe-edit 未安装），会让模型调用不存在的工具
+- **改动**：
+  - `bridge.ts` 新增 `installChannelScope(agentCtx)`：平台说明（`systemPrompt.section` channel:dsh-onebot）与 qq_* 工具注册到**每个 agent 自身作用域**——`agents.create` 新建、`agents.resume` 恢复两处 setup 都执行，Web/local 会话不可见；`session/event`、`session/flush` 监听器改存 dispose 句柄并在 stop() 释放，防 HMR/重载重复累积
+  - `prompt.ts` 三条校准：① 删 `view_image` 幻影指令——入站实际标注为 `[图片]`/`[语音]`/`[视频]` 占位（路径不进文本，cq.ts appendImage 核实），无可用看图工具时如实告知用户；② `code_safe_edit` 指引改为内置 read/edit（行级 hash 锚点 + dsh-better-edit 自动 undo，禁 write 整文件覆盖）——原指引与全局 AGENTS.md 惯例相反且工具不存在；③ 斜杠命令示例补全为 14 个（仅管理员，`/help` 查看说明），非管理员 `/` 命令被消费并提示「仅管理员可用」
+- **验证**：tsc 0 错；vitest 全绿；lib 重建；真机重启（`launchctl kickstart -k gui/501/ai.dsh.web`）后生效；逐条对照代码核实：tools.ts 工具清单（无 view_image）、cq.ts 标注格式、chat.ts 群前缀、tryHandleCommand 命令表；测试同步：bridge.spec 假 agentCtx 补 systemPrompt/tools 桩并断言通道工具注册到 agent 作用域、plugin.spec 改为断言插件作用域不再注册通道面
 ---
 ## 4. 功能清单（当前状态）
 

@@ -29,7 +29,7 @@
 | 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计 |
 | 会话 | 每个 QQ 会话一个持久 Agent（session id 稳定派生），重启后自动 resume；按 `agentPreset`/`workspacePath` 挂载到 preset 与工作区；每轮结束 flush 落盘 |
 | 运维 | 热加载（改 patch 配置/touch 即生效，无需重启 dsh）；临时媒体 TTL 过期清理 |
-| 提示词 | 自动注入 QQ 平台说明（纯文本输出、图片走 view_image、工具指引） |
+| 提示词 | 自动注入 QQ 平台说明（纯文本输出、图片/语音标注 `[图片]`/`[语音]` 占位、工具与命令指引、禁宿主交互卡）；按**每个 QQ 会话 agent 自身作用域**注入，Web 会话不可见 |
 
 ## 兼容性
 
@@ -169,7 +169,7 @@ header cwd 回填（会话 cwd 创建时冻结）：只要该 chat 用的是非�
 - `code_safe_edit`：read → 路径白名单 → **自动备份** → 匹配（精确 → 剥行号前缀 → 空白对齐/Aider 式）→ 替换 → 语法检查（js/cjs/mjs 走 `node --check`）→ **失败自动回滚**
 - `code_safe_rollback` / `code_list_backups`
 - 边界随会话 sandbox 策略：`danger-full-access` 无限制、`workspace-write` 限会话工作区、`read-only` 拒绝；无策略服务回落 `safeEditRoot`（默认 `/Users/mario/workspace`）
-- 模型默认优先此工具（QQ 平台提示词已注入引导；另有 `code-safe-edit` skill 全渠道引导）
+- 模型可优先使用此工具（`code-safe-edit` skill 全渠道引导；QQ 平台提示词引导内置 read/edit 惯例，不绑定具体工具名）
 
 ## dm / group 访问策略（初始化必选）
 
@@ -222,8 +222,11 @@ header cwd 回填（会话 cwd 创建时冻结）：只要该 chat 用的是非�
 
 - QQ 不渲染 Markdown → 输出纯文本（编号/短横线列表、行内反引号）。
 - 发图/文件/语音/视频用 `qq_send_*` 工具；合并转发用 `qq_send_forward`。
-- 用户发来的图片会标注本地路径，用 `view_image`（dsh-vision）查看。
+- 用户发来的图片/语音/视频在文本中标注为 `[图片]`/`[语音]`/`[视频]` 占位（路径不进入文本）；无可用看图工具时如实告知用户。
 - 群聊消息带 `[HH:MM 昵称(QQ)]` 前缀；受限用户消息带 `[受限用户:仅问答]` 前缀（仅回答，禁止文件/终端/配置操作）。
+- 本通道为 QQ，宿主无 Web 交互卡：禁止调用 `ask_user_question` / `exit_plan_mode`（确认卡仅 Web 可用，会阻塞对话），提问/确认走纯文本；宿主计划模式下输出纯文本计划并提示「/plan off 退出」。
+- 斜杠命令由插件拦截（14 个，仅管理员，`/help` 查看）；其他 `/` 开头文本交模型正常处理。
+- 修改宿主文件走内置 read/edit（行级 hash 锚点、dsh-better-edit 自动 undo），勿用 write 整文件覆盖（清空 undo 历史）。
 
 ## 卸载
 
