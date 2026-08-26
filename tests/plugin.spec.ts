@@ -81,14 +81,11 @@ describe('plugin entry', () => {
     const effectSpy = vi.spyOn(ctx as { effect: (cb: () => unknown, label?: string) => unknown }, 'effect')
     apply(ctx as never, config)
 
-    // Our plugin registers 7 tools and one prompt section.
-    await vi.waitFor(() => {
-      expect(tools.map(t => t.name)).toEqual(expect.arrayContaining([
-        'qq_send_image', 'qq_send_voice', 'qq_send_video', 'qq_send_file',
-        'qq_send_forward', 'qq_napcat_api', 'qq_group_history',
-      ]))
-      expect(sections.some(s => s.name === 'channel:dsh-onebot')).toBe(true)
-    })
+    // New design (§3.24): channel tools and the platform section register per
+    // agent scope (installChannelScope in bridge.ts); the plugin scope stays
+    // clean so Web/local sessions never see the QQ channel surface.
+    expect(tools).toHaveLength(0)
+    expect(sections.some(s => s.name === 'channel:dsh-onebot')).toBe(false)
 
     // Teardown: run the plugin's effect disposer (stops bridge + connection).
     expect(effectSpy).toHaveBeenCalled()

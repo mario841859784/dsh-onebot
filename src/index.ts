@@ -24,8 +24,6 @@ import { ChatBridge } from './bridge.js'
 import type { BridgeDeps, WorkspaceRegistryLike } from './bridge.js'
 import { MediaStore, IMAGE_MAX_BYTES, VOICE_MAX_BYTES, MEDIA_MAX_BYTES } from './media.js'
 import { Transcriber } from './stt.js'
-import { registerTools } from './tools.js'
-import { buildPlatformPrompt } from './prompt.js'
 import type { AccessPolicyConfig } from './chat.js'
 
 type Context = CordisContext & {
@@ -56,7 +54,7 @@ type Context = CordisContext & {
 }
 
 export const name = 'dsh-onebot'
-export const inject = ['tools', 'systemPrompt', 'agents', 'sessions', 'agentDefaultModel', 'agentPresets', 'sessionPersistence', 'workspaceRegistry', 'commands']
+export const inject = ['tools', 'systemPrompt', 'agents', 'sessions', 'agentDefaultModel', 'agentPresets', 'sessionPersistence', 'workspaceRegistry', 'commands', 'llm']
 
 /** Plugin configuration (validated by schemastery). */
 export interface Config {
@@ -298,18 +296,8 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => {
     bridge.start()
     connection.start()
-    const disposer = registerTools(ctx, bridge, connection, {
-      maxImageBytes: config.maxImageBytes,
-      maxVoiceBytes: config.maxVoiceBytes,
-      maxFileBytes: config.maxFileBytes,
-    })
-    ctx.systemPrompt.section({
-      name: 'channel:dsh-onebot',
-      order: 90,
-      text: buildPlatformPrompt(config.restrictedMemberPrefix),
-    })
+    // QQ 平台说明与 qq_* 工具现按会话 agent 注入（见 ChatBridge.installChannelScope）
     return async () => {
-      disposer()
       await bridge.stop()
       await connection.stop()
     }

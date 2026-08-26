@@ -35,6 +35,8 @@ import {
 import type { AccessPolicyConfig } from './chat.js'
 import { extractForwardBlocks, scanSensitive, splitLongText, stripMarkdown } from './split.js'
 import { renderTextImage } from './t2i/index.js'
+import { buildPlatformPrompt } from './prompt.js'
+import { registerTools } from './tools.js'
 
 /** One OneBot message segment for outbound sends. */
 export interface OutboundSegment {
@@ -208,6 +210,9 @@ export class ChatBridge {
   private readonly deps: BridgeDeps
   private readonly chats = new Map<ChatId, ChatAgent>()
   private readonly bySession = new Map<string, ChatId>()
+  /** Session-feed listener disposers (freed on stop, so plugin reload/HMR cannot accumulate duplicates). */
+  private sessionEventOff: (() => void) | undefined
+  private sessionFlushOff: (() => void) | undefined
   /** Per-chat workspace override set by /workspace (survives /new resets,
    * so the next agent for the chat is created under the new directory). */
   private readonly chatWorkspacePaths = new Map<ChatId, string>()
@@ -240,10 +245,10 @@ export class ChatBridge {
   start(): void {
     const { connection, ctx } = this.deps
     connection.selfId = this.deps.config.botQQ
-    ctx.on('session/event', (session: Session, event: SessionEvent) => {
+    this.sessionEventOff = ctx.on('session/event', (session: Session, event: SessionEvent) => {
       this.onSessionEvent(session, event)
     })
-    ctx.on('session/flush', (session: Session) => {
+    this.sessionFlushOff = ctx.on('session/flush', (session: Session) => {
       void this.onSessionFlush(session)
     })
     connection.onStatus = (connected: boolean) => {
@@ -261,6 +266,14 @@ export class ChatBridge {
   /** Stop everything: dispose agents, save mapping, cancel timers. */
   async stop(): Promise<void> {
     this.stopping = true
+    if (this.sessionEventOff !== undefined) {
+      this.sessionEventOff()
+      this.sessionEventOff = undefined
+    }
+    if (this.sessionFlushOff !== undefined) {
+      this.sessionFlushOff()
+      this.sessionFlushOff = undefined
+    }
     if (this.mappingSaveTimer !== undefined) {
       clearTimeout(this.mappingSaveTimer)
       this.mappingSaveTimer = undefined
@@ -702,12 +715,12 @@ export class ChatBridge {
             out += '\n' + p.id + ': ' + models.slice(0, 10).map(m => m.id).join(', ')
           } catch (error) {
             out += '\n' + p.id + ': （列表不可用）'
-            this.deps.log('debug', 'listModels failed for ' + p.id + ': ' + String(error))
+            this.deps.log('warn', 'listModels failed for ' + p.id + ': ' + String(error))
           }
         }
       } catch (error) {
         out += '\n（模型列表不可用）'
-        this.deps.log('debug', 'listProviders failed: ' + String(error))
+        this.deps.log('warn', 'listProviders failed: ' + String(error))
       }
       await this.sendToChat(chatId, out)
       return
@@ -1585,6 +1598,7 @@ export class ChatBridge {
       ? { current: selection, assembled: undefined }
       : undefined
     const setup: AgentSetup = async agentCtx => {
+      this.installChannelScope(agentCtx)
       await this.joinPreset(agentCtx)
       if (selectionRef !== undefined) {
         installModelSelection(agentCtx, selectionRef)
@@ -1669,6 +1683,7 @@ export class ChatBridge {
             resumeSessionId: makeSessionId(sessionId),
             agentOptions,
             setup: async agentCtx => {
+              this.installChannelScope(agentCtx)
               await this.joinPreset(agentCtx, recordedPreset)
               if (selectionRef !== undefined) {
                 installModelSelection(agentCtx, selectionRef)
@@ -1942,6 +1957,26 @@ export class ChatBridge {
     } catch (error) {
       this.deps.log('warn', 'agent preset mount failed (tools fall back to the global layer): ' + (error instanceof Error ? error.message : String(error)))
     }
+  }
+
+  /**
+   * Compose the QQ channel's scoped world for one agent: the QQ platform
+   * prompt section and the qq_* tools. Registered on `agentCtx` (the agent's
+   * own scope) instead of the plugin context, so Web/local sessions never see
+   * the channel instructions or the media tools — they cannot (and should
+   * not) push messages to QQ.
+   */
+  private installChannelScope(agentCtx: Context): void {
+    agentCtx.systemPrompt.section({
+      name: 'channel:dsh-onebot',
+      order: 90,
+      text: buildPlatformPrompt(this.deps.config.restrictedMemberPrefix),
+    })
+    registerTools(agentCtx, this, this.deps.connection, {
+      maxImageBytes: this.deps.config.maxImageBytes,
+      maxVoiceBytes: this.deps.config.maxVoiceBytes,
+      maxFileBytes: this.deps.config.maxFileBytes,
+    })
   }
 
   /**

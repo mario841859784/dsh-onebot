@@ -150,6 +150,9 @@ export declare class ChatBridge {
     private readonly deps;
     private readonly chats;
     private readonly bySession;
+    /** Session-feed listener disposers (freed on stop, so plugin reload/HMR cannot accumulate duplicates). */
+    private sessionEventOff;
+    private sessionFlushOff;
     /** Per-chat workspace override set by /workspace (survives /new resets,
      * so the next agent for the chat is created under the new directory). */
     private readonly chatWorkspacePaths;
@@ -402,6 +405,14 @@ export declare class ChatBridge {
      * chat.
      */
     private joinPreset;
+    /**
+     * Compose the QQ channel's scoped world for one agent: the QQ platform
+     * prompt section and the qq_* tools. Registered on `agentCtx` (the agent's
+     * own scope) instead of the plugin context, so Web/local sessions never see
+     * the channel instructions or the media tools — they cannot (and should
+     * not) push messages to QQ.
+     */
+    private installChannelScope;
     /**
      * Attach a chat session to the workspace owning its header cwd, so QQ
      * sessions group under a workspace in the GUI instead of "Ungrouped".

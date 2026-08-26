@@ -38,7 +38,15 @@ function makeFakeAgents(
         whenIdle: async () => undefined,
       }
       if (typeof options.setup === 'function') {
-        await options.setup({ on: () => () => undefined })
+        // Agent setup receives the agent's own scope: platform prompt section
+        // + qq_* tools must register here (installChannelScope), never on the
+        // plugin context.
+        const agentCtx = {
+          on: () => () => undefined,
+          systemPrompt: { section: (s: { name: string }) => { captured.channelSections?.push(s.name); return () => undefined } },
+          tools: { register: (t: { name: string }) => { captured.channelTools?.push(t.name); return () => undefined } },
+        }
+        await options.setup(agentCtx)
       }
       return { agent, dispose: async () => undefined }
     }),
@@ -53,7 +61,7 @@ function makeFakeAgents(
 async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string }) {
   const ctx = new Context()
   const sessionIds: string[] = []
-  const captured = { followups: [] as Array<{ text: string; sessionId: string }> }
+  const captured = { followups: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[] }
   const agents = makeFakeAgents(sessionIds, captured, opts)
   const sessions = { flush: vi.fn(async () => undefined) }
   const mediaDir = opts?.mediaDir ?? mkdtempSync(join(tmpdir(), 'onebot-test-'))
@@ -119,7 +127,7 @@ describe('ChatBridge', () => {
   it('runs the full inbound→agent→outbound pipeline', async () => {
     const ctx = new Context()
     const sessionIds: string[] = []
-    const captured = { followups: [] as Array<{ text: string; sessionId: string }> }
+    const captured = { followups: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[] }
     const agents = makeFakeAgents(sessionIds, captured)
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
@@ -181,6 +189,14 @@ describe('ChatBridge', () => {
     }))
     await vi.waitFor(() => expect(captured.followups).toHaveLength(1))
     expect(captured.followups[0].text).toBe('你好，帮我看看这个')
+
+    // Channel scope: qq_* tools + platform section land on the agent's own
+    // context (installChannelScope), not the plugin context.
+    expect(captured.channelTools).toEqual(expect.arrayContaining([
+      'qq_send_image', 'qq_send_voice', 'qq_send_video', 'qq_send_file',
+      'qq_send_forward', 'qq_napcat_api', 'qq_group_history',
+    ]))
+    expect(captured.channelSections).toContain('channel:dsh-onebot')
     const sessionId = sessionIds[0]
 
     // 2. Assistant message → deferred one step; turn end settles it as the
@@ -1081,7 +1097,13 @@ describe('ChatBridge', () => {
     const agents = {
       create: vi.fn(),
       resume: vi.fn(async (options: { resumeSessionId: string; setup?: (agentCtx: unknown) => unknown }) => {
-        if (typeof options.setup === 'function') await options.setup({ on: () => () => undefined })
+        if (typeof options.setup === 'function') {
+          await options.setup({
+            on: () => () => undefined,
+            systemPrompt: { section: () => () => undefined },
+            tools: { register: () => () => undefined },
+          })
+        }
         return {
           agent: {
             id: String(options.resumeSessionId),
