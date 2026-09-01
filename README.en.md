@@ -15,6 +15,12 @@ User(QQ) ←→ NapCat ←→ dsh-onebot plugin ←→ dsh Agent (one per chat)
                         └─ Outbound: split sending, Markdown stripping, [[qq_forward]], image/voice/video/file tools
 ```
 
+## Architecture
+
+![dsh-onebot — QQ channel architecture](docs/dsh-onebot-architecture-en.png)
+
+> Interactive version (dark/light theme toggle + guided views): [docs/dsh-onebot-architecture.html](docs/dsh-onebot-architecture.html); vector version: [docs/dsh-onebot-architecture-en.svg](docs/dsh-onebot-architecture-en.svg).
+
 ## Features
 
 | Category | Capability |
