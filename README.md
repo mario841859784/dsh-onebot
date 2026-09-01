@@ -17,9 +17,9 @@
 
 ## 架构
 
-![dsh-onebot QQ 通道架构](docs/dsh-onebot-architecture.svg)
+![dsh-onebot QQ 通道架构](docs/dsh-onebot-architecture.png)
 
-> 可交互版本（暗/亮主题切换 + 引导视图）：[docs/dsh-onebot-architecture.html](docs/dsh-onebot-architecture.html)。
+> 可交互版本（暗/亮主题切换 + 引导视图）：[docs/dsh-onebot-architecture.html](docs/dsh-onebot-architecture.html)；矢量版：[docs/dsh-onebot-architecture.svg](docs/dsh-onebot-architecture.svg)。
 
 ## 功能
 
