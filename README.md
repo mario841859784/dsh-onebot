@@ -15,6 +15,12 @@
                         └─ 出站：分段发送、Markdown 剥离、[[qq_forward]]、图片/语音/视频/文件工具
 ```
 
+## 架构
+
+![dsh-onebot QQ 通道架构](docs/dsh-onebot-architecture.svg)
+
+> 可交互版本（暗/亮主题切换 + 引导视图）：[docs/dsh-onebot-architecture.html](docs/dsh-onebot-architecture.html)。
+
 ## 功能
 
 | 类别 | 能力 |
