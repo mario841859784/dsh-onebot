@@ -68,7 +68,7 @@ Mount it in `~/.dsh/config.yaml` (create it if missing):
       config:
         mode: reverse        # reverse = NapCat dials in; forward = plugin dials out
         port: 8643
-        # accessToken: ''    # must match NapCat's config
+        # accessToken: 'token-matching-NapCat'  # required: reverse mode refuses to start with an empty token (M0 hardening)
         # botQQ: ''          # leave empty to learn automatically from meta events
         adminUsers: ['<your-QQ-number>']   # required: at least one admin, otherwise private chats & slash commands are unavailable
 ```

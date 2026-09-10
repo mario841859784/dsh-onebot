@@ -72,7 +72,7 @@ describe('plugin entry', () => {
     const config = Config({
       mediaDir,
       port: 0,
-      accessToken: '',
+      accessToken: 'test-token',
       botQQ: '10002',
       sttEnabled: false,
       sensitivePatterns: [],

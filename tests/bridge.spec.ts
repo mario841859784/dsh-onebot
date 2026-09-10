@@ -66,7 +66,7 @@ async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string })
   const sessions = { flush: vi.fn(async () => undefined) }
   const mediaDir = opts?.mediaDir ?? mkdtempSync(join(tmpdir(), 'onebot-test-'))
   const connection = new OneBotConnection({
-    mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+    mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
   })
   const bridge = new ChatBridge({
     ctx,
@@ -99,7 +99,7 @@ async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string })
   connection.start()
   await vi.waitFor(() => expect(connection.address()).toBeDefined())
   const address = connection.address()!
-  const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+  const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
   await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
   const outbound: Array<Record<string, unknown>> = []
   client.on('message', data => {
@@ -132,7 +132,7 @@ describe('ChatBridge', () => {
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
 
     const bridge = new ChatBridge({
@@ -166,7 +166,7 @@ describe('ChatBridge', () => {
     connection.start()
     await vi.waitFor(() => expect(connection.address()).toBeDefined())
     const address = connection.address()!
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
 
     // Respond to every action so pending calls resolve (unique message ids).
@@ -229,7 +229,7 @@ describe('ChatBridge', () => {
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
     const bridge = new ChatBridge({
       ctx, connection,
@@ -258,7 +258,7 @@ describe('ChatBridge', () => {
     connection.start()
     await vi.waitFor(() => expect(connection.address()).toBeDefined())
     const address = connection.address()!
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
     const outbound: Array<Record<string, unknown>> = []
     client.on('message', data => {
@@ -301,7 +301,7 @@ describe('ChatBridge', () => {
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
     const bridge = new ChatBridge({
       ctx, connection,
@@ -328,7 +328,7 @@ describe('ChatBridge', () => {
     connection.start()
     await vi.waitFor(() => expect(connection.address()).toBeDefined())
     const address = connection.address()!
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
     const outbound: Array<Record<string, unknown>> = []
     client.on('message', data => {
@@ -369,7 +369,7 @@ describe('ChatBridge', () => {
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
     const bridge = new ChatBridge({
       ctx, connection,
@@ -396,7 +396,7 @@ describe('ChatBridge', () => {
     connection.start()
     await vi.waitFor(() => expect(connection.address()).toBeDefined())
     const address = connection.address()!
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
     const outbound: Array<Record<string, unknown>> = []
     client.on('message', data => {
@@ -438,7 +438,7 @@ describe('ChatBridge', () => {
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
     const bridge = new ChatBridge({
       ctx, connection,
@@ -465,7 +465,7 @@ describe('ChatBridge', () => {
     connection.start()
     await vi.waitFor(() => expect(connection.address()).toBeDefined())
     const address = connection.address()!
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
     const outbound: Array<Record<string, unknown>> = []
     client.on('message', data => {
@@ -506,7 +506,7 @@ describe('ChatBridge', () => {
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
     const bridge = new ChatBridge({
       ctx, connection,
@@ -533,7 +533,7 @@ describe('ChatBridge', () => {
     connection.start()
     await vi.waitFor(() => expect(connection.address()).toBeDefined())
     const address = connection.address()!
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
     const outbound: Array<Record<string, unknown>> = []
     client.on('message', data => {
@@ -582,7 +582,7 @@ describe('ChatBridge', () => {
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
     const bridge = new ChatBridge({
       ctx, connection,
@@ -609,7 +609,7 @@ describe('ChatBridge', () => {
     connection.start()
     await vi.waitFor(() => expect(connection.address()).toBeDefined())
     const address = connection.address()!
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
     const outbound: Array<Record<string, unknown>> = []
     client.on('message', data => {
@@ -646,7 +646,7 @@ describe('ChatBridge', () => {
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
     const bridge = new ChatBridge({
       ctx, connection,
@@ -673,7 +673,7 @@ describe('ChatBridge', () => {
     connection.start()
     await vi.waitFor(() => expect(connection.address()).toBeDefined())
     const address = connection.address()!
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
     client.on('message', data => {
       const frame = JSON.parse(data.toString()) as Record<string, unknown>
@@ -702,7 +702,7 @@ describe('ChatBridge', () => {
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
     const bridge = new ChatBridge({
       ctx, connection,
@@ -731,7 +731,7 @@ describe('ChatBridge', () => {
     connection.start()
     await vi.waitFor(() => expect(connection.address()).toBeDefined())
     const address = connection.address()!
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
     const outbound: Array<Record<string, unknown>> = []
     client.on('message', data => {
@@ -768,7 +768,7 @@ describe('ChatBridge', () => {
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
 
     const bridge = new ChatBridge({
@@ -802,7 +802,7 @@ describe('ChatBridge', () => {
     connection.start()
     await vi.waitFor(() => expect(connection.address()).toBeDefined())
     const address = connection.address()!
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
     const outbound: Array<Record<string, unknown>> = []
     client.on('message', data => {
@@ -937,7 +937,7 @@ describe('ChatBridge', () => {
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
 
     const mountedPresets: Array<string | undefined> = []
@@ -988,7 +988,7 @@ describe('ChatBridge', () => {
     connection.start()
     await vi.waitFor(() => expect(connection.address()).toBeDefined())
     const address = connection.address()!
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
     client.on('message', data => {
       const frame = JSON.parse(data.toString()) as Record<string, unknown>
@@ -1042,7 +1042,7 @@ describe('ChatBridge', () => {
     const bridge = new ChatBridge({
       ctx,
       connection: new OneBotConnection({
-        mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+        mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
       }),
       media: new MediaStore(join(mediaDir, 'media'), 6),
       transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
@@ -1120,7 +1120,7 @@ describe('ChatBridge', () => {
     const bridge = new ChatBridge({
       ctx,
       connection: new OneBotConnection({
-        mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+        mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
       }),
       media: new MediaStore(join(mediaDir, 'media'), 6),
       transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
@@ -1184,7 +1184,7 @@ describe('ChatBridge', () => {
     const bridge = new ChatBridge({
       ctx,
       connection: new OneBotConnection({
-        mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+        mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
       }),
       media: new MediaStore(join(mediaDir, 'media'), 6),
       transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
@@ -1232,7 +1232,7 @@ describe('ChatBridge', () => {
     const bridge = new ChatBridge({
       ctx,
       connection: new OneBotConnection({
-        mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+        mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
       }),
       media: new MediaStore(join(mediaDir, 'media'), 6),
       transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
@@ -1287,7 +1287,7 @@ describe('ChatBridge', () => {
     const bridge = new ChatBridge({
       ctx,
       connection: new OneBotConnection({
-        mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+        mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
       }),
       media: new MediaStore(join(mediaDir, 'media'), 6),
       transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
@@ -1343,7 +1343,7 @@ describe('ChatBridge', () => {
     const ctx = new Context()
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
     const attached: string[] = []
     const workspaceRegistry = {
@@ -1397,7 +1397,7 @@ describe('ChatBridge', () => {
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
     const bridge = new ChatBridge({
       ctx, connection,
@@ -1432,7 +1432,7 @@ describe('ChatBridge', () => {
     connection.start()
     await vi.waitFor(() => expect(connection.address()).toBeDefined())
     const address = connection.address()!
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
 
     // Respond to every action so pending calls resolve (unique message ids).
@@ -1511,7 +1511,7 @@ describe('ChatBridge', () => {
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
     const bridge = new ChatBridge({
       ctx, connection,
@@ -1546,7 +1546,7 @@ describe('ChatBridge', () => {
     connection.start()
     await vi.waitFor(() => expect(connection.address()).toBeDefined())
     const address = connection.address()!
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
 
     const outbound: Array<Record<string, unknown>> = []
@@ -1641,7 +1641,7 @@ describe('ChatBridge', () => {
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
     const bridge = new ChatBridge({
       ctx, connection,
@@ -1676,7 +1676,7 @@ describe('ChatBridge', () => {
     connection.start()
     await vi.waitFor(() => expect(connection.address()).toBeDefined())
     const address = connection.address()!
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
 
     const outbound: Array<Record<string, unknown>> = []
@@ -1723,7 +1723,7 @@ describe('ChatBridge', () => {
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
     const bridge = new ChatBridge({
       ctx, connection,
@@ -1758,7 +1758,7 @@ describe('ChatBridge', () => {
     connection.start()
     await vi.waitFor(() => expect(connection.address()).toBeDefined())
     const address = connection.address()!
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
 
     const outbound: Array<Record<string, unknown>> = []
@@ -1821,7 +1821,7 @@ describe('ChatBridge', () => {
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
     const saveSelection = vi.fn(async () => undefined)
     ;(ctx as unknown as { agentDefaultModel: unknown }).agentDefaultModel = {
@@ -1865,7 +1865,7 @@ describe('ChatBridge', () => {
     connection.start()
     await vi.waitFor(() => expect(connection.address()).toBeDefined())
     const address = connection.address()!
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
     const outbound: Array<Record<string, unknown>> = []
     client.on('message', data => {
@@ -1921,7 +1921,7 @@ describe('ChatBridge', () => {
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const otherDir = mkdtempSync(join(tmpdir(), 'onebot-other-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
     const bridge = new ChatBridge({
       ctx, connection,
@@ -1955,7 +1955,7 @@ describe('ChatBridge', () => {
     connection.start()
     await vi.waitFor(() => expect(connection.address()).toBeDefined())
     const address = connection.address()!
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
     const outbound: Array<Record<string, unknown>> = []
     client.on('message', data => {
@@ -2022,7 +2022,7 @@ describe('ChatBridge', () => {
     const sessions = { flush: vi.fn(async () => undefined) }
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
     const bridge = new ChatBridge({
       ctx,
@@ -2071,7 +2071,7 @@ describe('ChatBridge', () => {
     connection.start()
     await vi.waitFor(() => expect(connection.address()).toBeDefined())
     const address = connection.address()!
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
     await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
     const outbound: Array<Record<string, unknown>> = []
     client.on('message', data => {
@@ -2273,7 +2273,7 @@ describe('ChatBridge', () => {
     }))
     const agents = { create: vi.fn(), resume } as never
     const connection = new OneBotConnection({
-      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: '', callTimeoutMs: 3_000,
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
     })
     const bridge = new ChatBridge({
       ctx,
@@ -2318,7 +2318,7 @@ describe('ChatBridge', () => {
     const ctx2 = new Context()
     const bridge2 = new ChatBridge({
       ctx: ctx2,
-      connection: new OneBotConnection({ mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3002', accessToken: '', callTimeoutMs: 3_000 }),
+      connection: new OneBotConnection({ mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3002', accessToken: 'test-token', callTimeoutMs: 3_000 }),
       media: new MediaStore(join(bridge2Dir, 'media'), 6),
       transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
       agents: { create: vi.fn(), resume: resume2 } as never,

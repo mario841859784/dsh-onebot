@@ -106,6 +106,17 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 晚 | **补齐字段与行为**：`ensureChat` 改为总是 `resolvePresetId()`（配置非空用配置，否则部署默认 defaultId）并写入 `meta.agentPreset`——新会话 header 固定记录有效 preset id，Web 标签可见；`loadMapping` resume 改为先 `sessionPersistence.inspect` 读会话自己记录的 preset（最新 `agent-preset/selected` 事件优先，否则 header），有记录时以记录为准并在与插件配置冲突时 warn（防配置变更致老会话组装漂移）；新增 `resolveRecordedPreset` 纯函数与 `resolvePresetId`/`recordedPresetFor`；Config 文案修正（原写「当前为 standard」，实际部署默认 router-flash）；inject 增加 `sessionPersistence`。存量会话 header 无记录 → resume 回落配置/默认，行为不变（不做迁移）。105/105 全过（新增 3 测试），构建上线，详见 §3.15 |
 | 晚 | **宿主升级 dsh rc.6→rc.7（用户要求先做冲突检测）**：逐行对比 rc.6/rc.7 的 12 个运行时包 + bundle 组成 + 存储格式，结论：依赖无增删、8 个核心包零差异、base/web-app 组合逐行一致、SESSION_FORMAT_VERSION 仍 0、preset 相关 API 全兼容 → 无冲突。升级执行中发现 **link-host.sh 解析 bug**：`resolve_dsh_root` 在 nvm 全局布局（bin 在 <node>/bin、包在 @deepseek-ai/dsh/node_modules 内嵌）下先命中 `~/.npm/_npx/*/node_modules` 残留 store，把插件链到 npx store 副本（dual-package 隐患）→ 修复：bin 祖先循环增加 `lib/node_modules/@deepseek-ai/dsh/node_modules` 检测优先于 npx store。升级 + 重链 + launchd 重启（kill 主进程 → ai.dsh.web KeepAlive 自动拉起）后验证：bridge ready (1 resumed)、agent joined preset router-flash、heartbeat 恢复、bin --version = 0.1.0-rc.7，详见 §3.16 |
 
+### 2026-09-10（M0 安全与稳定性加固，v0.2.0）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **A1 反向 WS 鉴权加固（BREAKING）**：`token !== '' &&` 使空 token 整体跳过校验（fail-open），叠加默认 `host: '0.0.0.0'` + `accessToken: ''` = 默认全网卡无鉴权，局域网任意主机可伪造管理员事件（等效未认证 RCE）→ reverse 空 token 抛错拒启（fail-closed）、默认绑定 `127.0.0.1`、比较改 `crypto.timingSafeEqual`（先比长度）；forward 模式不受影响（token 是外发 Authorization 头）。connection.spec +6（fail-closed / 错误 token / 缺失 auth / 默认 host / B1 守卫 / 无 dbg 输出） |
+| 全天 | **B1 socket close 归属守卫**：attachSocket 与 forward 的 close 处理器无条件 `stopHeartbeat()+setConnected(false)+failAllPending()`，last-wins 替换后旧 socket 的 close 异步晚到 → 杀死新连接心跳并永久断标 → 机器人「活着但失语」。两处首行加 `if (this.socket !== socket) return`（对称）；单测模拟旧 close 晚到：connected 不翻转、心跳存活、pending 正常 |
+| 全天 | **C4 删热路径调试日志**：onFrame message 分支残留 `[dsh-onebot:dbg]` 无条件全量 JSON console.log（群成员昵称/QQ 号/原文进宿主日志，隐私+性能）→ 删除，src/tests 零残留 |
+| 全天 | **B2+B3 mediaDir 清理修复**：cleanupExpired 无文件名过滤会删同目录的 chat-sessions.json / retired-sessions.json（空闲超 6h TTL 后任意入站触发 → 重启全部会话失忆）；STT `stt_<uuid>` 工作目录从不清理（每条语音泄漏 ~2MB）→ 清理改前缀白名单（仅 media_* 文件 + stt_* 目录递归）；transcribeNow try/finally 清工作目录（best-effort 不吞转写结果）。边界：升级前旧命名历史媒体文件不再自动清理 |
+| 全天 | **A4 入站文件改名落盘**：safeName 保留 `.` 且直写 `mediaDir/<原始名>`，发名为 chat-sessions.json 的文件即可覆盖状态文件（配合确定性 session id 可在重启后劫持管理员会话）→ 一律 `MediaStore.freshPath` 生成 `media_<ts>_<uuid><ext>` 不可预测名，新增 `extForInboundName`（扩展名白名单，规则同 extForUrl）。新增 media-cleanup.spec 5 例（恶意文件名落盘 / 状态文件哨兵逐字节不变 / 清理矩阵） |
+| 全天 | **E1 元数据 + 发布收尾**：bridge/plugin.spec 28 处 fixture 补 `accessToken: 'test-token'`、bridge.spec 19 处真实 WS 拨入补 Authorization 头，适配 fail-closed 语义；dsh.plugin.json 移除已拆走 dsh-safe-edit 的 code_safe_edit 三件（对齐 package.json）；engines.dsh `>=0.0.1` 收紧为 `>=0.1.0-rc.6`；README / README.en 标注 BREAKING；130/130 vitest 全绿，**发布 v0.2.0**。e2e-peer 真机冒烟待 NapCat 环境补跑 |
+
 ---
 
 ## 3. 关键决策与坑（按价值排序）
@@ -379,7 +390,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 
 # 构建与测试
 cd ~/dsh-plugins/dsh-onebot && npm install --include=dev && ./scripts/build.sh
-./node_modules/.bin/vitest run       # 119 个测试
+./node_modules/.bin/vitest run       # 130 个测试
 
 # 线上状态
 netstat -an | grep <port>             # NapCat 反向 WS 连接（ESTABLISHED）
