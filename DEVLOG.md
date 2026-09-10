@@ -128,6 +128,16 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 全天 | **协议偏差与 3 条流程改进**：E1/测试适配/发布整理由编排者亲自实施（违规，产出已验收有效）→ M1 起：①任务书强制「影响面自评 + 测试自含」，tests/ 所有权跟随变更方；②无主 diff 四步处置（冻结→考古定意图→补任务书重委派或显式 revert→禁止编排者改写合入）；③实施一律委派，豁免须先过 PM 检查点并记录；恢复逐包独立 commit（M0 曾两包合一 commit 致 revert 粒度变粗） |
 | 全天 | **M1 启动**：范围不变（9.25 人日，A2→A3、C3→A5 硬前置）；Wave 1 三组并行（G-CON：B4+B5 ∥ G-MED：A6 ∥ G-BRG：A2）；A3 拆 A3a/A3b 两单。**遗留风险**：R1 生产未切换新 lib（须先两端配 accessToken 再挂新 lib，否则 fail-closed 拒启）；R5 NapCat 真客户端 4401 重试行为观察 24h；R6 测试数单一事实源 = vitest 实跑 |
 
+
+### 2026-09-10（M1 Wave1：B4/B5/A6/A2）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **B4 心跳 pong 校验 + 超时 terminate + meta 心跳日志静音（commit 9bd2596）**：reverse/forward 两条 socket 路径挂 pong 监听（带归属守卫 `this.socket !== socket`——晚到旧 socket 的 pong 不污染新连接的 lastPongAt，与 B1 close 守卫同型）；心跳 tick 判定 `now - lastPongAt ≥ 2×HEARTBEAT_MS`（HEARTBEAT_MS=30s）→ terminate 走既有 close 链路（failAllPending + 状态翻转 + 重连调度），半开连接不再永久假在线；meta heartbeat 事件静默（logMetaEvent 对 heartbeat 直接 return，life_cycle 等其余 meta 照常出日志）。**取舍**：keepalive 仅依赖应用层 pong——ws 公开类型面无底层 socket 通道（`_socket` 为私有字段，升级无保证），且 30s ping 帧本身即 keepalive 流量。connection.spec +3 |
+| 全天 | **B5 重连策略与状态上报（commit 627bcdf）**：新增配置 `reconnectMaxAttempts`（默认 100；`0`=无限重连，退避封顶 60s）；forward 重连放弃时日志含上限值与恢复指引（查 NapCat 地址与网络后重启插件/重载通道恢复）；reverse 监听 EADDRINUSE 日志含 host:port 与处置建议（停掉占端口进程或改 config.port）；stop() 清理重连定时器 + start() 防重入——stop→start 连续 50 次切换无幽灵定时器（单测覆盖）。connection.spec +5 |
+| 全天 | **A6 入站图片解码炸弹预检（commit 4a4ac96）**：loadImage 前轻量头解析（PNG IHDR / JPEG SOF），声明尺寸超 `MAX_DECODE_EDGE`（8192，image-shrink.ts 命名导出常量）→ 解码前中止（return undefined，调用方保留原图），杜绝 30000×30000 声明 PNG 的 ~3.6GB Skia 分配 OOM；畸形/截断头回落原解码路径。**边界**：WebP/AVIF/HEIF 未预检（QQ 入站主体为 PNG/JPEG）；假阴性=放行（与改前行为一致，不新增失败面）。image-shrink.spec +7 |
+| 全天 | **A2 canEditFiles 回合级角色固化（TOCTOU 修复，commit 23c0523）**：`chat.lastUserId`（最近入站用户）已删，改 `pendingTurnRoles` FIFO + `activeTurnRole`——**在宿主 `turn/start` 事件点 shift 固化**（静态证据链查证 dsh-session 暴露 turn/start 且与 turn/end 同 feed），canEditFiles 只读当前运行回合自己的角色；队列空/未知路径 fail-closed 为 member；/retry 传 admin（命令门禁已在 tryHandleCommand）；/new 与 healSessionCollision 随 ChatAgent 对象消亡结构性清队。**机制否决推演（给未来维护者的重要上下文）**：否决「turn/end 时 shift」方案——交错场景推演证明存在双向错位（管理员回合被误拒、成员后续回合被误放行）；turn/start-shift 的 FIFO 头严格对应当前运行回合，无此错位。**遗留**：turn/start 送达依赖静态证据链，真机冒烟建议加 debug 观测；若宿主不送 turn/start，后果为全员 fail-closed member（安全方向）。bridge.spec +4 |
+
 ---
 
 ## 3. 关键决策与坑（按价值排序）
@@ -378,7 +388,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 ### 运维
 - [x] 会话映射持久化 + 重启 resume（含引导期模型选择等待）
 - [x] 热加载：改 patch 文件/touch 即生效（无需重启 dsh）
-- [x] 测试：119 vitest（单元 + 真实 WS 对端 + 全管线 + t2i 像素扫描 + 预设/工作区回归 + loop 合并/斜杠命令回归 + 图片压缩 + 废弃会话 id 持久化/重启回归 + preset 记录/恢复回归；safe-edit 测试已随拆分迁移至 dsh-safe-edit）
+- [x] 测试：149 vitest（单元 + 真实 WS 对端 + 全管线 + t2i 像素扫描 + 预设/工作区回归 + loop 合并/斜杠命令回归 + 图片压缩 + 废弃会话 id 持久化/重启回归 + preset 记录/恢复回归；safe-edit 测试已随拆分迁移至 dsh-safe-edit）
 
 ---
 
@@ -401,7 +411,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 
 # 构建与测试
 cd ~/dsh-plugins/dsh-onebot && npm install --include=dev && ./scripts/build.sh
-./node_modules/.bin/vitest run       # 130 个测试
+./node_modules/.bin/vitest run       # 149 个测试
 
 # 线上状态
 netstat -an | grep <port>             # NapCat 反向 WS 连接（ESTABLISHED）

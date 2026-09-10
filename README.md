@@ -105,6 +105,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `mode` | `reverse` | `reverse`/`forward` |
 | `host` / `port` | `127.0.0.1` / `8643` | reverse 监听；跨机部署（NapCat 从其他机器拨入）需显式改为 `0.0.0.0` |
 | `url` | `ws://127.0.0.1:3001` | forward 目标 |
+| `reconnectMaxAttempts` | `100` | 自动重连放弃上限：连续失败达到该次数后停止重连，日志输出上限值与恢复指引；`0` = 无限重连（退避封顶 60s） |
 | `accessToken` | 空 | OneBot token；**reverse 模式必填**，留空插件拒绝启动（fail-closed）；forward 可为空 |
 | `botQQ` | 空 | 机器人 QQ（空=自动学习） |
 | `requireMention` | `true` | 群聊需 @ 或回复才响应 |
@@ -246,7 +247,7 @@ header cwd 回填（会话 cwd 创建时冻结）：只要该 chat 用的是非�
 
 ```sh
 ./scripts/build.sh                 # 编译 src/ → lib/
-./node_modules/.bin/vitest run     # 130 个测试：单元 + 真实 WS 对端 + 全管线
+./node_modules/.bin/vitest run     # 149 个测试：单元 + 真实 WS 对端 + 全管线
 ```
 
 要点（来自移植源 DEVLOG 的教训）：

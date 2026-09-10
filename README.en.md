@@ -109,6 +109,7 @@ default). Common options:
 | `mode` | `reverse` | `reverse`/`forward` |
 | `host` / `port` | `0.0.0.0` / `8643` | reverse listen address |
 | `url` | `ws://127.0.0.1:3001` | forward target |
+| `reconnectMaxAttempts` | `100` | reconnect give-up limit: auto-reconnect stops after this many consecutive failures (the log includes the limit and recovery guidance); `0` = unlimited retries (backoff capped at 60s) |
 | `accessToken` | empty | OneBot token |
 | `botQQ` | empty | bot QQ (empty = auto-learned) |
 | `requireMention` | `true` | groups only respond when @-mentioned or replied to |
@@ -217,7 +218,7 @@ automatically from the system and fixed paths at startup; missing glyphs render 
 
 ```sh
 ./scripts/build.sh                 # compile src/ → lib/
-./node_modules/.bin/vitest run     # 130 tests: unit + real WS peer + full pipeline
+./node_modules/.bin/vitest run     # 149 tests: unit + real WS peer + full pipeline
 ```
 
 Lessons ported from the source DEVLOG:
