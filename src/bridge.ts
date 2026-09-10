@@ -27,7 +27,7 @@ import type { Transcriber } from './stt.js'
 import { transcriptLabel } from './stt.js'
 import type { OneBotSegment, MediaRef } from './cq.js'
 import { cqUnescape, detectMention, parseMessage, segmentText } from './cq.js'
-import type { ChatId } from './chat.js'
+import type { ChatId, UserRole } from './chat.js'
 import {
   buildChatId, buildGroupMessagePrefix, classifyUserRole, dmAllowed, groupAllowed,
   RESTRICTED_PREFIX, sessionIdForChat, splitChatId,
@@ -185,8 +185,11 @@ interface ChatAgent {
   busy: boolean
   typingTimer: ReturnType<typeof setInterval> | undefined
   lastNickname: string
-  /** The most recent inbound QQ user id for this chat (edit-tool gating). */
-  lastUserId: string
+  /** Roles of dispatched turns not yet opened (FIFO, consumed at turn/start). */
+  pendingTurnRoles: UserRole[]
+  /** Role of the currently running turn; stays 'member' (fail-closed) until a
+   * turn/start assigns the head of pendingTurnRoles. */
+  activeTurnRole: UserRole
   /** The last user message text actually fed to the agent (for /retry). */
   lastFollowup: string | undefined
   /** Mutable per-agent model selection (installModelSelection-bound); the
@@ -298,15 +301,14 @@ export class ChatBridge {
   }
 
   /** Whether a caller backing an agent session may perform file edits. QQ chats
-   * require the most recent inbound user to be an admin; non-QQ sessions (Web
-   * and other channels) are trusted by default (A1 scoping). */
+   * require the currently running turn's initiator to be an admin (role frozen
+   * from the dispatch queue at turn/start); non-QQ sessions (Web and other
+   * channels) are trusted by default (A1 scoping). Unknown states fail closed
+   * as member. */
   canEditFiles(sessionId: string): boolean {
     const chatId = this.bySession.get(sessionId)
     if (chatId === undefined) return true
-    const chat = this.chats.get(chatId)
-    const lastUserId = chat?.lastUserId ?? ''
-    if (lastUserId === '') return false
-    return classifyUserRole(lastUserId, this.deps.policy.adminUsers) === 'admin'
+    return this.chats.get(chatId)?.activeTurnRole === 'admin'
   }
 
   /** Whether the connection is usable for sends. */
@@ -498,19 +500,22 @@ export class ChatBridge {
     final = final.trim()
     if (final === '') return
 
-    await this.dispatchFollowup(chatId, final, nickname)
-    const chat = this.chats.get(chatId)
-    if (chat !== undefined) chat.lastUserId = userId
+    await this.dispatchFollowup(chatId, final, isAdmin ? 'admin' : 'member', nickname)
   }
 
   /** Feed one user message into a chat's agent (create on demand). Records
-   * the base text for /retry and applies per-chat /goal + /plan prefixes. */
-  private async dispatchFollowup(chatId: ChatId, text: string, nickname?: string): Promise<void> {
+   * the base text for /retry, queues the initiator's turn role, and applies
+   * per-chat /goal + /plan prefixes. */
+  private async dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string): Promise<void> {
     const final = this.prefixTurn(chatId, text)
     const fallback = this.chats.get(chatId)?.lastNickname ?? ''
     const chat = await this.ensureChat(chatId, nickname ?? fallback)
     if (nickname !== undefined && nickname !== '') chat.lastNickname = nickname
     chat.lastFollowup = text
+    // Queue this turn's initiator role; the host's turn/start freezes it as
+    // the running turn's role (M1-A2). Push and followup happen synchronously,
+    // so the role cannot interleave with another dispatch.
+    chat.pendingTurnRoles.push(role)
     this.deps.log('info', 'followup from ' + chatId + ': ' + final.slice(0, 120))
     // Plugin-originated user message: the session log attributes QQ inbound
     // messages to this plugin (the built-in plugin source with form omitted),
@@ -902,7 +907,9 @@ export class ChatBridge {
     chat.loopBuffer = []
     chat.loopPending = null
     this.deps.log('info', 'retry for ' + chatId)
-    await this.dispatchFollowup(chatId, text, chat.lastNickname)
+    // /retry is admin-gated in tryHandleCommand, so the retried turn's role is
+    // the admin who issued the command (M1-A2).
+    await this.dispatchFollowup(chatId, text, 'admin', chat.lastNickname)
   }
 
   /** /ocr: OCR the most recent inbound image via NapCat's ocr_image. */
@@ -1494,6 +1501,13 @@ export class ChatBridge {
     if (chatId === undefined) return
     const chat = this.chats.get(chatId)
     if (chat === undefined || chat.sessionId !== session.id) return
+    if (event.type === 'turn/start') {
+      // Freeze the running turn's initiator role from the dispatch FIFO
+      // (M1-A2): turns the plugin did not dispatch (host/web input) find an
+      // empty queue and fail closed as member.
+      chat.activeTurnRole = chat.pendingTurnRoles.shift() ?? 'member'
+      return
+    }
     if (event.type === 'assistant/message') {
       // Dedupe: the session may re-emit the same message (streaming/usage
       // updates); each id is handled exactly once, or interims would send
@@ -1651,7 +1665,8 @@ export class ChatBridge {
       busy: false,
       typingTimer: undefined,
       lastNickname: nickname,
-      lastUserId: '',
+      pendingTurnRoles: [],
+      activeTurnRole: 'member',
       lastFollowup: undefined,
       selectionRef,
     }
@@ -1720,7 +1735,8 @@ export class ChatBridge {
             busy: false,
             typingTimer: undefined,
             lastNickname: '',
-            lastUserId: '',
+            pendingTurnRoles: [],
+            activeTurnRole: 'member',
             lastFollowup: undefined,
             selectionRef,
           }

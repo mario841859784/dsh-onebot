@@ -2013,6 +2013,7 @@ describe('ChatBridge', () => {
     interimMessages?: boolean
     interimRecallMs?: number
     commands?: unknown
+    allowAllUsers?: boolean
   }) {
     const ctx = new Context()
     const sessionIds: string[] = []
@@ -2055,7 +2056,7 @@ describe('ChatBridge', () => {
       },
       policy: {
         dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
-        adminUsers: ['10001'], allowAllUsers: false, requireMention: true,
+        adminUsers: ['10001'], allowAllUsers: opts?.allowAllUsers ?? false, requireMention: true,
       },
       log: () => undefined,
     })
@@ -2088,10 +2089,29 @@ describe('ChatBridge', () => {
         sender: { user_id: 10001, nickname: '小明' },
       }))
     }
+    // Variant senders for the M1-A2 turn-role tests (non-default users / group).
+    const sendTextAs = (text: string, userId: number): void => {
+      client.send(JSON.stringify({
+        post_type: 'message', message_type: 'private', user_id: userId, self_id: 10002,
+        message: [{ type: 'text', data: { text } }], raw_message: text,
+        sender: { user_id: userId, nickname: '用户' + userId },
+      }))
+    }
+    const sendGroupTextAs = (text: string, userId: number): void => {
+      client.send(JSON.stringify({
+        post_type: 'message', message_type: 'group', user_id: userId, group_id: 888, self_id: 10002,
+        message: [
+          { type: 'at', data: { qq: '10002' } },
+          { type: 'text', data: { text } },
+        ],
+        raw_message: '[CQ:at,qq=10002]' + text,
+        sender: { user_id: userId, nickname: '用户' + userId },
+      }))
+    }
     const chats = () => (bridge as unknown as {
       chats: Map<string, { agent: { session: { id: string } }, lastFollowup: string | undefined, busy: boolean }>
     }).chats
-    return { ctx, sessionIds, capturedMeta, captured, sessions, mediaDir, connection, bridge, client, outbound, sendText, chats }
+    return { ctx, sessionIds, capturedMeta, captured, sessions, mediaDir, connection, bridge, client, outbound, sendText, sendTextAs, sendGroupTextAs, chats }
   }
 
   it('slash /id /ver /status report the session state', async () => {
@@ -2400,10 +2420,108 @@ describe('ChatBridge', () => {
     // Non-QQ session id: not in the chat mapping → allowed.
     expect(h.bridge.canEditFiles('some-web-session')).toBe(true)
 
-    // An admin (10001) message marks the chat owner as admin → allowed.
+    // An admin (10001) dispatches a turn; the role freezes at turn/start →
+    // allowed for that turn.
     h.sendText('你好')
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('turn/start', { turn: 1 }))
     expect(h.bridge.canEditFiles(h.sessionIds[0])).toBe(true)
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('freezes the edit role per turn in private chats: member turns stay denied and the admin turn is allowed (M1-A2)', async () => {
+    const h = await makeCmdHarness({ allowAllUsers: true })
+    // Member (10003) private chat: the turn opens with the member role, and a
+    // second queued member turn keeps its own role after the first one ends.
+    h.sendTextAs('请帮我修改文件', 10003)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    h.sendTextAs('再改一处', 10003)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    const memberSession = { id: h.sessionIds[0] }
+    h.ctx.emit('session/event', memberSession as never, makeEvent('turn/start', { turn: 1 }))
+    expect(h.bridge.canEditFiles(h.sessionIds[0])).toBe(false)
+    h.ctx.emit('session/event', memberSession as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    h.ctx.emit('session/event', memberSession as never, makeEvent('turn/start', { turn: 2 }))
+    expect(h.bridge.canEditFiles(h.sessionIds[0])).toBe(false)
+
+    // The admin's own private chat opens its turn with the admin role.
+    h.sendTextAs('你好', 10001)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(3))
+    h.ctx.emit('session/event', { id: h.sessionIds[1] } as never, makeEvent('turn/start', { turn: 1 }))
+    expect(h.bridge.canEditFiles(h.sessionIds[1])).toBe(true)
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('keeps a running member turn member-gated when an admin interjects in a group (M1-A2)', async () => {
+    const h = await makeCmdHarness()
+    // Group member (20003) starts a long-running turn.
+    h.sendGroupTextAs('请帮我修改文件', 20003)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const session = { id: h.sessionIds[0] }
+    h.ctx.emit('session/event', session as never, makeEvent('turn/start', { turn: 1 }))
+    expect(h.bridge.canEditFiles(h.sessionIds[0])).toBe(false)
+
+    // Admin interjects mid-turn: the admin role queues for the NEXT turn, but
+    // the running member turn keeps its frozen role (the old lastUserId-based
+    // gate elevated it mid-turn — TOCTOU).
+    h.sendGroupTextAs('管理员插话', 10001)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    expect(h.bridge.canEditFiles(h.sessionIds[0])).toBe(false)
+
+    // The admin's queued turn opens → allowed for that turn.
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    h.ctx.emit('session/event', session as never, makeEvent('turn/start', { turn: 2 }))
+    expect(h.bridge.canEditFiles(h.sessionIds[0])).toBe(true)
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('fails closed to member on turn/start with an empty dispatch queue (host-initiated turn, M1-A2)', async () => {
+    const h = await makeCmdHarness()
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const session = { id: h.sessionIds[0] }
+    // The admin's dispatched turn → allowed while it runs.
+    h.ctx.emit('session/event', session as never, makeEvent('turn/start', { turn: 1 }))
+    expect(h.bridge.canEditFiles(h.sessionIds[0])).toBe(true)
+    // A turn the plugin never dispatched (host/web input on the same session)
+    // finds the queue empty → member, never inheriting the previous role.
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    h.ctx.emit('session/event', session as never, makeEvent('turn/start', { turn: 2 }))
+    expect(h.bridge.canEditFiles(h.sessionIds[0])).toBe(false)
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('drops queued turn roles on /new so the fresh session cannot inherit them (M1-A2)', async () => {
+    const h = await makeCmdHarness()
+    // Member turn + admin interjection: the admin role is still queued when
+    // the member's turn ends.
+    h.sendGroupTextAs('任务A', 20003)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    h.sendGroupTextAs('管理员插话', 10001)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('turn/start', { turn: 1 }))
+    h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    // /new in the group disposes the chat: the queued admin role must go with it.
+    h.sendGroupTextAs('/new', 10001)
+    await vi.waitFor(() => expect(h.outbound.some(f => JSON.stringify(f.params).includes('已开启新会话'))).toBe(true))
+    // The next admin message re-creates the chat; its turn/start must freeze
+    // 'admin', proving no stale role lingered ahead of it in the queue.
+    h.sendGroupTextAs('新会话消息', 10001)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(3))
+    h.ctx.emit('session/event', { id: h.sessionIds[1] } as never, makeEvent('turn/start', { turn: 1 }))
+    expect(h.bridge.canEditFiles(h.sessionIds[1])).toBe(true)
 
     h.client.close()
     await h.bridge.stop()
