@@ -86,6 +86,18 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 午 | **code_safe_edit / code_safe_rollback / code_list_backups 拆分出本插件**（用户要求）：新建独立插件 `~/dsh-plugins/dsh-safe-edit/`，安全编辑工具改为对所有通道（QQ/Web/其他）全局注册；可编辑根跟随会话 sandbox 策略——`danger-full-access` 无限制、`workspace-write` 限会话工作区、`read-only` 拒绝、无策略服务回落 `safeEditRoot`。本插件（onebot）删除 src/safe-edit.ts、tests/safe-edit.spec.ts 及 tools.ts 中相关注册块、index.ts 的 safeEditRoot/backupDir 配置项；相关测试并入 dsh-safe-edit（7/7 全过）。挂载配置：`~/.dsh/profiles/web/cordis.patch.yml` 移除 onebot 的 safeEditRoot，新增 dsh-safe-edit 条目。详见 §3.21 |
 | 午 | **真机排查 + 修复 sandbox policy bug + 重启上线**：首次给 `SandboxPolicyService.resolve()` 传 `{id}` stub 导致 `session.events` undefined → `Cannot read ... (reading 'length')`；按 dsh-tool-bash 改为传完整 `exec.agent.session` 对象。KEY 认知：**HMR 只重应用配置快照、不重新 require 插件 JS**，改 lib 必须重启 dsh（launchd 拉起）。重启后实测全链路：编辑→备份→回滚 通过；full-access 会话跨 /tmp 编辑成功。onebot 118/118、dsh-safe-edit 7/7 全绿。详见 §3.21 |
 
+### 2026-08-19（/plan 上线后真机修复）
+
+| 时间 | 工作 |
+|---|---|
+| 下午 | **/plan 转发补传必填 signal**：§3.22 转发上线后 /plan 调用报 `Cannot read properties of undefined (reading 'aborted')`——宿主 `commands.execute` **无条件**读 `signal.aborted`，而转发时未传 signal（声明为可选）。修复：调用处补传 `new AbortController().signal`（QQ 用户发起的 /plan 不被本插件取消逻辑中断）；BridgeDeps/Context 类型把 signal 改为必填；测试同步；构建入库。详见 §3.25 |
+
+### 2026-09-01（文档：架构图三连）
+
+| 时间 | 工作 |
+|---|---|
+| 下午 | **架构图三连（纯文档，无代码改动）**：① Archify 导出自包含 SVG（宿主样式变量与类内联、裸属性规范化为 SVG/XML 合法值）嵌入 README「## 架构」+ 保留交互式 HTML；② SVG 在 GitHub 管线不渲染 → README 改用 2x 高清 PNG 嵌入，SVG 补 xmlns 保留矢量版；③ README.en.md 新增英文版架构图（EN SVG 全文翻译 + 按英文宽度重排标签遮罩 + EN PNG）。详见 §3.25 |
+
 ### 2026-08-17（会话字段对齐 Web：preset 记录）
 
 | 时间 | 工作 |
@@ -247,6 +259,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
   - index.ts 增 `dshHome()` 注入；BridgeDeps 增可选 `dshHome`（供 /preset 枚举）；/help 文案与 README 同步
 - **验证**：tsc 零错误；vitest 113/113 全绿（31 例 bridge，+5：/id /ver /status 信息、/goal /plan /mode per-chat 状态与前缀、/retry 重放与 /new 后清除、/preset 切换重建（mock resolve）与无效拒绝、/ocr 无图提示 + mock ocr_image 成功）
 - **待上线**：构建 lib → kill 主进程由 launchd ai.dsh.web 拉起 → `/ver` `/status` `/id` 真机看输出；`/ocr` 需用户发图实测（NapCat ocr_image 对 base64 的接受度以真机为准，失败则退 file/直链）
+- **上线状态（§3.25 补记）**：随 8/18~8/19 构建与 8/26 重启在线上；8/28 会话系统提示已含 §3.24 校准后的完整 14 命令表（线上 prompt 实证）；各命令真机实测细节未单独记录，日志核查无报错痕迹
 
 ### 3.19 /workspace 跨重启持久化（方案 B）+ 宿主计划书/提问卡中继到 QQ（2026-08-18，已实现待上线）
 - **需求**：① `/workspace` 指定工作区后重启应默认继续使用；② 宿主弹「计划书/选项卡」时 QQ 端静默、对话停住——exit_plan_mode 的 plan-review 卡与 ask_user_question 走宿主平面 ctx.userQuestions，不经 session 事件流；模型调用时文本块为空，原 `text === ''` 早返回让 QQ 静默
@@ -294,12 +307,14 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
   - 测试改写：/plan 断言改为「转发到 commands.execute(路径/内容)+中继宿主文本」；prompt 断言 /plan off 引导；删除 chatPlanModes 断言
 - **并发合流**：期间另一次会话把 safe_edit 拆为独立插件 dsh-safe-edit（§3.21，用户拍板），onebot 移除 code_* 注册与源码；本改动在其上叠加（commands 注入与拆分移除共存），onebot 内 safe-edit 死拷贝已清理，118/118 仍绿
 - **验证**：tsc 0；vitest 118/118；待上线：kill 由 launchd 拉起 → QQ 实测 /plan 进宿主模式→文本计划→/plan off 直退→继续执行（全程无 Web 审批卡）
+- **上线与修复（§3.25 补记）**：上线后 /plan 调用报 `Cannot read properties of undefined (reading 'aborted')`（宿主 execute 无条件读 signal.aborted）→ 8/19 补传必填 signal 修复（3a42743）；此后无相关报错记录
 
 ### 3.23 实时中间消息 + 各自的 90s 单独撤回 + 回合末整轮 t2i 小结卡（2026-08-18，已实现待上线）
 - **症状（用户报 + 截图确认）**：推送回复那轮「少撤回文本 + 合并转发里有重复内容」。根因：回合 29 从首个中间消息到 turn/end 耗时 **280s**，最早中间消息已 4.7 分钟；QQ 撤回时限约 2 分钟 → NapCat `recallMsg retcode 1200 Timeout`，日志大量 `loop recall delete_msg failed`；回合末合并转发把 4 条已撤不回的原文收进卡里 → 原文残留 + 卡片重复（截图：4 条原文 +「群聊的聊天记录」卡 4 个同名节点 + 仅 2 条「对方撤回了一条消息」）
 - **需求（用户拍板 4 点）**：① 中间消息实时可见；② 每条到 90 秒单独撤回（各自独立定时器）；③ 回合结束先把**整轮所有中间消息**渲染一张 t2i 小结卡、再发 final（final 保持现状阈值：>150 转图、短文文本）；④ 发小结卡时残留原文**立即撤回**（无重叠）
 - **实现**（src/bridge.ts + index.ts）：弃用回合末合并转发（sendLoopForward 删除）；`loopBuffer` 条目加 `sentAt`；新增 `ChatAgent.recallTimers: Map<id,timer>` 与 `recalledInterimIds: Set<id>`；`sendInterim` 记 sentAt + 每条设 `interimRecallMs`（默认 90_000，新配置项，可调）定时器 → `revokeInterim` 单独撤回并标记；`settleLoop` 改为：排空队列 → `sendInterimSummary`（renderTextImage 出「📋 本轮中间记录」图卡，超 maxImageBytes 回退文本）→ `recallLoopMessages`（跳过已被 90s 撤过的，clearTimeout 残留定时器，delete_msg 间 60ms 间隔）→ 发送 final；`clearInterimTimers` 在 stop()/resetChat 清理
 - **验证**：tsc 0；vitest 119/119（重写合并测试为「小结图卡→立即撤回→final」、去重测试断言无 send_private_forward_msg、新增「40ms interimRecallMs 回合中自动单独撤回」用例）；测试注意：echo 必须给增序 message_id，否则两条 interim 同 id 被「已撤回」集合误跳过
+- **上线状态（§3.25 补记）**：随 8/18~8/19 构建与 8/26 重启在线上；小结卡为 t2i 图片、撤回为插件侧动作，会话文本日志无直接痕迹；全量日志核查无 recall 超时/error 残留
 - **待上线**：构建 → kill 由 launchd 拉起 → 真机：长回合看中间消息实时出现、90s 后各自消失、回合末出整轮小结卡 + final
 
 ### 3.24 平台说明下沉到 agent 自身作用域 + 三条校准（2026-08-26，已上线）
@@ -308,6 +323,11 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
   - `bridge.ts` 新增 `installChannelScope(agentCtx)`：平台说明（`systemPrompt.section` channel:dsh-onebot）与 qq_* 工具注册到**每个 agent 自身作用域**——`agents.create` 新建、`agents.resume` 恢复两处 setup 都执行，Web/local 会话不可见；`session/event`、`session/flush` 监听器改存 dispose 句柄并在 stop() 释放，防 HMR/重载重复累积
   - `prompt.ts` 三条校准：① 删 `view_image` 幻影指令——入站实际标注为 `[图片]`/`[语音]`/`[视频]` 占位（路径不进文本，cq.ts appendImage 核实），无可用看图工具时如实告知用户；② `code_safe_edit` 指引改为内置 read/edit（行级 hash 锚点 + dsh-better-edit 自动 undo，禁 write 整文件覆盖）——原指引与全局 AGENTS.md 惯例相反且工具不存在；③ 斜杠命令示例补全为 14 个（仅管理员，`/help` 查看说明），非管理员 `/` 命令被消费并提示「仅管理员可用」
 - **验证**：tsc 0 错；vitest 全绿；lib 重建；真机重启（`launchctl kickstart -k gui/501/ai.dsh.web`）后生效；逐条对照代码核实：tools.ts 工具清单（无 view_image）、cq.ts 标注格式、chat.ts 群前缀、tryHandleCommand 命令表；测试同步：bridge.spec 假 agentCtx 补 systemPrompt/tools 桩并断言通道工具注册到 agent 作用域、plugin.spec 改为断言插件作用域不再注册通道面
+
+### 3.25 补记：/plan signal 修复 + 架构图文档 + 待上线项状态收口（2026-08-19 / 2026-09-01）
+- **/plan 转发真机 bug（2026-08-19，已修复）**：§3.22 转发上线后 /plan 调用报 `Cannot read properties of undefined (reading 'aborted')`。根因：宿主 `commands.execute` 实现**无条件**读 `signal.aborted`（signal 实为必填契约），§3.22 转发时未传（类型声明为可选，掩盖了该契约）。修复：`handlePlanCommand` 调用处补传 `new AbortController().signal`（QQ 用户发起的 /plan 不受本插件取消逻辑中断）；`BridgeDeps`/`Context` 的 commands.execute 签名 signal 改必填并补 `result` 字段类型；测试同步（转发用例断言补 signal）。验证：tsc 0；vitest 全绿；构建入库（3a42743）
+- **架构图文档三连（2026-09-01，纯文档）**：88ad77c（Archify SVG 自包含化嵌入 README「## 架构」+ 交互式 HTML）→ 9cf1931（SVG 在 GitHub 管线不渲染 → 2x PNG 嵌入，SVG 补 xmlns 保留矢量版）→ 4a86a1a（README.en 英文版 EN SVG 全文翻译 + 重算标签遮罩 + EN PNG）。无代码改动
+- **待上线项状态收口**：§3.18 斜杠命令、§3.22 /plan 转发、§3.23 小结卡均随 8/18~8/19 构建与 8/26 重启在线上（§3.24 上线时 lib 即含全部）；对全部 onebot-private-* 会话日志解压核查：无 aborted 报错、无 recall delete_msg failed、无 turn/end error 残留；小结卡为 t2i 图片（文本不进会话日志）、撤回为插件侧动作，日志无直接痕迹，实测细节未单独记录
 ---
 ## 4. 功能清单（当前状态）
 
@@ -321,7 +341,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 ### 出站
 - [x] 长消息策略：≤100 单条 / 100–150 标点分段 / >150 t2i 文字图卡片（渲染失败回退分段）
 - [x] Markdown 剥离为 QQ 纯文本；[[qq_forward]] 合并转发（群/私聊）
-- [x] loop 中间消息自动合并转发+撤回（interimMessages：带 tool-call 的中间文本立即发送、无工具调用延迟一步判定；缓冲 ≥2 条收敛为合并转发卡片并撤回原消息；顺序：合并转发 → t2i/final → 撤回；结算前排空发送队列不漏最后一条）
+- [x] loop 中间消息**实时发送 + 90s 独立撤回 + 回合末整轮 t2i 小结卡**（带 tool-call 的中间文本立即发送、无工具调用延迟一步判定；每条按 interimRecallMs（默认 90s）独立定时撤回；回合末先渲染「📋 本轮中间记录」小结卡 → 撤回残留原文 → 再发 final；结算前排空发送队列不漏最后一条；2026-08-18 §3.23，弃用旧「回合末合并转发」）
 - [x] 图片（路径/URL，≤9 张）、语音、视频、文件工具；正在输入提示（私聊）
 - [x] qq_napcat_api 白名单代理（14 个 action）、qq_group_history
 - [x] ~~受守卫文件编辑 code_safe_edit/rollback/list_backups~~（**2026-08-18 已拆至独立插件 dsh-safe-edit**，随会话 sandbox 策略动态边界，跨通道全局；见 §3.21）
@@ -336,7 +356,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 ### 运维
 - [x] 会话映射持久化 + 重启 resume（含引导期模型选择等待）
 - [x] 热加载：改 patch 文件/touch 即生效（无需重启 dsh）
-- [x] 测试：118 vitest（单元 + 真实 WS 对端 + 全管线 + t2i 像素扫描 + 预设/工作区回归 + loop 合并/斜杠命令回归 + 图片压缩 + 废弃会话 id 持久化/重启回归 + preset 记录/恢复回归；safe-edit 测试已随拆分迁移至 dsh-safe-edit）
+- [x] 测试：119 vitest（单元 + 真实 WS 对端 + 全管线 + t2i 像素扫描 + 预设/工作区回归 + loop 合并/斜杠命令回归 + 图片压缩 + 废弃会话 id 持久化/重启回归 + preset 记录/恢复回归；safe-edit 测试已随拆分迁移至 dsh-safe-edit）
 
 ---
 
@@ -359,7 +379,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 
 # 构建与测试
 cd ~/dsh-plugins/dsh-onebot && npm install --include=dev && ./scripts/build.sh
-./node_modules/.bin/vitest run       # 90 个测试
+./node_modules/.bin/vitest run       # 119 个测试
 
 # 线上状态
 netstat -an | grep <port>             # NapCat 反向 WS 连接（ESTABLISHED）
