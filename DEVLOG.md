@@ -119,6 +119,15 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 全天 | **适配当前宿主 dsh 0.1.5-rc.1（过时声明更正）**：盘点发现宿主全套 @deepseek-ai/* 已升至 0.1.5-rc.1、cordis 4.0.2，且 dsh-tools 公开导出中 JsonValue 类型已迁至 dsh-util-values（tsc TS2614 实证）→ tools.ts 改导入源、link-host.sh LINK_PKGS 与 peerDependencies 增补 @deepseek-ai/dsh-util-values；peer 依赖 0.1.0-rc.6 → ≥0.1.5-rc.1、cordis 4.0.1 → ^4.0.2、engines.dsh 同步 ≥0.1.5-rc.1（package.json + dsh.plugin.json）；README/README.en 兼容表、安装前置、最后验证日期一并更正；验证：对 0.1.5-rc.1 实链宿主 `tsc --noEmit` 0 错误、vitest 130/130 全绿 |
 | 全天 | **e2e-peer 真机冒烟（M0 DoD 收口）**：隔离第二实例（独立 DSH_HOME，profiles/web/cordis.patch.yml 挂载工作区新 lib：mode=reverse、127.0.0.1:18643、accessToken 'e2etest'；生产 8765/NapCat 实例全程不动），`tests/e2e-peer.mjs` 假 NapCat 拨入实测：正确 Bearer token 全链路通（入站私聊 → set_input_status → agent 真实 LLM 回复 → 出站 send_msg text 段）；错误 token / 缺失 auth 头均被拒 WS close 4401 unauthorized；默认绑定 127.0.0.1 在真实宿主进程复核。注意：生产 ~/dsh-plugins 仍是旧构建，上线新 lib 前必须先在 cordis.patch.yml 给 dsh-onebot 补 accessToken（否则空 token fail-closed 拒启、QQ 通道中断） |
 
+### 2026-09-10（M0 里程碑复盘与 M1 启动）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **DoD 9/9 核销通过，重排信号未触发**：A1/B1/B2+B3/A4/C4/E1 全部合入且每包有专测；vitest 130/130（基线实为 119，README 曾写 99/99 属滞后声明）；tsc 对 0.1.5-rc.1 实链宿主 0 错误；e2e-peer 真机冒烟通过（全链路 + 4401 拒绝实测，commit 9c65b40）；tag v0.2.0 已推远端 |
+| 全天 | **估算偏差**：A1 +50%（BREAKING 测试半径 47 处——28 fixture 补 token + 19 WS 拨入补 Authorization 头——未估入工作包，后置到整合）；E1 成为整合回收站（+100~200%）；日历 1 天 vs 计划 3-4 天（双专家按文件所有权并行的结构优势）；范围内超支 +15% 在缓冲内。**范围审计**：23 变更文件 0 触碰范围外清单；计划外「宿主 0.1.5-rc.1 兼容适配」补录为常备预备包 **C7**（0.5 人日；触发条件：宿主升级 → 盘点 @deepseek-ai/* 与 cordis 版本 → 实链 tsc → 兼容声明与 link-host.sh 更正）；测试适配 47 处追溯并入 A1 口径（变更方负责适配原则） |
+| 全天 | **协议偏差与 3 条流程改进**：E1/测试适配/发布整理由编排者亲自实施（违规，产出已验收有效）→ M1 起：①任务书强制「影响面自评 + 测试自含」，tests/ 所有权跟随变更方；②无主 diff 四步处置（冻结→考古定意图→补任务书重委派或显式 revert→禁止编排者改写合入）；③实施一律委派，豁免须先过 PM 检查点并记录；恢复逐包独立 commit（M0 曾两包合一 commit 致 revert 粒度变粗） |
+| 全天 | **M1 启动**：范围不变（9.25 人日，A2→A3、C3→A5 硬前置）；Wave 1 三组并行（G-CON：B4+B5 ∥ G-MED：A6 ∥ G-BRG：A2）；A3 拆 A3a/A3b 两单。**遗留风险**：R1 生产未切换新 lib（须先两端配 accessToken 再挂新 lib，否则 fail-closed 拒启）；R5 NapCat 真客户端 4401 重试行为观察 24h；R6 测试数单一事实源 = vitest 实跑 |
+
 ---
 
 ## 3. 关键决策与坑（按价值排序）

@@ -246,7 +246,7 @@ header cwd 回填（会话 cwd 创建时冻结）：只要该 chat 用的是非�
 
 ```sh
 ./scripts/build.sh                 # 编译 src/ → lib/
-./node_modules/.bin/vitest run     # 42 个测试：单元 + 真实 WS 对端 + 全管线
+./node_modules/.bin/vitest run     # 130 个测试：单元 + 真实 WS 对端 + 全管线
 ```
 
 要点（来自移植源 DEVLOG 的教训）：

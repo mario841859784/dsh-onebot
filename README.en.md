@@ -217,7 +217,7 @@ automatically from the system and fixed paths at startup; missing glyphs render 
 
 ```sh
 ./scripts/build.sh                 # compile src/ → lib/
-./node_modules/.bin/vitest run     # 99 tests: unit + real WS peer + full pipeline
+./node_modules/.bin/vitest run     # 130 tests: unit + real WS peer + full pipeline
 ```
 
 Lessons ported from the source DEVLOG:
