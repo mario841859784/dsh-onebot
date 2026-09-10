@@ -55,8 +55,10 @@ export class MediaStore {
   }
 
   /**
-   * Delete scratch files older than the TTL. Called on every inbound message;
-   * failures are logged and contained.
+   * Delete plugin scratch older than the TTL, whitelisted by name: only
+   * `media_*` files and `stt_*` work dirs are ours to delete (state files
+   * like chat-sessions.json share this directory and must survive).
+   * Called on every inbound message; failures are logged and contained.
    */
   async cleanupExpired(): Promise<void> {
     const cutoff = Date.now() - this.ttlHours * 3600_000
@@ -64,11 +66,12 @@ export class MediaStore {
       await mkdir(this.dir, { recursive: true })
       const entries = await readdir(this.dir)
       for (const name of entries) {
+        if (!name.startsWith('media_') && !name.startsWith('stt_')) continue
         const path = join(this.dir, name)
         try {
           const info = await stat(path)
-          if (info.isFile() && info.mtimeMs < cutoff) {
-            await rm(path, { force: true })
+          if (info.mtimeMs < cutoff) {
+            await rm(path, { recursive: info.isDirectory(), force: true })
           }
         } catch {
           // file vanished mid-scan
@@ -201,6 +204,21 @@ export function extForUrl(url: string, kind: 'image' | 'voice' | 'video' | 'file
     // malformed URL
   }
   return extForKind(kind)
+}
+
+/**
+ * Whitelisted extension for an inbound (sender-controlled) file name: the
+ * name itself never becomes the on-disk path (MediaStore.freshPath mints an
+ * unpredictable media_<ts>_<uuid> name), only a validated trailing extension
+ * is kept — same rule as extForUrl.
+ */
+export function extForInboundName(name: string): string {
+  const dot = name.lastIndexOf('.')
+  if (dot >= 0) {
+    const ext = name.slice(dot).toLowerCase()
+    if (ext.length <= 6 && /^\.[a-z0-9]+$/.test(ext)) return ext
+  }
+  return '.bin'
 }
 
 /** Default extension per media kind. */

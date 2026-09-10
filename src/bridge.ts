@@ -22,7 +22,7 @@ import { dirname, join } from 'node:path'
 import type { OneBotConnection, OneBotEvent } from './connection.js'
 import { OneBotActionError, OneBotNotConnectedError } from './connection.js'
 import type { MediaStore } from './media.js'
-import { fileToBase64 } from './media.js'
+import { extForInboundName, fileToBase64 } from './media.js'
 import type { Transcriber } from './stt.js'
 import { transcriptLabel } from './stt.js'
 import type { OneBotSegment, MediaRef } from './cq.js'
@@ -1192,7 +1192,10 @@ export class ChatBridge {
    */
   private async resolveNasFile(ref: MediaRef): Promise<string> {
     const name = ref.name !== undefined && ref.name !== '' ? ref.name : 'file'
-    const safeName = name.replace(/[^A-Za-z0-9._-]/g, '_')
+    // The sender-controlled name never becomes the on-disk path (it could
+    // otherwise overwrite chat-sessions.json etc.); only a whitelisted
+    // extension survives into the fresh media_* name.
+    const ext = extForInboundName(name)
     const fid = ref.fileId ?? ref.file ?? ''
     if (fid === '') return ''
     try {
@@ -1201,7 +1204,7 @@ export class ChatBridge {
         url?: string
       }
       if (direct.url !== undefined && direct.url !== '') {
-        const localPath = await this.downloadToMedia(direct.url, safeName)
+        const localPath = await this.downloadToMedia(direct.url, ext)
         if (localPath !== '') {
           this.deps.log('info', 'qq file fetched via direct link: ' + localPath)
           return '[文件:' + localPath + ']'
@@ -1225,14 +1228,14 @@ export class ChatBridge {
         return ''
       }
       if (data.base64 !== undefined && data.base64 !== '') {
-        const localPath = await this.writeMediaFile(Buffer.from(data.base64, 'base64'), safeName)
+        const localPath = await this.writeMediaFile(Buffer.from(data.base64, 'base64'), ext)
         if (localPath !== '') {
           this.deps.log('info', 'qq file fetched via get_file base64: ' + localPath)
           return '[文件:' + localPath + ']'
         }
       }
       if (data.url !== undefined && /^https?:\/\//.test(data.url)) {
-        const localPath = await this.downloadToMedia(data.url, safeName)
+        const localPath = await this.downloadToMedia(data.url, ext)
         if (localPath !== '') {
           this.deps.log('info', 'qq file fetched via get_file url: ' + localPath)
           return '[文件:' + localPath + ']'
@@ -1245,8 +1248,8 @@ export class ChatBridge {
     return ''
   }
 
-  /** Download a URL into the local media dir; returns the path or ''. */
-  private async downloadToMedia(url: string, safeName: string): Promise<string> {
+  /** Download a URL into the media dir under a fresh name; returns the path or ''. */
+  private async downloadToMedia(url: string, ext: string): Promise<string> {
     try {
       const response = await fetch(url)
       if (!response.ok || response.body === null) {
@@ -1258,20 +1261,21 @@ export class ChatBridge {
         this.deps.log('warn', 'qq file too large (' + buffer.length + 'B), skipping')
         return ''
       }
-      return await this.writeMediaFile(buffer, safeName)
+      return await this.writeMediaFile(buffer, ext)
     } catch (error) {
       this.deps.log('warn', 'qq file direct download failed: ' + (error instanceof Error ? error.message : String(error)))
       return ''
     }
   }
 
-  /** Write bytes into the local media dir; returns the path or ''. */
-  private async writeMediaFile(buffer: Buffer, safeName: string): Promise<string> {
+  /** Write bytes into the media dir under a fresh unpredictable name; returns the path or ''. */
+  private async writeMediaFile(buffer: Buffer, ext: string): Promise<string> {
     try {
-      await mkdir(this.deps.config.mediaDir, { recursive: true })
-      const localPath = this.deps.config.mediaDir.endsWith('/')
-        ? this.deps.config.mediaDir + safeName
-        : this.deps.config.mediaDir + '/' + safeName
+      // freshPath mints media_<ts>_<uuid><ext>: inbound data can never land
+      // on a known name (chat-sessions.json etc.) no matter what the sender
+      // chose as the file name.
+      await this.deps.media.ensure()
+      const localPath = this.deps.media.freshPath(ext)
       await writeFile(localPath, buffer)
       return localPath
     } catch (error) {

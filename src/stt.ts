@@ -8,7 +8,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { access, mkdir, readFile, readdir } from 'node:fs/promises'
+import { access, mkdir, readFile, readdir, rm } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
@@ -146,18 +146,30 @@ export class Transcriber {
   private async transcribeNow(filePath: string): Promise<string> {
     const workDir = join(dirname(filePath), 'stt_' + randomUUID().slice(0, 8))
     await mkdir(workDir, { recursive: true })
-    const wavPath = join(workDir, 'audio.wav')
+    try {
+      const wavPath = join(workDir, 'audio.wav')
 
-    const ffmpeg = this.ffmpegChecked ?? (await findCommand('ffmpeg'))
-    this.ffmpegChecked = ffmpeg
-    if (ffmpeg === undefined) {
-      throw new Error('STT: ffmpeg not found on PATH (needed to convert QQ voice to WAV)')
+      const ffmpeg = this.ffmpegChecked ?? (await findCommand('ffmpeg'))
+      this.ffmpegChecked = ffmpeg
+      if (ffmpeg === undefined) {
+        throw new Error('STT: ffmpeg not found on PATH (needed to convert QQ voice to WAV)')
+      }
+      await runProcess(ffmpeg, ['-y', '-i', filePath, '-ar', '16000', '-ac', '1', '-f', 'wav', wavPath], 60_000)
+
+      const engine = await this.resolveEngine()
+      const text = await this.runEngine(engine, wavPath, workDir)
+      return text.trim()
+    } finally {
+      // The work dir holds only intermediates (audio.wav, engine output):
+      // remove it on both success and failure. Best-effort — a failed cleanup
+      // must never lose the transcript (stale dirs are swept later by
+      // MediaStore.cleanupExpired as a fallback).
+      try {
+        await rm(workDir, { recursive: true, force: true })
+      } catch {
+        // best effort
+      }
     }
-    await runProcess(ffmpeg, ['-y', '-i', filePath, '-ar', '16000', '-ac', '1', '-f', 'wav', wavPath], 60_000)
-
-    const engine = await this.resolveEngine()
-    const text = await this.runEngine(engine, wavPath, workDir)
-    return text.trim()
   }
 
   private async resolveEngine(): Promise<'openai' | 'whisper-cpp' | 'custom'> {
