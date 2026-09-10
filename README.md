@@ -46,7 +46,7 @@
 | OneBot 11 实现 | NapCat / Lagrange / LLOneBot / go-cqhttp（reverse 或 forward WebSocket） |
 | 可选依赖 | 语音转写需 ffmpeg + whisper CLI；t2i 文字图在 Linux 需 Noto CJK 字体 |
 
-最后验证：2026-08-16（99/99 vitest 全绿，dsh web 实测 QQ 私聊/群聊收发、文字图卡片、长文本分段、loop 中间消息即时发送+合并转发+撤回、语音转写、入站大图压缩）。
+最后验证：2026-09-10（M0 安全加固：vitest 130 用例全绿；reverse 空 token 拒绝启动、默认仅监听 127.0.0.1 为 BREAKING 变更，见下方配置表说明）。
 
 ## 安装
 
@@ -68,7 +68,7 @@ npm install --include=dev
       config:
         mode: reverse        # reverse = NapCat 拨入；forward = 插件拨出
         port: 8643
-        # accessToken: ''    # 与 NapCat 配置一致
+        # accessToken: '与NapCat一致的token'   # 必配：reverse 模式留空将拒绝启动（M0 安全加固）
         # botQQ: ''          # 留空自动从 meta 事件学习
         adminUsers: ['你的QQ号']   # 必配：至少一个管理员，否则私聊/斜杠命令不可用
 ```
@@ -103,9 +103,9 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `mode` | `reverse` | `reverse`/`forward` |
-| `host` / `port` | `0.0.0.0` / `8643` | reverse 监听 |
+| `host` / `port` | `127.0.0.1` / `8643` | reverse 监听；跨机部署（NapCat 从其他机器拨入）需显式改为 `0.0.0.0` |
 | `url` | `ws://127.0.0.1:3001` | forward 目标 |
-| `accessToken` | 空 | OneBot token |
+| `accessToken` | 空 | OneBot token；**reverse 模式必填**，留空插件拒绝启动（fail-closed）；forward 可为空 |
 | `botQQ` | 空 | 机器人 QQ（空=自动学习） |
 | `requireMention` | `true` | 群聊需 @ 或回复才响应 |
 | `dmPolicy` | `open` | 私聊策略：`open`(仅管理员)/`allowlist`(白名单)/`disabled` |
@@ -123,6 +123,8 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `imageMaxSize` | `2048` | 入站图片长边上限（px）：超过则等比压缩后交给视觉模型（透明 PNG 保留、GIF 不压）；`<=0` 禁用 |
 | `agentPreset` | 空 | 会话挂载的 agent preset（留空=默认） |
 | `workspacePath` | 空 | 会话挂载的工作区（留空=宿主 cwd） |
+
+> ⚠️ **BREAKING（M0 安全加固）**：reverse 模式下 `accessToken` 留空会拒绝启动（fail-closed）；`host` 默认从 `0.0.0.0` 改为 `127.0.0.1`（仅本机监听），跨机部署需显式配置 `host: 0.0.0.0`。
 
 环境变量：`ONEBOT_ALLOWED_USERS`（逗号分隔管理员）、`ONEBOT_ALLOW_ALL_USERS=true`（开发用）。
 
