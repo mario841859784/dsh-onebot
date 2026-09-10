@@ -35,8 +35,10 @@ export declare class MediaStore {
     /** A fresh scratch file path with the given extension. */
     freshPath(ext: string): string;
     /**
-     * Delete scratch files older than the TTL. Called on every inbound message;
-     * failures are logged and contained.
+     * Delete plugin scratch older than the TTL, whitelisted by name: only
+     * `media_*` files and `stt_*` work dirs are ours to delete (state files
+     * like chat-sessions.json share this directory and must survive).
+     * Called on every inbound message; failures are logged and contained.
      */
     cleanupExpired(): Promise<void>;
     /**
@@ -66,6 +68,13 @@ export declare class MediaStore {
 }
 /** Guess a file extension for a URL. */
 export declare function extForUrl(url: string, kind: 'image' | 'voice' | 'video' | 'file'): string;
+/**
+ * Whitelisted extension for an inbound (sender-controlled) file name: the
+ * name itself never becomes the on-disk path (MediaStore.freshPath mints an
+ * unpredictable media_<ts>_<uuid> name), only a validated trailing extension
+ * is kept — same rule as extForUrl.
+ */
+export declare function extForInboundName(name: string): string;
 /** Default extension per media kind. */
 export declare function extForKind(kind: 'image' | 'voice' | 'video' | 'file'): string;
 /**

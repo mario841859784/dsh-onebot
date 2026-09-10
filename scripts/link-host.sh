@@ -70,6 +70,7 @@ LINK_PKGS=(
   dsh-tools
   dsh-typert-protocol
   dsh-user-approval
+  dsh-util-values
 )
 
 mkdir -p node_modules/@deepseek-ai

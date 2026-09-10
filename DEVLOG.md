@@ -116,6 +116,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 全天 | **B2+B3 mediaDir 清理修复**：cleanupExpired 无文件名过滤会删同目录的 chat-sessions.json / retired-sessions.json（空闲超 6h TTL 后任意入站触发 → 重启全部会话失忆）；STT `stt_<uuid>` 工作目录从不清理（每条语音泄漏 ~2MB）→ 清理改前缀白名单（仅 media_* 文件 + stt_* 目录递归）；transcribeNow try/finally 清工作目录（best-effort 不吞转写结果）。边界：升级前旧命名历史媒体文件不再自动清理 |
 | 全天 | **A4 入站文件改名落盘**：safeName 保留 `.` 且直写 `mediaDir/<原始名>`，发名为 chat-sessions.json 的文件即可覆盖状态文件（配合确定性 session id 可在重启后劫持管理员会话）→ 一律 `MediaStore.freshPath` 生成 `media_<ts>_<uuid><ext>` 不可预测名，新增 `extForInboundName`（扩展名白名单，规则同 extForUrl）。新增 media-cleanup.spec 5 例（恶意文件名落盘 / 状态文件哨兵逐字节不变 / 清理矩阵） |
 | 全天 | **E1 元数据 + 发布收尾**：bridge/plugin.spec 28 处 fixture 补 `accessToken: 'test-token'`、bridge.spec 19 处真实 WS 拨入补 Authorization 头，适配 fail-closed 语义；dsh.plugin.json 移除已拆走 dsh-safe-edit 的 code_safe_edit 三件（对齐 package.json）；engines.dsh `>=0.0.1` 收紧为 `>=0.1.0-rc.6`；README / README.en 标注 BREAKING；130/130 vitest 全绿，**发布 v0.2.0**。e2e-peer 真机冒烟待 NapCat 环境补跑 |
+| 全天 | **适配当前宿主 dsh 0.1.5-rc.1（过时声明更正）**：盘点发现宿主全套 @deepseek-ai/* 已升至 0.1.5-rc.1、cordis 4.0.2，且 dsh-tools 公开导出中 JsonValue 类型已迁至 dsh-util-values（tsc TS2614 实证）→ tools.ts 改导入源、link-host.sh LINK_PKGS 与 peerDependencies 增补 @deepseek-ai/dsh-util-values；peer 依赖 0.1.0-rc.6 → ≥0.1.5-rc.1、cordis 4.0.1 → ^4.0.2、engines.dsh 同步 ≥0.1.5-rc.1（package.json + dsh.plugin.json）；README/README.en 兼容表、安装前置、最后验证日期一并更正；验证：对 0.1.5-rc.1 实链宿主 `tsc --noEmit` 0 错误、vitest 130/130 全绿 |
 
 ---
 

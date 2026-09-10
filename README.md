@@ -41,16 +41,16 @@
 
 | 项 | 要求 |
 |---|---|
-| dsh | ≥ 0.1.0-rc.6（`engines.dsh`；@deepseek-ai/* 均为 peer 依赖 0.1.0-rc.6） |
+| dsh | ≥ 0.1.5-rc.1（`engines.dsh`；@deepseek-ai/* peer 依赖 ≥0.1.5-rc.1，JsonValue 由 dsh-util-values 提供） |
 | Node.js | ≥ 22 |
 | OneBot 11 实现 | NapCat / Lagrange / LLOneBot / go-cqhttp（reverse 或 forward WebSocket） |
 | 可选依赖 | 语音转写需 ffmpeg + whisper CLI；t2i 文字图在 Linux 需 Noto CJK 字体 |
 
-最后验证：2026-09-10（M0 安全加固：vitest 130 用例全绿；reverse 空 token 拒绝启动、默认仅监听 127.0.0.1 为 BREAKING 变更，见下方配置表说明）。
+最后验证：2026-09-10（M0 安全加固 + 适配 dsh 0.1.5-rc.1：vitest 130 用例全绿、对 0.1.5-rc.1 宿主实链 tsc 0 错误；reverse 空 token 拒绝启动、默认仅监听 127.0.0.1 为 BREAKING 变更，见下方配置表说明）。
 
 ## 安装
 
-**前置**：dsh（≥0.1.0-rc.6）在 PATH 上；NapCat 或其他 OneBot 11 实现已运行。
+**前置**：dsh（≥0.1.5-rc.1）在 PATH 上；NapCat 或其他 OneBot 11 实现已运行。
 
 ```sh
 git clone <repo> ~/dsh-plugins/dsh-onebot

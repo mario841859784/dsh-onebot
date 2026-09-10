@@ -300,9 +300,9 @@ export declare class ChatBridge {
      * Returns the [文件:path] annotation, or '' when disabled/failed.
      */
     private resolveNasFile;
-    /** Download a URL into the local media dir; returns the path or ''. */
+    /** Download a URL into the media dir under a fresh name; returns the path or ''. */
     private downloadToMedia;
-    /** Write bytes into the local media dir; returns the path or ''. */
+    /** Write bytes into the media dir under a fresh unpredictable name; returns the path or ''. */
     private writeMediaFile;
     /** Expand a combined-forward id into "name: content" lines. */
     private expandForward;

@@ -41,16 +41,16 @@ User(QQ) ←→ NapCat ←→ dsh-onebot plugin ←→ dsh Agent (one per chat)
 
 | Item | Requirement |
 |---|---|
-| dsh | ≥ 0.1.0-rc.6 (`engines.dsh`; all @deepseek-ai/* are peer deps at 0.1.0-rc.6) |
+| dsh | ≥ 0.1.5-rc.1 (`engines.dsh`; all @deepseek-ai/* peer deps ≥0.1.5-rc.1, JsonValue provided by dsh-util-values) |
 | Node.js | ≥ 22 |
 | OneBot 11 impl | NapCat / Lagrange / LLOneBot / go-cqhttp (reverse or forward WebSocket) |
 | Optional deps | Voice transcription needs ffmpeg + whisper CLI; t2i text images need Noto CJK fonts on Linux |
 
-Last verified: 2026-08-14 (99/99 vitest green; tested against a live dsh web: QQ private/group send & receive, text-image cards, merged forwards, voice transcription, inbound large-image shrink).
+Last verified: 2026-09-10 (M0 security hardening + dsh 0.1.5-rc.1 adaptation: 130/130 vitest green, tsc clean against a live 0.1.5-rc.1 host; BREAKING: reverse mode refuses an empty accessToken and defaults to 127.0.0.1).
 
 ## Installation
 
-**Prerequisites**: dsh (≥0.1.0-rc.6) on PATH; NapCat or another OneBot 11 implementation running.
+**Prerequisites**: dsh (≥0.1.5-rc.1) on PATH; NapCat or another OneBot 11 implementation running.
 
 ```sh
 git clone <repo> ~/dsh-plugins/dsh-onebot
