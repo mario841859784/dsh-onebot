@@ -45,6 +45,12 @@ export interface ConnectionConfig {
   accessToken: string
   /** Per-action call timeout in ms. */
   callTimeoutMs: number
+  /**
+   * Forward-mode reconnect attempt limit before giving up with a recovery
+   * hint. Undefined keeps the built-in default (100); 0 retries forever (the
+   * backoff ladder still caps the delay at its last value).
+   */
+  reconnectMaxAttempts?: number
 }
 
 /** Reconnect backoff ladder (seconds); the last value repeats. */
@@ -97,6 +103,7 @@ export class OneBotConnection {
   private pending = new Map<string, PendingAction>()
   private stopping = false
   private reconnectPromise: Promise<void> | undefined
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined
   private reconnectAttempts = 0
   private connectedFlag = false
 
@@ -123,6 +130,12 @@ export class OneBotConnection {
 
   /** Start the transport (server or client) without blocking. */
   start(): void {
+    // Reentrancy guard: a live socket/server or a pending reconnect means the
+    // transport is already up (or about to dial). Restarting blindly would
+    // leave a stale reconnect timer dialing into the new session (ghosts).
+    if (this.socket !== undefined || this.server !== undefined || this.reconnectTimer !== undefined || this.reconnectPromise !== undefined) {
+      return
+    }
     this.stopping = false
     if (this.config.mode === 'reverse') this.startReverseServer()
     else void this.connectForwardOnce()
@@ -131,6 +144,13 @@ export class OneBotConnection {
   /** Stop the transport: close sockets, cancel reconnects, fail pending calls. */
   async stop(): Promise<void> {
     this.stopping = true
+    // Cancel a pending reconnect dial: a stale timer firing into the next
+    // start() would open a second (ghost) connection.
+    if (this.reconnectTimer !== undefined) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = undefined
+    }
+    this.reconnectPromise = undefined
     if (this.heartbeatTimer !== undefined) {
       clearInterval(this.heartbeatTimer)
       this.heartbeatTimer = undefined
@@ -204,6 +224,11 @@ export class OneBotConnection {
     const server = new WebSocketServer({ host: this.config.host, port: this.config.port })
     this.server = server
     server.on('error', error => {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'EADDRINUSE') {
+        console.error('[dsh-onebot] reverse WS server cannot listen on ' + this.config.host + ':' + this.config.port + ': port already in use (EADDRINUSE); stop the process occupying this port, or change config.port')
+        return
+      }
       console.error('[dsh-onebot] reverse WS server error:', error)
     })
     server.on('connection', (socket, request) => {
@@ -279,14 +304,19 @@ export class OneBotConnection {
   private scheduleReconnect(): void {
     if (this.stopping || this.reconnectPromise !== undefined) return
     this.reconnectAttempts += 1
-    if (this.reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
-      console.error('[dsh-onebot] giving up forward WS reconnect after ' + MAX_RECONNECT_ATTEMPTS + ' attempts')
+    // reconnectMaxAttempts: undefined -> built-in default, positive -> give up
+    // once exceeded, 0 or negative -> retry forever (the ladder still caps the
+    // delay at its last value).
+    const max = this.config.reconnectMaxAttempts ?? MAX_RECONNECT_ATTEMPTS
+    if (max > 0 && this.reconnectAttempts > max) {
+      console.error('[dsh-onebot] giving up forward WS reconnect after ' + max + ' retries (reconnectMaxAttempts=' + max + '); check the NapCat ws address and network, then restart the plugin or reload the dsh-onebot channel to reconnect')
       return
     }
     const index = Math.min(this.reconnectAttempts - 1, RECONNECT_BACKOFF.length - 1)
     const delay = RECONNECT_BACKOFF[index] * 1000
     this.reconnectPromise = new Promise<void>(resolve => {
-      setTimeout(() => {
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = undefined
         this.reconnectPromise = undefined
         resolve()
         this.connectForwardOnce()

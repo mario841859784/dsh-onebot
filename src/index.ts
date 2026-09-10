@@ -63,6 +63,8 @@ export interface Config {
   port: number
   url: string
   accessToken: string
+  /** Forward-mode reconnect attempt limit; 0 = retry forever. */
+  reconnectMaxAttempts: number
   botQQ: string
   splitLength: number
   requireMention: boolean
@@ -124,6 +126,8 @@ export const Config: z<Config> = z.object({
     .description('forward 模式的 NapCat ws 地址'),
   accessToken: z.string().role('secret').default('')
     .description('OneBot access_token（reverse 校验 / forward 发送 Authorization: Bearer）'),
+  reconnectMaxAttempts: z.number().default(100)
+    .description('forward 模式重连上限：连续失败达到该次数后放弃重连并打印恢复指引；0 = 无限重试（退避间隔封顶 60s）'),
   botQQ: z.string().default('')
     .description('机器人自身 QQ 号；留空则从 meta 事件自动学习'),
   splitLength: z.number().default(100)
@@ -230,6 +234,7 @@ export function apply(ctx: Context, config: Config): void {
       port: config.port,
       url: config.url,
       accessToken: config.accessToken,
+      reconnectMaxAttempts: config.reconnectMaxAttempts,
       callTimeoutMs: 30_000,
     },
   )

@@ -324,3 +324,149 @@ describe('meta event logging', () => {
     await connection.stop()
   })
 })
+
+describe('reconnect policy and port conflict (M1-B5)', () => {
+  interface ReconnectInternals {
+    socket?: unknown
+    server?: unknown
+    reconnectTimer?: unknown
+    reconnectPromise?: unknown
+    reconnectAttempts: number
+  }
+  const internals = (connection: OneBotConnection): ReconnectInternals => connection as unknown as ReconnectInternals
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /** Dead loopback port: bind once, read the port, release it. */
+  const getDeadPort = async (): Promise<number> => {
+    const probe = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+    await new Promise<void>(resolve => probe.on('listening', resolve))
+    const port = (probe.address() as { port: number }).port
+    await new Promise<void>(resolve => probe.close(() => resolve()))
+    return port
+  }
+
+  /** Advance fake timers in 100ms steps until the predicate holds; real I/O settles between ticks. */
+  const advanceUntil = async (predicate: () => boolean, budgetMs: number): Promise<void> => {
+    for (let advanced = 0; advanced <= budgetMs && !predicate(); advanced += 100) {
+      await vi.advanceTimersByTimeAsync(100)
+    }
+    expect(predicate()).toBe(true)
+  }
+
+  it('gives up after reconnectMaxAttempts retries with recovery guidance and stops scheduling', async () => {
+    const deadPort = await getDeadPort()
+    vi.useFakeTimers()
+    const connection = new OneBotConnection({ ...CONFIG, mode: 'forward', url: 'ws://127.0.0.1:' + deadPort, reconnectMaxAttempts: 2 })
+    const internal = internals(connection)
+    const errorSpy = vi.spyOn(console, 'error')
+    const warnSpy = vi.spyOn(console, 'warn')
+    connection.start()
+    // Initial dial fails -> retry #1 scheduled on the 2s rung.
+    await advanceUntil(() => internal.reconnectTimer !== undefined, 2_000)
+    expect(internal.reconnectAttempts).toBe(1)
+    // Retry #1 dials and fails -> retry #2 scheduled on the 5s rung.
+    await advanceUntil(() => internal.reconnectAttempts === 2 && internal.reconnectTimer !== undefined, 6_000)
+    // Retry #2 dials and fails -> the limit is exceeded -> give up.
+    await advanceUntil(() => internal.reconnectTimer === undefined && internal.reconnectPromise === undefined && errorSpy.mock.calls.length > 0, 6_000)
+    const giveUp = errorSpy.mock.calls.map(call => call.map(String).join(' ')).find(text => text.includes('giving up'))
+    expect(giveUp).toBeDefined()
+    expect(giveUp).toContain('reconnectMaxAttempts=2')
+    expect(giveUp).toContain('restart the plugin or reload the dsh-onebot channel')
+    // Exactly 3 dials happened (initial + 2 retries): one 'forward WS error' warn each.
+    expect(warnSpy.mock.calls.filter(call => String(call[0]).includes('forward WS error'))).toHaveLength(3)
+    // Nothing stays scheduled, and more fake time does not resurrect a dial.
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(internal.reconnectAttempts).toBe(3)
+    errorSpy.mockRestore()
+    warnSpy.mockRestore()
+    await connection.stop()
+  })
+
+  it('retries forever when reconnectMaxAttempts is 0', async () => {
+    const deadPort = await getDeadPort()
+    vi.useFakeTimers()
+    const connection = new OneBotConnection({ ...CONFIG, mode: 'forward', url: 'ws://127.0.0.1:' + deadPort, reconnectMaxAttempts: 0 })
+    const internal = internals(connection)
+    const errorSpy = vi.spyOn(console, 'error')
+    connection.start()
+    // Walk the 2/5/10/30s rungs until the ladder caps at 60s (attempt 5 onwards).
+    await advanceUntil(() => internal.reconnectAttempts >= 5, 60_000)
+    // 110 capped cycles, far beyond the default limit of 100.
+    for (let i = 0; i < 110; i++) {
+      await advanceUntil(() => internal.reconnectTimer !== undefined, 65_000)
+      expect(vi.getTimerCount()).toBe(1) // exactly one pending reconnect timer at every step
+      await vi.advanceTimersByTimeAsync(60_000)
+    }
+    expect(errorSpy).not.toHaveBeenCalled() // never gave up
+    expect(internal.reconnectAttempts).toBe(115) // 5 ladder rungs + 110 capped retries
+    errorSpy.mockRestore()
+    await connection.stop()
+  })
+
+  it('stop clears the pending reconnect timer and the dial guard', async () => {
+    const deadPort = await getDeadPort()
+    vi.useFakeTimers()
+    const connection = new OneBotConnection({ ...CONFIG, mode: 'forward', url: 'ws://127.0.0.1:' + deadPort })
+    const internal = internals(connection)
+    connection.start()
+    await advanceUntil(() => internal.reconnectTimer !== undefined, 5_000)
+    expect(vi.getTimerCount()).toBe(1)
+    await connection.stop()
+    expect(vi.getTimerCount()).toBe(0)
+    expect(internal.reconnectTimer).toBeUndefined()
+    expect(internal.reconnectPromise).toBeUndefined()
+    // No ghost dial afterwards either.
+    const warnSpy = vi.spyOn(console, 'warn')
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(warnSpy).not.toHaveBeenCalled()
+    expect(internal.reconnectTimer).toBeUndefined()
+    warnSpy.mockRestore()
+  })
+
+  it('survives 50 rapid stop/start cycles without ghost timers or duplicate dials', async () => {
+    const deadPort = await getDeadPort()
+    vi.useFakeTimers()
+    const connection = new OneBotConnection({ ...CONFIG, mode: 'forward', url: 'ws://127.0.0.1:' + deadPort })
+    const internal = internals(connection)
+    const warnSpy = vi.spyOn(console, 'warn')
+    for (let i = 0; i < 50; i++) {
+      connection.start()
+      // The fresh dial fails and exactly one reconnect timer gets scheduled.
+      await advanceUntil(() => internal.reconnectTimer !== undefined, 5_000)
+      expect(vi.getTimerCount()).toBe(1)
+      await connection.stop()
+      // stop() must wipe every trace: no ghost timer, no dial guard left.
+      expect(vi.getTimerCount()).toBe(0)
+      expect(internal.reconnectTimer).toBeUndefined()
+      expect(internal.reconnectPromise).toBeUndefined()
+    }
+    // Dial-count metric: every failed dial logs exactly one 'forward WS error'
+    // warn and every start() dials exactly once, so 50 cycles -> 50 warns.
+    expect(warnSpy.mock.calls.filter(call => String(call[0]).includes('forward WS error'))).toHaveLength(50)
+    expect(internal.reconnectAttempts).toBe(50) // cross-check: one scheduleReconnect per failed dial
+    warnSpy.mockRestore()
+  })
+
+  it('reverse server logs the port and guidance on EADDRINUSE', async () => {
+    const occupier = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+    await new Promise<void>(resolve => occupier.on('listening', resolve))
+    const occupiedPort = (occupier.address() as { port: number }).port
+    const connection = new OneBotConnection({ ...CONFIG, port: occupiedPort, accessToken: 'tok' })
+    const errorSpy = vi.spyOn(console, 'error')
+    connection.start()
+    await vi.waitFor(() => {
+      const logged = errorSpy.mock.calls.map(call => call.map(String).join(' ')).join('\n')
+      expect(logged).toContain(String(occupiedPort))
+      expect(logged).toContain('already in use')
+      expect(logged).toContain('config.port')
+    })
+    errorSpy.mockRestore()
+    await connection.stop()
+    await new Promise<void>(resolve => occupier.close(() => resolve()))
+  })
+})
