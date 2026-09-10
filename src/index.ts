@@ -212,6 +212,13 @@ function resolvePolicy(config: Config): AccessPolicyConfig {
   }
 }
 
+/** Log a meta event; periodic heartbeat events are silenced to keep the log readable. */
+export function logMetaEvent(selfId: string, event: OneBotEvent): void {
+  const metaType = typeof event.meta_event_type === 'string' ? event.meta_event_type : ''
+  if (metaType === 'heartbeat') return
+  console.log('[dsh-onebot] meta event; bot QQ: ' + selfId + '; ' + metaType)
+}
+
 /** Mount the plugin. */
 export function apply(ctx: Context, config: Config): void {
   const mediaDir = config.mediaDir !== '' ? config.mediaDir : defaultMediaDir()
@@ -239,7 +246,7 @@ export function apply(ctx: Context, config: Config): void {
     void bridge.handleInbound(event)
   }
   connection.onMeta = (event: OneBotEvent) => {
-    console.log('[dsh-onebot] meta event; bot QQ: ' + connection.selfId + '; ' + (event.meta_event_type ?? ''))
+    logMetaEvent(connection.selfId, event)
   }
   const bridge = new ChatBridge({
     ctx,

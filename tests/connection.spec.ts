@@ -1,8 +1,8 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import WebSocket, { WebSocketServer } from 'ws'
 import { OneBotConnection } from '../src/connection.js'
 import type { OneBotEvent } from '../src/connection.js'
-import { Config } from '../src/index.js'
+import { Config, logMetaEvent } from '../src/index.js'
 
 const CONFIG = {
   mode: 'reverse' as const,
@@ -207,6 +207,120 @@ describe('forward client', () => {
     const connection = new OneBotConnection({ ...CONFIG, mode: 'forward', url: 'ws://127.0.0.1:' + deadPort })
     expect(() => connection.start()).not.toThrow()
     await vi.waitFor(() => expect((connection as unknown as { socket?: unknown }).socket).toBeUndefined())
+    await connection.stop()
+  })
+})
+
+describe('heartbeat pong watchdog', () => {
+  interface HeartbeatView {
+    socket: unknown
+    lastPongAt: number
+    attachSocket(socket: unknown): void
+    startHeartbeat(): void
+  }
+  const expose = (connection: OneBotConnection): HeartbeatView => connection as unknown as HeartbeatView
+
+  interface FakeSocket {
+    readyState: number
+    on(event: string, listener: (...args: unknown[]) => void): void
+    removeAllListeners(): void
+    close: (...args: unknown[]) => void
+    ping: () => void
+    terminate: () => void
+    emit(event: string, ...args: unknown[]): void
+  }
+
+  /** Minimal ws-like test double: records listeners so tests can emit socket events. */
+  const makeFakeSocket = (): FakeSocket => {
+    const listeners = new Map<string, Array<(...args: unknown[]) => void>>()
+    return {
+      readyState: WebSocket.OPEN,
+      on(event, listener) {
+        const existing = listeners.get(event) ?? []
+        existing.push(listener)
+        listeners.set(event, existing)
+      },
+      removeAllListeners() {
+        listeners.clear()
+      },
+      close: vi.fn(),
+      ping: vi.fn(),
+      terminate: vi.fn(),
+      emit(event, ...args) {
+        for (const listener of [...(listeners.get(event) ?? [])]) listener(...args)
+      },
+    }
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('terminates after two heartbeat periods without pong, but not before', () => {
+    vi.useFakeTimers()
+    const connection = new OneBotConnection({ ...CONFIG, accessToken: 'tok' })
+    const privateConnection = expose(connection)
+    const socket = makeFakeSocket()
+    privateConnection.socket = socket
+    privateConnection.startHeartbeat()
+    // Pretend the last pong arrived 15s ago, so the first tick sees 1.5 stale periods.
+    privateConnection.lastPongAt = Date.now() - 15_000
+    const warnSpy = vi.spyOn(console, 'warn')
+
+    vi.advanceTimersByTime(30_000)
+    expect(socket.ping).toHaveBeenCalledTimes(1)
+    expect(socket.terminate).not.toHaveBeenCalled()
+    expect(warnSpy).not.toHaveBeenCalled()
+
+    vi.advanceTimersByTime(30_000)
+    expect(socket.terminate).toHaveBeenCalledTimes(1)
+    expect(socket.ping).toHaveBeenCalledTimes(1) // the stale tick terminates instead of pinging again
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    expect(String(warnSpy.mock.calls[0]?.[0])).toContain('mode=reverse')
+    expect(String(warnSpy.mock.calls[0]?.[0])).toContain('75000ms')
+    warnSpy.mockRestore()
+  })
+
+  it('ignores pong from a replaced socket and refreshes from the current one', () => {
+    vi.useFakeTimers()
+    const connection = new OneBotConnection({ ...CONFIG, accessToken: 'tok' })
+    const privateConnection = expose(connection)
+    const stale = makeFakeSocket()
+    const current = makeFakeSocket()
+    privateConnection.attachSocket(stale)
+    const atAttach = privateConnection.lastPongAt
+    privateConnection.attachSocket(current) // last-wins: the stale dial-in gets replaced
+    expect(stale.close).toHaveBeenCalledWith(4000, 'replaced')
+    vi.setSystemTime(atAttach + 5_000) // move the clock so a wrong refresh would be visible
+
+    stale.emit('pong')
+    expect(privateConnection.lastPongAt).toBe(atAttach) // stale pong must not refresh the new connection
+
+    current.emit('pong')
+    expect(privateConnection.lastPongAt).toBe(atAttach + 5_000) // the current socket does refresh
+  })
+})
+
+describe('meta event logging', () => {
+  it('keeps heartbeat meta silent but still logs other meta events', async () => {
+    const connection = new OneBotConnection({ ...CONFIG, accessToken: 'tok' })
+    connection.onMeta = event => logMetaEvent(connection.selfId, event)
+    connection.start()
+    await vi.waitFor(() => expect(connection.address()).toBeDefined())
+    const address = connection.address()!
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer tok' } })
+    await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
+    const logSpy = vi.spyOn(console, 'log') // attached after the 'listening' log
+
+    client.send(JSON.stringify({ post_type: 'meta_event', meta_event_type: 'heartbeat', self_id: 10002 }))
+    await vi.waitFor(() => expect(connection.selfId).toBe('10002')) // the frame reached the real dispatch
+    expect(logSpy).not.toHaveBeenCalled()
+
+    client.send(JSON.stringify({ post_type: 'meta_event', meta_event_type: 'life_cycle', self_id: 10002 }))
+    await vi.waitFor(() => expect(logSpy).toHaveBeenCalledTimes(1))
+    expect(String(logSpy.mock.calls[0]?.[0])).toContain('life_cycle')
+    logSpy.mockRestore()
+    client.close()
     await connection.stop()
   })
 })

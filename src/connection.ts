@@ -92,6 +92,7 @@ export class OneBotConnection {
 
   private server: WebSocketServer | undefined
   private socket: WebSocket | undefined
+  private lastPongAt = 0
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined
   private pending = new Map<string, PendingAction>()
   private stopping = false
@@ -253,10 +254,15 @@ export class OneBotConnection {
     this.socket = socket
     socket.on('open', () => {
       this.reconnectAttempts = 0
+      this.lastPongAt = Date.now()
       this.setConnected(true)
       this.startHeartbeat()
     })
     socket.on('message', data => this.onFrame(data))
+    socket.on('pong', () => {
+      if (this.socket !== socket) return // stale socket: a newer dial owns the timestamps
+      this.lastPongAt = Date.now()
+    })
     socket.on('error', error => {
       console.warn('[dsh-onebot] forward WS error:', error instanceof Error ? error.message : String(error))
     })
@@ -293,7 +299,12 @@ export class OneBotConnection {
   private attachSocket(socket: WebSocket): void {
     const previous = this.socket
     this.socket = socket
+    this.lastPongAt = Date.now()
     socket.on('message', data => this.onFrame(data))
+    socket.on('pong', () => {
+      if (this.socket !== socket) return // stale socket: a newer dial-in owns the timestamps
+      this.lastPongAt = Date.now()
+    })
     socket.on('close', (code, reason) => {
       if (this.socket !== socket) return // stale socket: a newer dial-in replaced it
       this.socket = undefined
@@ -323,6 +334,12 @@ export class OneBotConnection {
       const socket = this.socket
       if (socket === undefined) return
       if (socket.readyState !== WebSocket.OPEN) return
+      const now = Date.now()
+      if (now - this.lastPongAt >= 2 * HEARTBEAT_MS) {
+        console.warn('[dsh-onebot] heartbeat timeout: no pong for ' + (now - this.lastPongAt) + 'ms (mode=' + this.config.mode + '); terminating socket')
+        socket.terminate()
+        return
+      }
       try {
         socket.ping()
       } catch {
