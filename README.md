@@ -122,6 +122,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `fontFiles` / `fontFamilies` | `[]` | t2i 字体文件/家族覆盖（Linux 部署必看：需安装 Noto CJK） |
 | `mediaDir` | `<dsh-home>/media/onebot` | 入站媒体/映射文件目录 |
 | `imageMaxSize` | `2048` | 入站图片长边上限（px）：超过则等比压缩后交给视觉模型（透明 PNG 保留、GIF 不压）；`<=0` 禁用 |
+| `allowPrivateHosts` | `false` | 下载媒体 URL 时允许私网/环回地址（仅跳过私网检查，协议白名单与限长仍生效）；仅本机反代等可信场景开启，公网部署保持 `false` |
 | `agentPreset` | 空 | 会话挂载的 agent preset（留空=默认） |
 | `workspacePath` | 空 | 会话挂载的工作区（留空=宿主 cwd） |
 
@@ -247,7 +248,7 @@ header cwd 回填（会话 cwd 创建时冻结）：只要该 chat 用的是非�
 
 ```sh
 ./scripts/build.sh                 # 编译 src/ → lib/
-./node_modules/.bin/vitest run     # 149 个测试：单元 + 真实 WS 对端 + 全管线
+./node_modules/.bin/vitest run     # 174 个测试：单元 + 真实 WS 对端 + 全管线
 ```
 
 要点（来自移植源 DEVLOG 的教训）：

@@ -126,6 +126,7 @@ default). Common options:
 | `fontFiles` / `fontFamilies` | `[]` | t2i font file/family overrides (Linux deployments: install Noto CJK, see below) |
 | `mediaDir` | `<dsh-home>/media/onebot` | inbound media / mapping file directory |
 | `imageMaxSize` | `2048` | inbound image long-edge limit (px): larger images are proportionally shrunk before reaching the vision model (transparent PNGs preserved, GIFs untouched); `<=0` disables |
+| `allowPrivateHosts` | `false` | allow downloads from private/loopback addresses (skips only the private-network check; the protocol allowlist and size limits still apply); enable only in trusted setups such as a local reverse proxy |
 | `agentPreset` | empty | agent preset for sessions (empty = default) |
 | `workspacePath` | empty | workspace for sessions (empty = host cwd) |
 
@@ -220,7 +221,7 @@ automatically from the system and fixed paths at startup; missing glyphs render 
 
 ```sh
 ./scripts/build.sh                 # compile src/ → lib/
-./node_modules/.bin/vitest run     # 149 tests: unit + real WS peer + full pipeline
+./node_modules/.bin/vitest run     # 174 tests: unit + real WS peer + full pipeline
 ```
 
 Lessons ported from the source DEVLOG:

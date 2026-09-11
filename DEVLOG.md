@@ -145,6 +145,16 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 全天 | **R1 生产切换完成（用户执行）**：NapCat ws-reverse 与插件 accessToken 两端配齐、新 lib 部署、dsh 重启——M0 的安全价值（封死未认证 RCE 口子）正式在生产兑现；R5 随之进入 24h 观察窗（NapCat 真实客户端对 4401 拒绝的重试行为，此前仅 e2e 一次实测）；生产 lib 对应 v0.2.0（M1 Wave1 的 4 个 commit 尚未构建进生产 lib，属正常迭代节奏，Wave1 本就属 M1 迭代） |
 | 全天 | **trim-cli 技能接入编排环境**：TRIM NAS（fnOS）命令行客户端——WebSocket 连本机 ws://localhost:5666，登录后可查应用中心/Docker 容器/日志中心/文件/存储/系统监控，支持真机验证 workflow；来源为飞牛论坛附件（club.fnnas.com 附件需论坛登录，无法匿名抓取，技能本体已预装就位，无需再下载）；意义：后续 M1 回归包的「生产部署检查单」「24h 磁盘观察」等真机验证项可由编排方经 trim-cli 直接执行，不再依赖用户手工回报 |
 
+### 2026-09-10（M1 Wave2：C3/A5/A3a/A3b）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **C3 统一下载路径（commit c3b52e0，refactor）**：删除 bridge 私有 downloadToMedia——裸 fetch 后 arrayBuffer() 全量缓冲、maxBytes 限长在缓冲完成之后才生效，大文件先吃满内存再被拒；resolveNasFile 两个 URL 分支改走 MediaStore.downloadUrl(url, ext, maxBytes) 流式边下边限长；grep 零残留；writeMediaFile（base64 分支）保留。C3→A5 硬前置兑现：A5 的下载围栏收口在这条唯一下载路径上 |
+| 全天 | **A5 下载 SSRF/协议/限长加固（commit 0e1807e，security）**：downloadUrl 协议白名单仅 http/https；私网判定——IPv4 字面量 0/8、10/8、127/8、169.254/16、172.16/12、192.168/16，IPv6 ::1/::、fc00::/7、fe80::/10（IPv4-mapped `::ffff:x.x.x.x` 双写法归一后再判），域名经 dns.lookup 解析任一命中即拒；redirect: manual 手动跟随 ≤3 跳，每一跳在 fetch 发起前复检协议与私网；整次下载 30s 硬墙钟（AbortSignal.timeout）；新增配置 allowPrivateHosts（默认 false，true 时仅跳过私网检查——本机反代等可信场景逃生门，协议白名单与限长不豁免）；resolveInner 两处调用补传 maxBytes。**取舍**：30s 取整次下载总墙钟而非逐跳计时（重定向拉长全程仍统一封顶）；重定向前置拒绝——每一跳 fetch 前即拒，中间跳不产生出站请求，而非跟随后再补救；IPv4-mapped 归一防 `::ffff:` 写法绕过私网判定。media-guard.spec +16（SSRF 矩阵/重定向/流式中止） |
+| 全天 | **A3a 媒体外发路径围栏机制（commit 52655f6，security）**：新增导出 resolveContainedPath(allowedRoots, target)——realpath 归一后前缀匹配且带分隔符边界（`/root/abc` 不误放行 `/root-abc`），symlink 解析后落在根外即拒绝（逃逸封死）；目标不存在 → 返回 null fail-closed；fileToBase64 增可选第三参 allowedRoots。**取舍**：不存在即拒——媒体外发是出站动作，宁可误拒也不给路径探测留口子 |
+| 全天 | **A3b 门禁接线（commit b187b03，security）**：bridge 新增 mediaSendRoots(sessionId) 访问器——isTurnAdmin 复用 A2 回合级角色语义（不另起第二套角色判定）；roots 口径：member/未知 → 仅 mediaDir，admin → mediaDir + 会话工作区（两支均 realpath 归一）；qq_send_image/voice/video/file 本地路径分支全部过围栏，围栏拒绝转译为中文可行动提示（而非裸抛校验错误）；URL 分支保持原样（NapCat 侧抓取，见边界行）。过渡窗口关闭：tools 恒传 allowedRoots，无兜底放行。tools-gate.spec 新建 +9（门禁逐条）；vitest 149 → 174 |
+| 全天 | **已知边界（后续清理候选）**：①file:// copyFile 分支（NapCat 本地路径场景）未围栏；②qq_send_* 的 URL 出站分支由 NapCat 侧抓取，插件不代理不围栏；③DNS rebinding TOCTOU 未彻底修复——dns.lookup 判定与实际建连之间仍存在时间窗，彻底修需 pinned IP dispatcher（超出本 wave 范围）；④两项清理建议：/ocr 的 fileToBase64 仍为两参调用（未接围栏）、imageSegment 死代码可删 |
+
 ---
 
 ## 3. 关键决策与坑（按价值排序）
