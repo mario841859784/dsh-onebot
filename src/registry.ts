@@ -12,7 +12,7 @@
  */
 import type { Agent, AgentRegistry, AgentSetup, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionId, SessionStore } from '@deepseek-ai/dsh-session'
 import { SessionId as makeSessionId } from '@deepseek-ai/dsh-session'
 import type { Context } from '@deepseek-ai/cordis'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
@@ -55,8 +55,9 @@ export interface ChatAgent {
   sessionId: SessionId
   agent: Agent
   dispose(): Promise<void>
-  /** Per-chat send chain (preserves outbound order). */
-  queue: Promise<unknown>
+  /** B8c: last activity timestamp (creation, dispatchFollowup, turn events);
+   * the idle sweep evicts chats idle longer than chatIdleEvictDays. */
+  lastActivityAt: number
   /** Buffered last-step text when interimMessages is off. */
   pendingFinal: string
   /** Loop merge (interimMessages on): text deferred one step, awaiting the
@@ -118,12 +119,14 @@ export function resolveRecordedPreset(
  * agent setup closure cannot be assembled without it). */
 export interface RegistryDeps {
   agents: AgentRegistry
+  /** Durable session store: B8c flushes a session before its chat is evicted. */
+  sessions: SessionStore
   sessionPersistence: SessionPersistenceLike | undefined
   workspaceRegistry: WorkspaceRegistryLike
   agentPresets: AgentPresetsLike
   defaultModel: (() => ModelSelection | undefined) | undefined
   /** The only config fields the registry reads. */
-  config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes'>
+  config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>
   log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void
   /** Bridge stop flag (guards the resume loop). */
   isStopping(): boolean
@@ -220,7 +223,7 @@ export class ChatRegistry {
       sessionId: handle.agent.session.id,
       agent: handle.agent,
       dispose: () => handle.dispose(),
-      queue: Promise.resolve(),
+      lastActivityAt: Date.now(),
       pendingFinal: '',
       loopPending: null,
       loopBuffer: [],
@@ -239,11 +242,48 @@ export class ChatRegistry {
     }
   }
 
+  /** B8a: in-flight creates keyed by chat id — concurrent first messages for
+   * one chat join a single create instead of racing (pre-B8a, two dispatches
+   * could both pass the empty-map check and agents.create ran twice with the
+   * same derived session id; the second chats.set won and the first agent
+   * leaked). */
+  private readonly pendingCreates = new Map<ChatId, Promise<ChatAgent>>()
+
+  /** B8c: chats evicted for idleness, kept resumable (chat id → last session
+   * id). NOT retired: saveMapping keeps writing them, so the mapping file
+   * never drops an evicted chat and a later message resumes its session. */
+  private readonly evictedChats = new Map<ChatId, string>()
+
   /** Get (or create) the agent for a chat. */
   async ensureChat(chatId: ChatId, nickname: string): Promise<ChatAgent> {
     const existing = this.chats.get(chatId)
     if (existing !== undefined) return existing
+    const pending = this.pendingCreates.get(chatId)
+    if (pending !== undefined) return pending
+    const creation = this.createChat(chatId, nickname)
+    this.pendingCreates.set(chatId, creation)
+    void creation.finally(() => {
+      this.pendingCreates.delete(chatId)
+    }).catch(() => undefined)
+    return creation
+  }
+
+  private async createChat(chatId: ChatId, nickname: string): Promise<ChatAgent> {
     await this.mappingLoaded
+    // B8c: a chat evicted for idleness resumes its recorded session instead
+    // of forking a fresh one — the mapping entry was kept for exactly this.
+    const evictedId = this.evictedChats.get(chatId)
+    if (evictedId !== undefined) {
+      try {
+        const resumed = await this.resumeChat(chatId, evictedId)
+        this.evictedChats.delete(chatId)
+        return resumed
+      } catch (error) {
+        this.retireSession(evictedId)
+        this.evictedChats.delete(chatId)
+        this.deps.log('warn', 'resume of evicted session failed for ' + chatId + '; falling back to a fresh session: ' + (error instanceof Error ? error.message : String(error)))
+      }
+    }
     let sessionId = makeSessionId(sessionIdForChat(chatId))
     if (this.isSessionIdBlocked(sessionId)) {
       sessionId = this.freshSessionId(chatId)
@@ -289,7 +329,18 @@ export class ChatRegistry {
     const actualSessionId = handle.agent.session.id
     await this.attachToWorkspace(actualSessionId, handle.agent.session.header?.cwd)
     const chat = this.createChatAgent(chatId, handle, selectionRef, nickname)
-    await handle.agent.whenIdle()
+    try {
+      await handle.agent.whenIdle()
+    } catch (error) {
+      // B8b: create succeeded but the first idle wait failed — dispose the
+      // orphan agent instead of leaking it.
+      try {
+        await handle.dispose()
+      } catch {
+        // the whenIdle failure is the cause; a dispose failure must not mask it
+      }
+      throw error
+    }
     this.chats.set(chatId, chat)
     this.bySession.set(actualSessionId, chatId)
     this.deps.log('info', 'agent created for ' + chatId + ' (session ' + actualSessionId + ')')
@@ -307,28 +358,7 @@ export class ChatRegistry {
         this.deps.log('debug', 'attempting resume of ' + chatId + ' @ ' + sessionId)
         if (this.deps.isStopping()) return
         try {
-          const { agentOptions, selectionRef } = this.modelWiring()
-          const recordedPreset = await this.recordedPresetFor(makeSessionId(sessionId))
-          const handle = await this.deps.agents.resume({
-            resumeSessionId: makeSessionId(sessionId),
-            agentOptions,
-            setup: this.buildSetup(selectionRef, recordedPreset),
-          })
-          await this.attachToWorkspace(handle.agent.session.id, handle.agent.session.header?.cwd)
-          // /workspace persistence across restarts: the per-chat override map is
-          // in-memory only, but a session's cwd is frozen in its header. When the
-          // resumed session's directory differs from what this chat would default
-          // to now, restore it as the override so /workspace and future /new
-          // sessions keep using it.
-          const headerCwd = handle.agent.session.header?.cwd
-          if (headerCwd !== undefined && headerCwd !== '' && headerCwd !== this.effectiveCwd()) {
-            this.getSettings(chatId).workspacePath = headerCwd
-            this.deps.log('debug', 'workspace override restored for ' + chatId + ': ' + headerCwd)
-          }
-          const chat = this.createChatAgent(chatId, handle, selectionRef, '')
-          await handle.agent.whenIdle()
-          this.chats.set(chatId, chat)
-          this.bySession.set(handle.agent.session.id, chatId)
+          await this.resumeChat(chatId, sessionId)
         } catch (error) {
           this.retireSession(sessionId)
           this.deps.log('warn', 'resume failed for ' + chatId + ': ' + (error instanceof Error ? error.message : String(error)))
@@ -337,6 +367,44 @@ export class ChatRegistry {
     } catch {
       // No mapping file yet — fresh start.
     }
+  }
+
+  /** Resume one persisted chat from its recorded session id (shared by
+   * loadMapping and the B8c evicted-chat resume). */
+  private async resumeChat(chatId: ChatId, sessionId: string): Promise<ChatAgent> {
+    const { agentOptions, selectionRef } = this.modelWiring()
+    const recordedPreset = await this.recordedPresetFor(makeSessionId(sessionId))
+    const handle = await this.deps.agents.resume({
+      resumeSessionId: makeSessionId(sessionId),
+      agentOptions,
+      setup: this.buildSetup(selectionRef, recordedPreset),
+    })
+    await this.attachToWorkspace(handle.agent.session.id, handle.agent.session.header?.cwd)
+    // /workspace persistence across restarts: the per-chat override map is
+    // in-memory only, but a session's cwd is frozen in its header. When the
+    // resumed session's directory differs from what this chat would default
+    // to now, restore it as the override so /workspace and future /new
+    // sessions keep using it.
+    const headerCwd = handle.agent.session.header?.cwd
+    if (headerCwd !== undefined && headerCwd !== '' && headerCwd !== this.effectiveCwd()) {
+      this.getSettings(chatId).workspacePath = headerCwd
+      this.deps.log('debug', 'workspace override restored for ' + chatId + ': ' + headerCwd)
+    }
+    const chat = this.createChatAgent(chatId, handle, selectionRef, '')
+    try {
+      await handle.agent.whenIdle()
+    } catch (error) {
+      // B8b: same orphan rule as the create path — dispose before rethrowing.
+      try {
+        await handle.dispose()
+      } catch {
+        // the whenIdle failure is the cause
+      }
+      throw error
+    }
+    this.chats.set(chatId, chat)
+    this.bySession.set(handle.agent.session.id, chatId)
+    return chat
   }
 
   private mappingPath(): string {
@@ -349,6 +417,7 @@ export class ChatRegistry {
     try {
       await mkdir(this.deps.config.mediaDir, { recursive: true })
       const mapping: Record<string, string> = {}
+      for (const [chatId, sessionId] of this.evictedChats) mapping[chatId] = sessionId
       for (const chat of this.chats.values()) {
         mapping[chat.chatId] = chat.sessionId
       }
@@ -364,6 +433,44 @@ export class ChatRegistry {
       this.mappingSaveTimer = undefined
       void this.saveMapping()
     }, 2_000).unref()
+  }
+
+  /** B8c: dispose chats whose last activity is older than chatIdleEvictDays
+   * (0 disables; default 7). Called before each inbound message: the session
+   * is flushed, the agent disposed, and the chat removed from
+   * chats/bySession/settings — NOT retired, the mapping keeps the pair so a
+   * later message (or a restart) resumes the same session. */
+  async sweepIdleChats(): Promise<void> {
+    const days = this.deps.config.chatIdleEvictDays ?? 7
+    if (days <= 0 || this.deps.isStopping()) return
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000
+    for (const [chatId, chat] of [...this.chats]) {
+      if (chat.lastActivityAt > cutoff) continue
+      await this.evictChat(chatId, chat)
+    }
+  }
+
+  private async evictChat(chatId: ChatId, chat: ChatAgent): Promise<void> {
+    // Only evict a session that is durably persisted; a failed flush keeps
+    // the chat alive and the sweep retries on the next message.
+    try {
+      await this.deps.sessions.flush(chat.agent.session)
+    } catch (error) {
+      this.deps.log('warn', 'idle-evict flush failed for ' + chatId + ' (keeping the chat): ' + String(error))
+      return
+    }
+    this.deps.onChatRemoved(chat)
+    this.clearInterimTimers(chat)
+    this.chats.delete(chatId)
+    this.bySession.delete(chat.sessionId)
+    this.evictedChats.set(chatId, chat.sessionId)
+    this.chatSettings.delete(chatId)
+    try {
+      await chat.dispose()
+    } catch (error) {
+      this.deps.log('warn', 'idle-evict dispose failed: ' + String(error))
+    }
+    this.deps.log('info', 'evicted idle chat ' + chatId + ' (session ' + chat.sessionId + ' kept resumable)')
   }
 
   // ------------------------------------------------------------ retired ids

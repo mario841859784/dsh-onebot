@@ -66,6 +66,10 @@ export interface BridgeConfig {
   workspacePath: string
   /** Max inbound file bytes fetched via QQ direct link / base64 (0 = no cap). */
   maxInboundFileBytes: number
+  /** B8c: chats idle longer than this many days are evicted on the next
+   * inbound message (0 disables; default 7). Evicted chats keep their
+   * chat→session mapping, so a later message resumes the same session. */
+  chatIdleEvictDays?: number
 }
 
 /** Agent-preset service (dsh-agent-presets): joins agents to a preset composition. */
@@ -165,6 +169,7 @@ export class ChatBridge {
     this.deps = deps
     this.registry = new ChatRegistry({
       agents: deps.agents,
+      sessions: deps.sessions,
       sessionPersistence: deps.sessionPersistence,
       workspaceRegistry: deps.workspaceRegistry,
       agentPresets: deps.agentPresets,
@@ -363,6 +368,10 @@ export class ChatBridge {
         : userId)
     const chatId = buildChatId(messageType === 'private' ? 'private' : 'group', messageType === 'private' ? userId : groupId)
 
+    // B8c: lazy idle eviction before processing each inbound message (flush →
+    // dispose → remove; the mapping is kept so the chat can resume).
+    await this.registry.sweepIdleChats()
+
     // A new user message starts a fresh reply cycle: drop any unmerged loop
     // residue from the previous cycle so interims never merge across turns.
     const priorChat = this.chats.get(chatId)
@@ -445,6 +454,7 @@ export class ChatBridge {
     const chat = await this.ensureChat(chatId, nickname ?? fallback)
     if (nickname !== undefined && nickname !== '') chat.lastNickname = nickname
     chat.lastFollowup = text
+    chat.lastActivityAt = Date.now()
     // Queue this turn's initiator role; the host's turn/start freezes it as
     // the running turn's role (M1-A2). Push and followup happen synchronously,
     // so the role cannot interleave with another dispatch.
@@ -857,7 +867,7 @@ export class ChatBridge {
    */
   private async settleLoop(chatId: ChatId, chat: ChatAgent): Promise<void> {
     try {
-      await chat.queue
+      await this.outbound.chainTail(chatId)
     } catch {
       // failures already settle the enqueue chain; keep going
     }
@@ -897,6 +907,7 @@ export class ChatBridge {
       // (M1-A2): turns the plugin did not dispatch (host/web input) find an
       // empty queue and fail closed as member.
       chat.activeTurnRole = chat.pendingTurnRoles.shift() ?? 'member'
+      chat.lastActivityAt = Date.now()
       chat.busy = true
       return
     }
@@ -960,6 +971,7 @@ export class ChatBridge {
         }
       }
       this.stopTyping(chat)
+      chat.lastActivityAt = Date.now()
       chat.busy = false
       this.deps.log('info', 'turn/end for ' + chatId + ': ' + event.data.reason.kind)
       // Durable: flush the session so a later restart can resume it.

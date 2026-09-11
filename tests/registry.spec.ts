@@ -19,7 +19,8 @@ import type {} from '@deepseek-ai/dsh-session'
 import { OneBotConnection } from '../src/connection.js'
 import { ChatBridge } from '../src/bridge.js'
 import { ChatRegistry, resolveRecordedPreset } from '../src/registry.js'
-import type { ChatSettings } from '../src/registry.js'
+import type { ChatSettings, RegistryDeps } from '../src/registry.js'
+import type { BridgeConfig } from '../src/bridge.js'
 import { MediaStore } from '../src/media.js'
 import { Transcriber } from '../src/stt.js'
 
@@ -28,6 +29,40 @@ import { makeCmdHarness, makeEvent, makeFakeAgents, makeHarness } from './helper
 /** Registry-only view of a harness-built bridge (the registry is private). */
 function registryOf(h: { bridge: unknown }): ChatRegistry {
   return (h.bridge as unknown as { registry: ChatRegistry }).registry
+}
+
+/** Minimal RegistryDeps for direct-registry tests (the registry internal
+ * direct-call convention of this file). */
+function makeRegistryDeps(overrides?: {
+  agents?: unknown
+  config?: Partial<Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>>
+}): RegistryDeps {
+  return {
+    agents: (overrides?.agents ?? { create: vi.fn(), resume: vi.fn() }) as never,
+    sessions: { flush: vi.fn(async () => undefined) } as never,
+    sessionPersistence: undefined,
+    workspaceRegistry: undefined as never,
+    agentPresets: {
+      defaultId: 'standard',
+      resolve: vi.fn(async (id?: string) => ({ id: id ?? 'standard' })),
+      mount: vi.fn(async (_agentCtx: unknown, id?: string) => ({ id: id ?? 'standard' })),
+    } as never,
+    defaultModel: undefined,
+    config: {
+      mediaDir: mkdtempSync(join(tmpdir(), 'onebot-test-')),
+      workspacePath: '',
+      agentPreset: '',
+      restrictedMemberPrefix: false,
+      maxImageBytes: 8 * 1024 * 1024,
+      maxVoiceBytes: 15 * 1024 * 1024,
+      maxFileBytes: 20 * 1024 * 1024,
+      ...overrides?.config,
+    },
+    log: () => undefined,
+    isStopping: () => false,
+    onChatRemoved: () => undefined,
+    installChannelScope: () => undefined,
+  }
 }
 
 describe('ChatRegistry', () => {
@@ -926,12 +961,70 @@ describe('ChatRegistry', () => {
     await h.connection.stop()
   })
 
-  // TODO(M2-PR3/B8a): concurrent first messages for one chat currently race
-  // ensureChat — chats.set only lands after create+whenIdle, so two dispatches
-  // can both pass the empty-map check and agents.create runs twice with the
-  // same derived session id (double agent; observed on this harness during
-  // M2-T0). Pinning the race green would fossilize a known bug, so this stays
-  // it.todo until B8a fixes it — then assert: exactly ONE agents.create per
-  // chat and the second inbound awaiting the already-created chat.
-  it.todo('ensureChat concurrent first messages create exactly one agent per chat (M2-T0, unblock with B8a)')
+  // B8a (M2-T0 todo unblocked): concurrent first messages for one chat join a
+  // single in-flight create — agents.create runs exactly once and the second
+  // dispatch awaits the already-created chat instead of racing it.
+  it('ensureChat concurrent first messages create exactly one agent per chat (M2-T0, B8a)', async () => {
+    const h = await makeHarness({ createDelayMs: 80 })
+    for (let i = 0; i < 10; i++) h.sendText('并发首条 ' + i)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(10))
+    expect(h.sessionIds).toHaveLength(1)
+    expect(registryOf(h).chats.size).toBe(1)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 30_000)
+
+  it('B8b: a whenIdle failure after create disposes the orphan agent and leaves no chat residue', async () => {
+    const dispose = vi.fn(async () => undefined)
+    const agents = {
+      create: vi.fn(async (options: { sessionId: string }) => ({
+        agent: {
+          session: { id: options.sessionId, seq: 0, header: { cwd: process.cwd() } },
+          status: 'idle',
+          cancel: () => undefined,
+          followup: () => undefined,
+          whenIdle: async () => { throw new Error('whenIdle stub failure') },
+        },
+        dispose,
+      })),
+      resume: vi.fn(),
+    }
+    const registry = new ChatRegistry(makeRegistryDeps({ agents }))
+    await expect(registry.ensureChat('private:10001', '小明')).rejects.toThrow('whenIdle stub failure')
+    // The orphan agent was disposed, and no chat residue remains.
+    expect(dispose).toHaveBeenCalledTimes(1)
+    expect(registry.chats.size).toBe(0)
+    expect(registry.bySession.size).toBe(0)
+  })
+
+  it('B8c: an idle chat is evicted on the next inbound message — flushed, disposed, mapping kept, resume restores it', async () => {
+    const h = await makeHarness({ resumeOk: true })
+    h.sendText('第一条')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const registry = registryOf(h)
+    const chat = registry.chats.get('private:10001')!
+    const sessionId = String(chat.sessionId)
+    const disposed = (registry as unknown as { deps: { agents: { disposed: string[] } } }).deps.agents.disposed
+    expect(disposed).toHaveLength(0)
+    // Fake idle: push last activity past the eviction horizon (default 7 days).
+    chat.lastActivityAt = Date.now() - 8 * 24 * 60 * 60 * 1000
+    // The next inbound message sweeps first: the agent is flushed + disposed,
+    // and the SAME session is resumed for the message.
+    h.sendText('触发清扫的一条')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    expect(disposed).toEqual([sessionId])
+    expect(h.captured.followups[1].sessionId).toBe(sessionId)
+    // resume, not a second create: the session id list holds the id twice.
+    expect(h.sessionIds).toEqual([sessionId, sessionId])
+    expect(registry.chats.get('private:10001')!.agent).not.toBe(chat.agent)
+    // The chat→session mapping survived eviction (NOT retired) — the file is
+    // still the resume source and no retired record was written.
+    const mapping = JSON.parse(await readFile(join(h.mediaDir, 'chat-sessions.json'), 'utf8')) as Record<string, string>
+    expect(mapping['private:10001']).toBe(sessionId)
+    await expect(readFile(join(h.mediaDir, 'retired-sessions.json'), 'utf8')).rejects.toThrow()
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 30_000)
 })

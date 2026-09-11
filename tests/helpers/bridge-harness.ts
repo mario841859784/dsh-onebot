@@ -23,10 +23,12 @@ import { Transcriber } from '../../src/stt.js'
 export function makeFakeAgents(
   sessionIds: string[],
   captured: { followups: Array<{ text: string; sessionId: string }>; createdMeta?: Array<{ cwd?: string; agentPreset?: string }> },
-  opts?: { failCreateFor?: string; resumeOk?: boolean },
+  opts?: { failCreateFor?: string; resumeOk?: boolean; createDelayMs?: number },
 ) {
+  const disposed: string[] = []
   const agents = {
     create: vi.fn(async (options: { sessionId: string; meta?: { cwd?: string; agentPreset?: string }; setup?: (agentCtx: unknown) => unknown }) => {
+      if (opts?.createDelayMs !== undefined) await new Promise(resolve => setTimeout(resolve, opts.createDelayMs))
       const sessionId = String(options.sessionId)
       sessionIds.push(sessionId)
       captured.createdMeta?.push({ ...options.meta })
@@ -54,8 +56,9 @@ export function makeFakeAgents(
         }
         await options.setup(agentCtx)
       }
-      return { agent, dispose: async () => undefined }
+      return { agent, dispose: vi.fn(async () => { disposed.push(sessionId) }) }
     }),
+    disposed,
     resume: vi.fn(async (options: { resumeSessionId: string; setup?: (agentCtx: unknown) => unknown }) => {
       if (opts?.resumeOk !== true) throw new Error('not persisted')
       const sessionId = String(options.resumeSessionId)
@@ -80,7 +83,7 @@ export function makeFakeAgents(
 }
 
 /** Full bridge + WS harness: inbound via real WebSocket, outbound captured. */
-export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean }) {
+export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number }) {
   const ctx = new Context()
   const sessionIds: string[] = []
   const captured = { followups: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[] }

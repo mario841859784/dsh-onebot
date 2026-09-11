@@ -32,12 +32,11 @@ export interface SendOptions {
 }
 
 /** Narrow view of a live chat the outbound pipeline may touch — the
- * structural subset of the bridge's internal ChatAgent: the per-chat send
- * chain head (mutated by enqueue) and the nickname used as the t2i card
- * title. */
+ * structural subset of the bridge's ChatAgent the pipeline reads: the
+ * nickname used as the t2i card title. Re-evaluated for B8d: the per-chat
+ * send chain now lives in the pipeline itself (sendChains), so the chat view
+ * no longer carries the queue field. */
 export interface OutboundChat {
-  /** Per-chat send chain (preserves outbound order). */
-  queue: Promise<unknown>
   lastNickname: string
 }
 
@@ -47,7 +46,7 @@ export interface OutboundChat {
  * config subset the pipeline reads — never the agent registry, media store,
  * or policy. */
 export interface OutboundContext {
-  /** Live chat lookup (send-chain head + card-title nickname). */
+  /** Live chat lookup (card-title nickname). */
   getChat(chatId: ChatId): OutboundChat | undefined
   /** Whether the OneBot connection currently accepts sends. */
   connected(): boolean
@@ -193,17 +192,28 @@ export class OutboundPipeline {
     return this.enqueue(chatId, () => this.sendMsg(chatId, segments, {}))
   }
 
+  /** B8d: per-chat send chains owned by the pipeline (decoupled from the
+   * registry's chat lifecycle — unregistered chats serialize too, the
+   * original C6b ask). Entries clean themselves up once settled so evicted
+   * chats do not accumulate. */
+  private readonly sendChains = new Map<ChatId, Promise<unknown>>()
+
   /** Serialize work on one chat's send chain. */
   private enqueue<T>(chatId: ChatId, work: () => Promise<T>): Promise<T> {
-    const existing = this.ctx.getChat(chatId)
-    const chain = (existing?.queue ?? Promise.resolve()) as Promise<unknown>
+    const chain = this.sendChains.get(chatId) ?? Promise.resolve()
     const run = chain.then(work, work)
-    if (existing !== undefined) {
-      existing.queue = run.catch(() => undefined)
-    } else {
-      void run.catch(() => undefined)
-    }
+    const tail = run.catch(() => undefined)
+    this.sendChains.set(chatId, tail)
+    void tail.then(() => {
+      if (this.sendChains.get(chatId) === tail) this.sendChains.delete(chatId)
+    })
     return run
+  }
+
+  /** The chat's send-chain tail; resolves once every queued send has settled
+   * (settleLoop snapshots the interim trail after it, preserving order). */
+  chainTail(chatId: ChatId): Promise<unknown> {
+    return this.sendChains.get(chatId) ?? Promise.resolve()
   }
 
   /** Send one message to a chat and return its message id. */

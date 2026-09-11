@@ -102,6 +102,8 @@ export interface Config {
   agentPreset: string
   workspacePath: string
   maxInboundFileBytes: number
+  /** B8c: chats idle longer than this many days are evicted (0 disables). */
+  chatIdleEvictDays: number
   /** Escape hatch: skip the download private-address check (local reverse proxy). */
   allowPrivateHosts: boolean
 }
@@ -204,6 +206,8 @@ export const Config: z<Config> = z.object({
     .description('QQ 入站文件最大字节数（直链/base64 拉取，0 = 不限制）'),
   allowPrivateHosts: z.boolean().default(false)
     .description('下载 SSRF 防护逃生门：默认拒绝解析到私网/环回/链路本地地址的下载目标（协议仅 http/https、重定向逐跳复检仍生效）；NapCat 文件服务器或反代部署在本机/内网时置 true 跳过私网检查'),
+  chatIdleEvictDays: z.number().default(7)
+    .description('会话空闲淘汰天数：chat 超过该天数无任何活动时，在下一条入站消息处理前清理其 agent（会话先落盘 flush、映射保留，之后同一 chat 的消息可 resume 恢复原会话）；0 = 禁用'),
 })
 
 /** Resolve env-var fallbacks into the effective access policy. */
@@ -303,6 +307,7 @@ export function apply(ctx: Context, config: Config): void {
       agentPreset: config.agentPreset,
       workspacePath: config.workspacePath,
       maxInboundFileBytes: config.maxInboundFileBytes,
+      chatIdleEvictDays: config.chatIdleEvictDays,
     },
     policy,
     log: (level, message) => {

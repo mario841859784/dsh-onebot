@@ -1261,4 +1261,24 @@ describe('ChatBridge', () => {
     await h.connection.stop()
   }, 30_000)
 
+  it('sendToChat serializes per chat even for an unregistered chat (B8d/C6b send-chain decoupling)', async () => {
+    const h = await makeHarness()
+    // No chat is registered for private:99999 — the send chain must still
+    // serialize: the delayed first send blocks the second one.
+    const realCall = h.connection.call.bind(h.connection)
+    h.connection.call = (async (action: string, params: Record<string, unknown>) => {
+      if (action === 'send_msg' && JSON.stringify(params).includes('第一条')) {
+        await new Promise(resolve => setTimeout(resolve, 200))
+      }
+      return await realCall(action, params)
+    }) as never
+    const first = h.bridge.sendToChat('private:99999', '第一条', {})
+    const second = h.bridge.sendToChat('private:99999', '第二条', {})
+    await Promise.all([first, second])
+    const texts = h.outbound.filter(f => f.action === 'send_msg').map(f => JSON.stringify(f.params))
+    expect(texts.findIndex(t => t.includes('第一条'))).toBeLessThan(texts.findIndex(t => t.includes('第二条')))
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
 })
