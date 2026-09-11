@@ -79,6 +79,8 @@ export interface Config {
   /** Per-interim auto-recall delay (ms) from each interim's send completion. */
   interimRecallMs: number
   sendErrorNotice: boolean
+  /** Per-chat per-minute sliding-window cap for normal (non-command) messages; 0 disables. */
+  rateLimitPerMinute: number
   restrictedMemberPrefix: boolean
   sensitivePatterns: string[]
   mediaDir: string
@@ -156,6 +158,8 @@ export const Config: z<Config> = z.object({
     .description('中间消息各自发送完成后多久自动单独撤回（毫秒；QQ 撤回时限约 2 分钟，建议 ≤110000）'),
   sendErrorNotice: z.boolean().default(true)
     .description('一轮运行出错时向用户发送 ⚠️ 错误提示'),
+  rateLimitPerMinute: z.number().default(30)
+    .description('每 chat 每分钟允许的普通消息条数上限（60 秒滑动窗口）；命令消息不计入也不受限；超限时每窗口最多提示一次；0=禁用频控'),
   restrictedMemberPrefix: z.boolean().default(true)
     .description('群聊非管理员消息注入 [受限用户:仅问答] 前缀（软限制）'),
   sensitivePatterns: z.array(z.string()).default([])
@@ -285,6 +289,7 @@ export function apply(ctx: Context, config: Config): void {
       interimMessages: config.interimMessages,
       interimRecallMs: config.interimRecallMs,
       sendErrorNotice: config.sendErrorNotice,
+      rateLimitPerMinute: config.rateLimitPerMinute,
       restrictedMemberPrefix: config.restrictedMemberPrefix,
       sensitivePatterns: config.sensitivePatterns,
       mediaDir,

@@ -2012,6 +2012,7 @@ describe('ChatBridge', () => {
     ocrResult?: unknown
     interimMessages?: boolean
     interimRecallMs?: number
+    rateLimitPerMinute?: number
     commands?: unknown
     allowAllUsers?: boolean
   }) {
@@ -2048,6 +2049,7 @@ describe('ChatBridge', () => {
         botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
         interimMessages: opts?.interimMessages ?? true,
         ...(opts?.interimRecallMs !== undefined ? { interimRecallMs: opts.interimRecallMs } : {}),
+        ...(opts?.rateLimitPerMinute !== undefined ? { rateLimitPerMinute: opts.rateLimitPerMinute } : {}),
         sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -2715,6 +2717,70 @@ describe('ChatBridge', () => {
     } finally {
       vi.useRealTimers()
     }
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('sets busy at turn/start and clears at turn/end, gating /retry (M1-B7)', async () => {
+    const h = await makeCmdHarness()
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const session = { id: h.sessionIds[0] }
+    h.ctx.emit('session/event', session as never, makeEvent('turn/start', { turn: 1 }))
+    h.sendText('/retry')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('当前正在生成'))).toBe(true)
+    })
+    expect(h.captured.followups).toHaveLength(1) // /retry did not re-feed while busy
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    h.sendText('/retry')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('rate-limits normal messages with one notice per window and lets commands through (M1-B7)', async () => {
+    const h = await makeCmdHarness({ rateLimitPerMinute: 2 })
+    h.sendText('第一条')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    h.sendText('第二条')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    h.sendText('第三条')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(3))
+    // The chat's very first message precedes its ChatAgent (empty window) and
+    // is never counted, so limit=2 fills up on messages 2+3 and bites on #4.
+    h.sendText('第四条')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('消息太频繁'))).toBe(true)
+    })
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(h.captured.followups).toHaveLength(3)
+    expect(h.outbound.filter(f => JSON.stringify(f.params).includes('消息太频繁'))).toHaveLength(1)
+    // Still over the limit: dropped again, still only one notice.
+    h.sendText('第五条')
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(h.captured.followups).toHaveLength(3)
+    expect(h.outbound.filter(f => JSON.stringify(f.params).includes('消息太频繁'))).toHaveLength(1)
+    // Commands are neither counted nor limited even while over the limit.
+    h.sendText('/id')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('chat    : private:10001'))).toBe(true)
+    })
+    expect(h.captured.followups).toHaveLength(3)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('rateLimitPerMinute 0 disables the inbound rate limit (M1-B7)', async () => {
+    const h = await makeCmdHarness({ rateLimitPerMinute: 0 })
+    for (const text of ['一', '二', '三', '四', '五']) {
+      h.sendText(text)
+    }
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(5))
+    expect(h.outbound.some(f => JSON.stringify(f.params).includes('消息太频繁'))).toBe(false)
+    h.client.close()
     await h.bridge.stop()
     await h.connection.stop()
   })

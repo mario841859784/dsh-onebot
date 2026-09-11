@@ -65,6 +65,9 @@ export interface BridgeConfig {
    * At turn/end the remaining originals are recalled immediately regardless. */
   interimRecallMs?: number
   sendErrorNotice: boolean
+  /** B7: per-chat per-minute sliding-window cap for normal (non-command)
+   * messages; absent → 30, 0 disables. */
+  rateLimitPerMinute?: number
   restrictedMemberPrefix: boolean
   sensitivePatterns: readonly string[]
   mediaDir: string
@@ -187,6 +190,11 @@ interface ChatAgent {
   lastHandledMessageId: string | undefined
   /** Whether a turn is currently generating. */
   busy: boolean
+  /** B7: dispatch timestamps of normal (non-command) messages inside the
+   * current 60s sliding window (rateLimitPerMinute). */
+  dispatchTimes: number[]
+  /** B7: when the last rate-limit notice was sent (at most one per window). */
+  rateLimitNoticeAt: number | undefined
   typingTimer: ReturnType<typeof setInterval> | undefined
   lastNickname: string
   /** Roles of dispatched turns not yet opened (FIFO, consumed at turn/start). */
@@ -564,6 +572,7 @@ export class ChatBridge {
     if (await this.tryHandleCommand(chatId, parsed.text, userId)) {
       return
     }
+    if (this.rateLimited(chatId)) return
 
     let final = body
     if (quote !== '') final = quote + '\n' + final
@@ -578,6 +587,27 @@ export class ChatBridge {
     if (final === '') return
 
     await this.dispatchFollowup(chatId, final, isAdmin ? 'admin' : 'member', nickname)
+  }
+
+  /** B7: sliding-window inbound rate limit for normal (non-command) messages.
+   * Commands consumed by tryHandleCommand never reach this. Returns true when
+   * the message must be dropped; at most one notice is sent per window. */
+  private rateLimited(chatId: ChatId): boolean {
+    const limit = this.deps.config.rateLimitPerMinute ?? 30
+    if (limit <= 0) return false
+    const chat = this.chats.get(chatId)
+    if (chat === undefined) return false
+    const now = Date.now()
+    chat.dispatchTimes = chat.dispatchTimes.filter(t => now - t < 60_000)
+    if (chat.dispatchTimes.length < limit) {
+      chat.dispatchTimes.push(now)
+      return false
+    }
+    if (chat.rateLimitNoticeAt === undefined || now - chat.rateLimitNoticeAt >= 60_000) {
+      chat.rateLimitNoticeAt = now
+      void this.sendToChat(chatId, '⏳ 消息太频繁，请稍后再试。').catch(() => undefined)
+    }
+    return true
   }
 
   /** Feed one user message into a chat's agent (create on demand). Records
@@ -1569,6 +1599,7 @@ export class ChatBridge {
       // (M1-A2): turns the plugin did not dispatch (host/web input) find an
       // empty queue and fail closed as member.
       chat.activeTurnRole = chat.pendingTurnRoles.shift() ?? 'member'
+      chat.busy = true
       return
     }
     if (event.type === 'assistant/message') {
@@ -1726,6 +1757,8 @@ export class ChatBridge {
       recalledInterimIds: new Set(),
       lastHandledMessageId: undefined,
       busy: false,
+      dispatchTimes: [],
+      rateLimitNoticeAt: undefined,
       typingTimer: undefined,
       lastNickname: nickname,
       pendingTurnRoles: [],
@@ -1796,6 +1829,8 @@ export class ChatBridge {
             recalledInterimIds: new Set(),
             lastHandledMessageId: undefined,
             busy: false,
+            dispatchTimes: [],
+            rateLimitNoticeAt: undefined,
             typingTimer: undefined,
             lastNickname: '',
             pendingTurnRoles: [],
