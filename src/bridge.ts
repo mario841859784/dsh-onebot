@@ -18,7 +18,6 @@ import { mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import type { OneBotConnection, OneBotEvent } from './connection.js'
-import { OneBotActionError, OneBotNotConnectedError } from './connection.js'
 import type { MediaStore } from './media.js'
 import { extForInboundName } from './media.js'
 import type { Transcriber } from './stt.js'
@@ -31,26 +30,13 @@ import {
   RESTRICTED_PREFIX, sanitizeNickname, sessionIdForChat, splitChatId,
 } from './chat.js'
 import type { AccessPolicyConfig } from './chat.js'
-import { extractForwardBlocks, scanSensitive, splitLongText, stripMarkdown } from './split.js'
 import { renderTextImage } from './t2i/index.js'
 import { buildPlatformPrompt } from './prompt.js'
 import { registerTools } from './tools.js'
 import { tryHandleCommand as routeCommand, type CommandContext } from './commands.js'
-
-/** One OneBot message segment for outbound sends. */
-export interface OutboundSegment {
-  type: string
-  data: Record<string, unknown>
-}
-
-/** Options for an explicit outbound send (from tools). */
-export interface SendOptions {
-  replyTo?: string
-  /** Queue the send for resend on reconnect instead of failing while the
-   * connection is down. Only for model final replies; interim sends carry
-   * recall timers + bookkeeping and must never be replayed. */
-  queuable?: boolean
-}
+import { relayHostCards as relayCards, type CardRelayContext } from './card-relay.js'
+import { OutboundPipeline } from './outbound.js'
+import type { OutboundSegment, SendOptions } from './outbound.js'
 
 /** Resolved runtime configuration for the bridge. */
 export interface BridgeConfig {
@@ -215,10 +201,6 @@ const RETIRED_FILE = 'retired-sessions.json'
 /** Spacing between recall delete_msg calls (NapCat recallMsg is slow; bursting
  * them pushes borderline-late recalls over the server timeout). */
 const RECALL_SPACING_MS = 60
-/** Queued final replies older than this are dropped at drain time (M1-B6). */
-const PENDING_SEND_TTL_MS = 5 * 60_000
-/** Max queued final replies per chat; the oldest is dropped beyond this (M1-B6). */
-const PENDING_SEND_MAX = 20
 
 /**
  * Bridge between OneBot events and dsh agents. Create via the constructor and
@@ -226,6 +208,8 @@ const PENDING_SEND_MAX = 20
  */
 export class ChatBridge {
   private readonly deps: BridgeDeps
+  /** Outbound pipeline (D1-PR2): the same-name bridge methods below delegate here. */
+  private readonly outbound: OutboundPipeline
   private readonly chats = new Map<ChatId, ChatAgent>()
   private readonly bySession = new Map<string, ChatId>()
   /** Session-feed listener disposers (freed on stop, so plugin reload/HMR cannot accumulate duplicates). */
@@ -263,6 +247,15 @@ export class ChatBridge {
 
   constructor(deps: BridgeDeps) {
     this.deps = deps
+    this.outbound = new OutboundPipeline({
+      getChat: chatId => this.chats.get(chatId),
+      connected: () => this.deps.connection.connected,
+      selfId: () => this.deps.connection.selfId,
+      call: (action, params) => this.deps.connection.call(action, params),
+      isStopping: () => this.stopping,
+      log: (level, message) => this.deps.log(level, message),
+      config: deps.config,
+    })
   }
 
   /** Start listening: wire connection handlers and the session event feed. */
@@ -277,7 +270,7 @@ export class ChatBridge {
     })
     connection.onStatus = (connected: boolean) => {
       this.deps.log(connected ? 'info' : 'warn', 'OneBot ' + (connected ? 'connected' : 'disconnected'))
-      if (connected) this.drainPendingSends()
+      if (connected) this.outbound.drainPendingSends()
     }
     this.mappingLoaded = this.ready().then(async () => {
       await this.loadRetired()
@@ -373,95 +366,7 @@ export class ChatBridge {
    * @returns the sent message ids.
    */
   sendToChat(chatId: ChatId, text: string, options: SendOptions = {}): Promise<string[]> {
-    return this.enqueue(chatId, async () => {
-      if (!this.deps.connection.connected) {
-        if (options.queuable === true) {
-          this.queuePendingSend(chatId, text)
-          return []
-        }
-        throw new OneBotNotConnectedError()
-      }
-      const hits = scanSensitive(text, this.deps.config.sensitivePatterns)
-      if (hits.length > 0) {
-        this.deps.log('warn', 'sensitive outbound audit for ' + chatId + ': ' + hits.join(', '))
-      }
-      const ids: string[] = []
-      const { body, nodes } = extractForwardBlocks(text, '助手')
-      if (nodes.length > 0) {
-        await this.sendForward(chatId, nodes)
-        ids.push('forward')
-      }
-      let sentCard = false
-      const threshold = this.deps.config.textImageThreshold
-      if (threshold > 0 && body.length > threshold) {
-        try {
-          const chat = this.chats.get(chatId)
-          const title = chat !== undefined && chat.lastNickname !== ''
-            ? 'To ' + chat.lastNickname
-            : undefined
-          const png = renderTextImage(body, {
-            title,
-            footerBrand: this.deps.config.cardFooter,
-            fontFiles: this.deps.config.fontFiles,
-            fontFamilies: this.deps.config.fontFamilies,
-          })
-          const b64 = 'base64://' + png.toString('base64')
-          if (b64.length <= this.deps.config.maxImageBytes) {
-            const id = await this.sendMsg(chatId, [{ type: 'image', data: { file: b64 } }], options)
-            if (id !== undefined) ids.push(id)
-            sentCard = true
-          } else {
-            this.deps.log('warn', 't2i card PNG exceeds maxImageBytes; falling back to text')
-          }
-        } catch (error) {
-          this.deps.log('warn', 't2i render failed, falling back to text: ' + (error instanceof Error ? error.message : String(error)))
-        }
-      }
-      if (!sentCard) {
-        const plain = stripMarkdown(body)
-        if (plain !== '') {
-          const chunks = splitLongText(plain, this.deps.config.splitLength)
-          for (const chunk of chunks) {
-            const id = await this.sendMsg(chatId, [{ type: 'text', data: { text: chunk } }], options)
-            if (id !== undefined) ids.push(id)
-          }
-        }
-      }
-      return ids
-    })
-  }
-
-  /** Park one queuable send for a chat while disconnected (M1-B6):
-   * per-chat FIFO, capped — the oldest entry is dropped beyond the cap. */
-  private queuePendingSend(chatId: ChatId, text: string): void {
-    const queue = this.pendingSends.get(chatId) ?? []
-    if (queue.length >= PENDING_SEND_MAX) {
-      queue.shift()
-      this.deps.log('warn', 'pending send queue full for ' + chatId + ', dropped oldest')
-    }
-    queue.push({ text, sentAt: Date.now() })
-    this.pendingSends.set(chatId, queue)
-  }
-
-  /** Resend parked final replies oldest-first after a reconnect (M1-B6).
-   * Per-chat send chains keep the order; a send that hits a fresh
-   * disconnection re-queues itself via the queuable gate. Expired entries
-   * (TTL) are dropped. Never runs while stopping. */
-  private drainPendingSends(): void {
-    if (this.stopping) return
-    const now = Date.now()
-    const batch: Array<{ chatId: ChatId; text: string }> = []
-    for (const [chatId, queue] of this.pendingSends) {
-      this.pendingSends.delete(chatId)
-      for (const item of queue) {
-        if (now - item.sentAt < PENDING_SEND_TTL_MS) batch.push({ chatId, text: item.text })
-      }
-    }
-    for (const { chatId, text } of batch) {
-      void this.sendToChat(chatId, text, { queuable: true }).catch((error: unknown) => {
-        this.deps.log('warn', 'queued resend failed: ' + (error instanceof Error ? error.message : String(error)))
-      })
-    }
+    return this.outbound.sendToChat(chatId, text, options)
   }
 
   /**
@@ -471,7 +376,7 @@ export class ChatBridge {
    * @returns the sent message id.
    */
   sendSegments(chatId: ChatId, segments: OutboundSegment[]): Promise<string | undefined> {
-    return this.enqueue(chatId, () => this.sendMsg(chatId, segments, {}))
+    return this.outbound.sendSegments(chatId, segments)
   }
 
   /**
@@ -661,66 +566,15 @@ export class ChatBridge {
 
   /** Tool calls whose host-plane UI has no QQ equivalent; relay them to the chat. */
   private relayHostCards(chatId: ChatId, content: readonly unknown[]): void {
-    for (const block of content) {
-      if (typeof block !== 'object' || block === null) continue
-      const call = block as { type?: string; name?: string; arguments?: string }
-      if (call.type !== 'tool-call') continue
-      if (call.name === 'exit_plan_mode') {
-        const text = this.renderPlanCard(call.arguments)
-        if (text !== undefined) {
-          this.sendToChat(chatId, text).catch((error: unknown) => {
-            this.deps.log('warn', 'plan card relay failed: ' + String(error))
-          })
-        }
-      } else if (call.name === 'ask_user_question') {
-        const text = this.renderQuestionCard(call.arguments)
-        if (text !== undefined) {
-          this.sendToChat(chatId, text).catch((error: unknown) => {
-            this.deps.log('warn', 'question card relay failed: ' + String(error))
-          })
-        }
-      }
-    }
+    relayCards(this.cardRelayCtx, chatId, content)
   }
 
-  /** Render an exit_plan_mode tool-call's plan for QQ, or undefined when unusable. */
-  private renderPlanCard(rawArguments: string | undefined): string | undefined {
-    if (typeof rawArguments !== 'string' || rawArguments === '') return undefined
-    try {
-      const parsed = JSON.parse(rawArguments) as { plan?: unknown }
-      if (typeof parsed.plan !== 'string' || parsed.plan.trim() === '') return undefined
-      return '【📋 计划书】请确认以下计划——可在 Web 卡片确认，或直接回复「确认/继续」供参考：\n' + parsed.plan.trim()
-    } catch {
-      this.deps.log('debug', 'plan card parse failed')
-      return undefined
-    }
-  }
-
-  /** Render an ask_user_question tool-call's questions for QQ, or undefined when unusable. */
-  private renderQuestionCard(rawArguments: string | undefined): string | undefined {
-    if (typeof rawArguments !== 'string' || rawArguments === '') return undefined
-    try {
-      const parsed = JSON.parse(rawArguments) as { questions?: unknown }
-      if (!Array.isArray(parsed.questions) || parsed.questions.length === 0) return undefined
-      const lines: string[] = ['【❓ 提问】请回答以下问题（可回复选项/文字）：']
-      parsed.questions.forEach((q, index) => {
-        const question = q as { header?: unknown; question?: unknown; options?: unknown; multi_select?: boolean }
-        const header = typeof question.header === 'string' && question.header !== '' ? question.header : ''
-        const body = typeof question.question === 'string' ? question.question : ''
-        lines.push((index + 1) + '. ' + (header !== '' ? '[' + header + '] ' : '') + body)
-        if (Array.isArray(question.options)) {
-          question.options.forEach((opt, i) => {
-            const label = (opt as { label?: unknown })?.label
-            const labelText = typeof label === 'string' ? label : ''
-            lines.push('   ' + 'abcd'.charAt(i) + ') ' + labelText)
-          })
-        }
-        if (question.multi_select === true) lines.push('   （可多选）')
-      })
-      return lines.join('\n')
-    } catch {
-      this.deps.log('debug', 'question card parse failed')
-      return undefined
+  /** The CardRelayContext handed to the card relay (D1-PR2): the outbound
+   * send path plus the bridge log — the only capabilities the relay touches. */
+  private get cardRelayCtx(): CardRelayContext {
+    return {
+      sendToChat: (chatId, text) => this.sendToChat(chatId, text),
+      log: (level, message) => this.deps.log(level, message),
     }
   }
 
@@ -993,58 +847,14 @@ export class ChatBridge {
 
   // ------------------------------------------------------------ outbound
 
-  /** Serialize work on one chat's send chain. */
-  private enqueue<T>(chatId: ChatId, work: () => Promise<T>): Promise<T> {
-    const existing = this.chats.get(chatId)
-    const chain = (existing?.queue ?? Promise.resolve()) as Promise<unknown>
-    const run = chain.then(work, work)
-    if (existing !== undefined) {
-      existing.queue = run.catch(() => undefined)
-    } else {
-      void run.catch(() => undefined)
-    }
-    return run
-  }
-
   /** Send one message to a chat and return its message id. */
   private async sendMsg(chatId: ChatId, segments: OutboundSegment[], options: SendOptions): Promise<string | undefined> {
-    const ref = splitChatId(chatId)
-    const params: Record<string, unknown> = {}
-    let target: number
-    try {
-      target = Number(ref.target)
-      if (!Number.isFinite(target)) throw new Error('bad target')
-    } catch {
-      throw new OneBotActionError('invalid chat target: ' + chatId)
-    }
-    if (ref.kind === 'group') params.group_id = target
-    else params.user_id = target
-    params.message = segments
-    if (options.replyTo !== undefined) {
-      params.message = [{ type: 'reply', data: { id: options.replyTo } }, ...segments]
-    }
-    const data = await this.deps.connection.call('send_msg', params) as { message_id?: number | string }
-    return data.message_id !== undefined ? String(data.message_id) : undefined
+    return this.outbound.sendMsg(chatId, segments, options)
   }
 
   /** Send [[qq_forward]] nodes as a merged-forward message. */
   async sendForward(chatId: ChatId, nodes: Array<{ name: string; content: string }>): Promise<void> {
-    const ref = splitChatId(chatId)
-    const target = Number(ref.target)
-    if (!Number.isFinite(target)) throw new OneBotActionError('invalid chat target: ' + chatId)
-    const messages = nodes.map(node => ({
-      type: 'node',
-      data: {
-        uin: this.deps.connection.selfId || this.deps.config.botQQ,
-        name: node.name.slice(0, 24),
-        content: [{ type: 'text', data: { text: node.content.slice(0, 500) } }],
-      },
-    }))
-    if (ref.kind === 'group') {
-      await this.deps.connection.call('send_forward_msg', { group_id: target, messages })
-    } else {
-      await this.deps.connection.call('send_private_forward_msg', { user_id: target, messages })
-    }
+    return this.outbound.sendForward(chatId, nodes)
   }
 
   /** Cancel a message's pending 90s auto-recall timer. */
@@ -1811,4 +1621,4 @@ function nodeContentText(content: unknown): string {
   return ''
 }
 
-export { OneBotNotConnectedError, OneBotActionError }
+export { OneBotNotConnectedError, OneBotActionError } from './connection.js'
