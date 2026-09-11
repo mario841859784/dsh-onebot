@@ -1676,7 +1676,9 @@ export class ChatBridge {
     if (this.stopping) return
     const chatId = this.bySession.get(session.id)
     if (chatId === undefined) return
-    await this.saveMapping()
+    // M1-E2: arbitrary session flushes debounce like turn/end — stop() still
+    // forces the final saveMapping directly.
+    this.saveMappingDebounced()
   }
 
   // ------------------------------------------------------------ chat lifecycle

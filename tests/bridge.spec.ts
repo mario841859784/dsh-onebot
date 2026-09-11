@@ -1339,6 +1339,71 @@ describe('ChatBridge', () => {
     await bridge.stop()
   })
 
+  it('onSessionFlush debounces the mapping write; stop() forces the final save (M1-E2)', async () => {
+    vi.useFakeTimers()
+    const ctx = new Context()
+    const sessionIds: string[] = []
+    const captured = { followups: [] as Array<{ text: string; sessionId: string }> }
+    const agents = makeFakeAgents(sessionIds, captured)
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
+    const bridge = new ChatBridge({
+      ctx,
+      connection: new OneBotConnection({
+        mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
+      }),
+      media: new MediaStore(join(mediaDir, 'media'), 6),
+      transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
+      agents: agents as never,
+      sessions: { flush: vi.fn(async () => undefined) } as never,
+      agentPresets: undefined as never,
+      workspaceRegistry: undefined as never,
+      defaultModel: undefined,
+      config: {
+        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
+        sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
+        maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
+        textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
+        agentPreset: '', workspacePath: mediaDir,
+      },
+      policy: {
+        dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
+        adminUsers: ['10001'], allowAllUsers: false, requireMention: true,
+      },
+      log: () => undefined,
+    })
+    bridge.start()
+    await (bridge as unknown as { ensureChat(chatId: string, nickname: string): Promise<unknown> })
+      .ensureChat('private:10001', '小明')
+    // Count full mapping rewrites; pass through to the real disk write.
+    const saveTarget = bridge as unknown as { saveMapping(): Promise<void> }
+    const realSave = saveTarget.saveMapping
+    let saveWrites = 0
+    saveTarget.saveMapping = async () => {
+      saveWrites += 1
+      await realSave.call(bridge)
+    }
+    const flush = (): void => {
+      ctx.emit('session/flush', { id: sessionIds[0] } as never)
+    }
+    // 10 arbitrary session flushes coalesce into ONE deferred mapping write.
+    for (let i = 0; i < 10; i++) flush()
+    expect(saveWrites).toBe(0)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(saveWrites).toBe(1)
+    await vi.waitFor(async () => {
+      const content = await readFile(join(mediaDir, 'chat-sessions.json'), 'utf8')
+      expect(JSON.parse(content)).toEqual({ 'private:10001': sessionIds[0] })
+    })
+    // A flush right before stop() must not wait for the debounce timer:
+    // stop() cancels it and forces the final save immediately.
+    flush()
+    expect(saveWrites).toBe(1)
+    await bridge.stop()
+    expect(saveWrites).toBe(2)
+    vi.useRealTimers()
+  })
+
   it('does not auto-create a workspace for a session whose cwd differs from workspacePath', async () => {
     const ctx = new Context()
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
