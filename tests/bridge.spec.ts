@@ -58,7 +58,7 @@ function makeFakeAgents(
 }
 
 /** Full bridge + WS harness: inbound via real WebSocket, outbound captured. */
-async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string }) {
+async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean }) {
   const ctx = new Context()
   const sessionIds: string[] = []
   const captured = { followups: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[] }
@@ -80,7 +80,7 @@ async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string })
     defaultModel: undefined,
     config: {
       botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
-      interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
+      interimMessages: opts?.interimMessages ?? true, sendErrorNotice: true, restrictedMemberPrefix: false,
       sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
       maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
       textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
@@ -2570,6 +2570,151 @@ describe('ChatBridge', () => {
     expect(m[1]).toBe('Bad' + '长'.repeat(29))
     expect([...m[1]].length).toBe(32)
     h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  // ---------------------------------------------------------- M1-B6: offline resend queue
+
+  /** Close the harness client and wait until the bridge sees the disconnect. */
+  async function disconnect(h: Awaited<ReturnType<typeof makeHarness>>): Promise<void> {
+    h.client.close()
+    await vi.waitFor(() => expect(h.connection.connected).toBe(false))
+  }
+
+  /** Reconnect a fresh WS client with the echo responder; returns its own captured outbound. */
+  async function reconnect(h: Awaited<ReturnType<typeof makeHarness>>): Promise<{ client: WebSocket; outbound: Array<Record<string, unknown>> }> {
+    const client = new WebSocket('ws://127.0.0.1:' + h.connection.address()!.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
+    const outbound: Array<Record<string, unknown>> = []
+    client.on('message', data => {
+      const frame = JSON.parse(data.toString()) as Record<string, unknown>
+      outbound.push(frame)
+      if (typeof frame.echo === 'string') {
+        client.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 7 }, echo: frame.echo }))
+      }
+    })
+    await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
+    return { client, outbound }
+  }
+
+  const inboundAndDisconnect = async (h: Awaited<ReturnType<typeof makeHarness>>): Promise<{ id: string }> => {
+    h.sendText('hi')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const session = { id: h.sessionIds[0] }
+    await disconnect(h)
+    return session
+  }
+
+  const sentTexts = (outbound: Array<Record<string, unknown>>): string[] =>
+    outbound.filter(f => f.action === 'send_msg').map(f => JSON.stringify(f.params))
+
+  it('queues interim-mode final flushes while disconnected and resends them in order on reconnect (M1-B6)', async () => {
+    const h = await makeHarness()
+    const session = await inboundAndDisconnect(h)
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '最终回复一' }] },
+    }))
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    // Let settle-loop #1 park its final before the next cycle starts, or the
+    // next assistant/message proves it interim (bridge semantics) and drops it.
+    await new Promise(resolve => setTimeout(resolve, 50))
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 2, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '最终回复二' }] },
+    }))
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 2, reason: { kind: 'completed' } }))
+    const { client: client2, outbound: outbound2 } = await reconnect(h)
+    await vi.waitFor(() => {
+      const texts = sentTexts(outbound2)
+      expect(texts.some(t => t.includes('最终回复一'))).toBe(true)
+      expect(texts.some(t => t.includes('最终回复二'))).toBe(true)
+    })
+    const texts = sentTexts(outbound2)
+    expect(texts.findIndex(t => t.includes('最终回复一'))).toBeLessThan(texts.findIndex(t => t.includes('最终回复二')))
+    client2.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('queues instant finals and error notices while disconnected and resends them in order (M1-B6)', async () => {
+    const h = await makeHarness({ interimMessages: false })
+    const session = await inboundAndDisconnect(h)
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '最终答案' }] },
+    }))
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', {
+      turn: 2, reason: { kind: 'error', error: { code: 'E_TEST', message: '模型炸了' } },
+    }))
+    const { client: client2, outbound: outbound2 } = await reconnect(h)
+    await vi.waitFor(() => {
+      const texts = sentTexts(outbound2)
+      expect(texts.some(t => t.includes('最终答案'))).toBe(true)
+      expect(texts.some(t => t.includes('运行出错'))).toBe(true)
+    })
+    const texts = sentTexts(outbound2)
+    expect(texts.findIndex(t => t.includes('最终答案'))).toBeLessThan(texts.findIndex(t => t.includes('运行出错')))
+    client2.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('does not queue interim sends while disconnected (M1-B6)', async () => {
+    const h = await makeHarness()
+    const session = await inboundAndDisconnect(h)
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 1,
+      message: { role: 'assistant', content: [{ type: 'tool-call', toolName: 'x' }, { type: 'text', text: '中间过程' }] },
+    }))
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    const { client: client2, outbound: outbound2 } = await reconnect(h)
+    await new Promise(resolve => setTimeout(resolve, 200))
+    expect(sentTexts(outbound2)).toHaveLength(0)
+    client2.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('caps the per-chat queue at 20 and drops the oldest while disconnected (M1-B6)', async () => {
+    const h = await makeHarness({ interimMessages: false })
+    const session = await inboundAndDisconnect(h)
+    for (let i = 1; i <= 21; i++) {
+      h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+        turn: i, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '最终答案' + i }] },
+      }))
+      h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: i, reason: { kind: 'completed' } }))
+    }
+    const { client: client2, outbound: outbound2 } = await reconnect(h)
+    await vi.waitFor(() => expect(sentTexts(outbound2).some(t => t.includes('最终答案21"'))).toBe(true))
+    await new Promise(resolve => setTimeout(resolve, 200))
+    const finals = sentTexts(outbound2).filter(t => t.includes('最终答案'))
+    expect(finals).toHaveLength(20)
+    expect(finals.some(t => t.includes('最终答案1"'))).toBe(false)
+    expect(finals[0].includes('最终答案2"')).toBe(true)
+    client2.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('drops queued finals older than the TTL instead of resending them (M1-B6)', async () => {
+    const h = await makeHarness()
+    const session = await inboundAndDisconnect(h)
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '过期回复' }] },
+    }))
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    // Let the settle-loop microtask park the final BEFORE the clock jump, or it
+    // would queue with a fresh (post-jump) timestamp and never expire.
+    await new Promise(resolve => setTimeout(resolve, 50))
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      vi.advanceTimersByTime(5 * 60_000 + 1_000)
+      const { client: client2, outbound: outbound2 } = await reconnect(h)
+      await new Promise(resolve => setTimeout(resolve, 200))
+      expect(sentTexts(outbound2).some(t => t.includes('过期回复'))).toBe(false)
+      client2.close()
+    } finally {
+      vi.useRealTimers()
+    }
     await h.bridge.stop()
     await h.connection.stop()
   })

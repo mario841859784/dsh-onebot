@@ -47,6 +47,10 @@ export interface OutboundSegment {
 /** Options for an explicit outbound send (from tools). */
 export interface SendOptions {
   replyTo?: string
+  /** Queue the send for resend on reconnect instead of failing while the
+   * connection is down. Only for model final replies; interim sends carry
+   * recall timers + bookkeeping and must never be replayed. */
+  queuable?: boolean
 }
 
 /** Resolved runtime configuration for the bridge. */
@@ -204,6 +208,10 @@ const RETIRED_FILE = 'retired-sessions.json'
 /** Spacing between recall delete_msg calls (NapCat recallMsg is slow; bursting
  * them pushes borderline-late recalls over the server timeout). */
 const RECALL_SPACING_MS = 60
+/** Queued final replies older than this are dropped at drain time (M1-B6). */
+const PENDING_SEND_TTL_MS = 5 * 60_000
+/** Max queued final replies per chat; the oldest is dropped beyond this (M1-B6). */
+const PENDING_SEND_MAX = 20
 
 /**
  * Bridge between OneBot events and dsh agents. Create via the constructor and
@@ -224,6 +232,9 @@ export class ChatBridge {
   /** Per-chat outbound-mode override set by /mode (true=interim, false=instant);
    * undefined defers to the global config. */
   private readonly chatInterimOverrides = new Map<ChatId, boolean>()
+  /** Per-chat FIFO of model final replies parked while disconnected; drained
+   * oldest-first on reconnect (M1-B6). */
+  private readonly pendingSends = new Map<ChatId, Array<{ text: string; sentAt: number }>>()
   /** Per-chat goal set by /goal (reminds the model of the objective each turn). */
   private readonly chatGoals = new Map<ChatId, string>()
   /** Per-chat most recent inbound image path (for /ocr), survives /new resets. */
@@ -256,6 +267,7 @@ export class ChatBridge {
     })
     connection.onStatus = (connected: boolean) => {
       this.deps.log(connected ? 'info' : 'warn', 'OneBot ' + (connected ? 'connected' : 'disconnected'))
+      if (connected) this.drainPendingSends()
     }
     this.mappingLoaded = this.ready().then(async () => {
       await this.loadRetired()
@@ -353,6 +365,10 @@ export class ChatBridge {
   sendToChat(chatId: ChatId, text: string, options: SendOptions = {}): Promise<string[]> {
     return this.enqueue(chatId, async () => {
       if (!this.deps.connection.connected) {
+        if (options.queuable === true) {
+          this.queuePendingSend(chatId, text)
+          return []
+        }
         throw new OneBotNotConnectedError()
       }
       const hits = scanSensitive(text, this.deps.config.sensitivePatterns)
@@ -403,6 +419,39 @@ export class ChatBridge {
       }
       return ids
     })
+  }
+
+  /** Park one queuable send for a chat while disconnected (M1-B6):
+   * per-chat FIFO, capped — the oldest entry is dropped beyond the cap. */
+  private queuePendingSend(chatId: ChatId, text: string): void {
+    const queue = this.pendingSends.get(chatId) ?? []
+    if (queue.length >= PENDING_SEND_MAX) {
+      queue.shift()
+      this.deps.log('warn', 'pending send queue full for ' + chatId + ', dropped oldest')
+    }
+    queue.push({ text, sentAt: Date.now() })
+    this.pendingSends.set(chatId, queue)
+  }
+
+  /** Resend parked final replies oldest-first after a reconnect (M1-B6).
+   * Per-chat send chains keep the order; a send that hits a fresh
+   * disconnection re-queues itself via the queuable gate. Expired entries
+   * (TTL) are dropped. Never runs while stopping. */
+  private drainPendingSends(): void {
+    if (this.stopping) return
+    const now = Date.now()
+    const batch: Array<{ chatId: ChatId; text: string }> = []
+    for (const [chatId, queue] of this.pendingSends) {
+      this.pendingSends.delete(chatId)
+      for (const item of queue) {
+        if (now - item.sentAt < PENDING_SEND_TTL_MS) batch.push({ chatId, text: item.text })
+      }
+    }
+    for (const { chatId, text } of batch) {
+      void this.sendToChat(chatId, text, { queuable: true }).catch((error: unknown) => {
+        this.deps.log('warn', 'queued resend failed: ' + (error instanceof Error ? error.message : String(error)))
+      })
+    }
   }
 
   /**
@@ -1502,7 +1551,7 @@ export class ChatBridge {
       const final = chat.loopPending
       chat.loopPending = null
       try {
-        await this.sendToChat(chatId, final)
+        await this.sendToChat(chatId, final, { queuable: true })
       } catch (error) {
         this.deps.log('warn', 'final send failed: ' + (error instanceof Error ? error.message : String(error)))
       }
@@ -1570,13 +1619,13 @@ export class ChatBridge {
       } else if (chat.pendingFinal !== '') {
         const final = chat.pendingFinal
         chat.pendingFinal = ''
-        this.sendToChat(chatId, final).catch(error => {
+        this.sendToChat(chatId, final, { queuable: true }).catch(error => {
           this.deps.log('warn', 'final send failed: ' + (error instanceof Error ? error.message : String(error)))
         })
       }
       if (event.data.reason.kind === 'error' && this.deps.config.sendErrorNotice) {
         const message = event.data.reason.error.message
-        this.sendToChat(chatId, '⚠️ 运行出错：' + message).catch(() => undefined)
+        this.sendToChat(chatId, '⚠️ 运行出错：' + message, { queuable: true }).catch(() => undefined)
         if (/persisted log on disk that does not match this live session|id collision/i.test(message)) {
           void this.healSessionCollision(chatId)
         }
