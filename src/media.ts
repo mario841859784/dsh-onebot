@@ -8,6 +8,7 @@
 import { mkdir, readFile, readdir, rm, stat, writeFile, copyFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { lookup } from 'node:dns/promises'
 import { shrinkImage } from './image-shrink.js'
 
 /** Size limits (bytes), matching the Hermes adapter's constants. */
@@ -15,12 +16,25 @@ export const IMAGE_MAX_BYTES = 8 * 1024 * 1024
 export const VOICE_MAX_BYTES = 15 * 1024 * 1024
 export const MEDIA_MAX_BYTES = 20 * 1024 * 1024
 
+/** Hard wall clock for one download, matching the OneBot call timeout; covers every redirect hop and the body. */
+const DOWNLOAD_TIMEOUT_MS = 30_000
+/** Maximum redirects followed manually — every hop is re-checked for protocol + private address. */
+const MAX_REDIRECTS = 3
+
 /** One resolved media file. */
 export interface ResolvedMedia {
   /** Absolute local path. */
   path: string
   /** Mime-ish kind for the caller. */
   kind: 'image' | 'voice' | 'video' | 'file'
+}
+
+/** Options for the guarded download path (SSRF fence + size cap). */
+export interface MediaStoreDownloadOptions {
+  /** Default size cap for downloads issued by resolveInner (0/absent = uncapped). */
+  maxBytes?: number
+  /** Escape hatch for local/NAT reverse-proxy deployments: skip the private-address check (protocol whitelist still applies). */
+  allowPrivateHosts?: boolean
 }
 
 /**
@@ -31,17 +45,23 @@ export class MediaStore {
   readonly dir: string
   private readonly ttlHours: number
   private readonly imageMaxSize: number
+  private readonly downloadMaxBytes: number
+  private readonly allowPrivateHosts: boolean
 
   /**
    * @param dir - absolute scratch directory (created on demand).
    * @param ttlHours - files older than this are deleted on cleanup.
    * @param imageMaxSize - inbound-image long-edge cap in px; images larger
    *   than this are downscaled right after download (`<=0` disables).
+   * @param download - download guards: the default size cap for resolveInner
+   *   URL downloads and the allowPrivateHosts SSRF escape hatch.
    */
-  constructor(dir: string, ttlHours: number, imageMaxSize = 0) {
+  constructor(dir: string, ttlHours: number, imageMaxSize = 0, download: MediaStoreDownloadOptions = {}) {
     this.dir = dir
     this.ttlHours = ttlHours > 0 ? ttlHours : 6
     this.imageMaxSize = imageMaxSize
+    this.downloadMaxBytes = download.maxBytes ?? 0
+    this.allowPrivateHosts = download.allowPrivateHosts ?? false
   }
 
   /** Ensure the scratch directory exists. */
@@ -115,7 +135,7 @@ export class MediaStore {
     await this.ensure()
     try {
       if (ref.url !== undefined && ref.url !== '') {
-        const path = await this.downloadUrl(ref.url, extForUrl(ref.url, ref.kind))
+        const path = await this.downloadUrl(ref.url, extForUrl(ref.url, ref.kind), this.downloadMaxBytes)
         return { path, kind: ref.kind }
       }
       const file = ref.file ?? ''
@@ -139,7 +159,7 @@ export class MediaStore {
         const resolved = await resolveHash(ref.kind, file)
         if (resolved === undefined) return undefined
         if (resolved.url !== undefined && resolved.url !== '') {
-          const path = await this.downloadUrl(resolved.url, extForUrl(resolved.url, ref.kind))
+          const path = await this.downloadUrl(resolved.url, extForUrl(resolved.url, ref.kind), this.downloadMaxBytes)
           return { path, kind: ref.kind }
         }
         if (resolved.file !== undefined && resolved.file.startsWith('file://')) {
@@ -157,38 +177,135 @@ export class MediaStore {
   }
 
   /**
-   * Download a URL into the scratch dir.
+   * Download a URL into the scratch dir, behind the SSRF fence: http/https
+   * only, private/loopback targets refused (unless allowPrivateHosts is on),
+   * every redirect hop re-checked (max 3), and a hard wall-clock deadline
+   * per download. The body is streamed so the size cap aborts mid-flight.
    * @param url - remote URL.
    * @param ext - file extension for the target.
-   * @param maxBytes - optional size cap (download aborted beyond it).
+   * @param maxBytes - size cap; `<=0`/undefined disables it.
    * @returns the local path.
    */
   async downloadUrl(url: string, ext: string, maxBytes?: number): Promise<string> {
     await this.ensure()
-    const response = await fetch(url)
-    if (!response.ok || response.body === null) {
-      throw new Error('download failed: HTTP ' + response.status + ' for ' + url)
-    }
-    const path = this.freshPath(ext)
-    const stream = response.body
-    const reader = stream.getReader()
-    const chunks: Uint8Array[] = []
-    let total = 0
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      if (value !== undefined) {
-        total += value.byteLength
-        if (maxBytes !== undefined && total > maxBytes) {
-          reader.cancel().catch(() => undefined)
-          throw new Error('download exceeds ' + maxBytes + ' bytes: ' + url)
+    const cap = maxBytes !== undefined && maxBytes > 0 ? maxBytes : undefined
+    const deadline = Date.now() + DOWNLOAD_TIMEOUT_MS
+    let current = url
+    for (let hops = 0; ; hops += 1) {
+      await assertDownloadableUrl(current, this.allowPrivateHosts)
+      const response = await fetch(current, { redirect: 'manual', signal: AbortSignal.timeout(Math.max(0, deadline - Date.now())) })
+      if (isRedirectStatus(response.status)) {
+        const location = response.headers.get('location')
+        void response.body?.cancel().catch(() => undefined)
+        if (location === null) {
+          throw new Error('redirect without location header: ' + current)
         }
-        chunks.push(value)
+        if (hops >= MAX_REDIRECTS) {
+          throw new Error('too many redirects (> ' + MAX_REDIRECTS + '): ' + url)
+        }
+        current = new URL(location, current).toString()
+        continue
       }
+      if (!response.ok || response.body === null) {
+        throw new Error('download failed: HTTP ' + response.status + ' for ' + url)
+      }
+      const path = this.freshPath(ext)
+      const reader = response.body.getReader()
+      const chunks: Uint8Array[] = []
+      let total = 0
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value !== undefined) {
+          total += value.byteLength
+          if (cap !== undefined && total > cap) {
+            reader.cancel().catch(() => undefined)
+            throw new Error('download exceeds ' + cap + ' bytes: ' + url)
+          }
+          chunks.push(value)
+        }
+      }
+      await writeFile(path, Buffer.concat(chunks))
+      return path
     }
-    await writeFile(path, Buffer.concat(chunks))
-    return path
   }
+}
+
+/** 3xx statuses fetch would auto-follow; we follow them manually to re-check each hop. */
+function isRedirectStatus(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308
+}
+
+/**
+ * Refuse download targets that are not plain http(s) or that point at a
+ * private/loopback/link-local address (SSRF fence for sender-controlled
+ * URLs). Hostnames go through DNS and every resolved address is checked;
+ * IP-literal oddities (hex/octal/decimal spellings) fall through to the
+ * lookup and are judged by their resolved address. `allowPrivate` skips
+ * only the private-address check — the protocol whitelist always applies.
+ */
+async function assertDownloadableUrl(rawUrl: string, allowPrivate: boolean): Promise<void> {
+  let parsed: URL
+  try {
+    parsed = new URL(rawUrl)
+  } catch {
+    throw new Error('download refused: invalid URL: ' + rawUrl)
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('download refused: protocol not allowed (' + parsed.protocol + '): ' + rawUrl)
+  }
+  if (allowPrivate) return
+  const host = parsed.hostname.replace(/^\[/, '').replace(/\]$/, '')
+  if (isPrivateIp(host)) {
+    throw new Error('download refused: private/loopback address not allowed: ' + rawUrl)
+  }
+  let addresses: Array<{ address: string }>
+  try {
+    addresses = await lookup(host, { all: true })
+  } catch (cause) {
+    throw new Error('download refused: DNS lookup failed for ' + host + ': ' + (cause instanceof Error ? cause.message : String(cause)))
+  }
+  if (addresses.some(entry => isPrivateIp(entry.address))) {
+    throw new Error('download refused: ' + host + ' resolves to a private/loopback address: ' + rawUrl)
+  }
+}
+
+/** Whether an IP address (v4 literal, or v6 without brackets) is private/loopback/link-local. */
+function isPrivateIp(address: string): boolean {
+  if (address.includes(':')) return isPrivateIpv6(address)
+  return isPrivateIpv4(address)
+}
+
+/** Private/loopback/link-local ranges for IPv4 literals. */
+function isPrivateIpv4(address: string): boolean {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(address)
+  if (match === null) return false
+  const first = Number(match[1])
+  const second = Number(match[2])
+  return first === 0 || first === 10 || first === 127 ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168) ||
+    (first === 169 && second === 254)
+}
+
+/** Private/loopback/link-local ranges for IPv6 literals (no brackets). */
+function isPrivateIpv6(address: string): boolean {
+  const lower = address.toLowerCase()
+  if (lower === '::' || lower === '::1') return true
+  // IPv4-mapped endings (::ffff:0:0/96) are judged by their embedded IPv4:
+  // the URL parser spells them in hex (::ffff:7f00:1), DNS in dotted form.
+  const dotted = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(lower)
+  if (dotted !== null) return isPrivateIpv4(dotted[1])
+  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(lower)
+  if (hex !== null) {
+    const high = parseInt(hex[1], 16)
+    const low = parseInt(hex[2], 16)
+    return isPrivateIpv4((high >> 8) + '.' + (high & 255) + '.' + (low >> 8) + '.' + (low & 255))
+  }
+  // fe80::/10 link-local (fe80–febf), fc00::/7 unique local (fc00–fdff).
+  const first = parseInt(lower, 16)
+  if (Number.isNaN(first)) return false
+  return (first >= 0xfe80 && first <= 0xfebf) || (first >= 0xfc00 && first <= 0xfdff)
 }
 
 /** Guess a file extension for a URL. */

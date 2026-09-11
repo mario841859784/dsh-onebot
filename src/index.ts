@@ -100,6 +100,8 @@ export interface Config {
   agentPreset: string
   workspacePath: string
   maxInboundFileBytes: number
+  /** Escape hatch: skip the download private-address check (local reverse proxy). */
+  allowPrivateHosts: boolean
 }
 
 const ENV = (name: string): string => process.env[name] ?? ''
@@ -196,6 +198,8 @@ export const Config: z<Config> = z.object({
     .description('QQ 会话的工作区目录（写入会话 cwd，并自动归入该工作区，不存在则创建）；留空用宿主进程 cwd'),
   maxInboundFileBytes: z.number().default(20 * 1024 * 1024)
     .description('QQ 入站文件最大字节数（直链/base64 拉取，0 = 不限制）'),
+  allowPrivateHosts: z.boolean().default(false)
+    .description('下载 SSRF 防护逃生门：默认拒绝解析到私网/环回/链路本地地址的下载目标（协议仅 http/https、重定向逐跳复检仍生效）；NapCat 文件服务器或反代部署在本机/内网时置 true 跳过私网检查'),
 })
 
 /** Resolve env-var fallbacks into the effective access policy. */
@@ -238,7 +242,7 @@ export function apply(ctx: Context, config: Config): void {
       callTimeoutMs: 30_000,
     },
   )
-  const media = new MediaStore(mediaDir, config.tempTtlHours, config.imageMaxSize)
+  const media = new MediaStore(mediaDir, config.tempTtlHours, config.imageMaxSize, { maxBytes: config.maxInboundFileBytes, allowPrivateHosts: config.allowPrivateHosts })
   const transcriber = new Transcriber({
     enabled: config.sttEnabled,
     engine: config.sttEngine,
