@@ -181,6 +181,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 时间 | 工作 |
 |---|---|
 | 全天 | **M2-T0 启动（bridge.ts 五拆的测试安全网）**：用户确认生产已升 v0.2.1（90129d2 全量在产）；R5 NapCat 4401 重试 24h 观察由用户豁免收口；trim-cli 会话已建立，真机验证能力就位。T0 范围：①特征化测试补齐（命令路由全表/出站闸门矩阵/registry 持久化 round-trip/入站管线顺序/interim 时序/golden 快照/ensureChat 并发现状）；②tests/README.md 五拆迁移地图（现有用例 → commands/inbound/outbound/interim/registry/card-relay 目标 spec）；③打 pre-refactor-baseline tag。铁律：src/ 零改动，纯特征化钉现状 |
+| 全天 | **T0 记录（commit 见 git log）**：vitest **212 passed + 1 todo（213）**（基线 200 → +12 特征化 +1 todo）、tsc 0 错误。新增 12 用例：/help 全表快照、14 命令非管理员拒绝矩阵（无副作用断言）、RESTRICTED_PREFIX 注入（成员注/管理员不注）、断线闸门直测（queuable 入队重连补发/非 queuable 抛 OneBotNotConnectedError）、mapping 真 round-trip（钉死：preset 从会话记录回填压过 config、model 无按会话持久化用当前 defaultModel）、collision 自愈端到端（映射清空→新后缀 id 重建+回填）、入站管线顺序 spy（policy→mention→command→media→quote→dispatch）、sendInterim 记账+回填+去重、settleLoop 先排空发送链再快照、golden×3（私聊纯文本/群聊@+工具调用 interim→摘要卡→撤回→final/长文本单 t2i 卡片）。桩设施增量：makeHarness +textImageThreshold、makeCmdHarness +restrictedMemberPrefix。**疑似已知竞态（实证）**：同 chatId 并发首条消息时 ensureChat 双过空表检查——agents.create 被调 2 次、同一裸 session id、chats 仅存后者（80ms create 延迟双并发实测）→ 按 PM 指示 it.todo 留待 M2-PR3 B8a 修复后转正，不固化绿断言；tests/README.md 已载实测证据。src/ 零改动 |
 ---
 
 ## 3. 关键决策与坑（按价值排序）

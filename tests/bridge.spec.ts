@@ -8,7 +8,7 @@ import type {} from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import WebSocket from 'ws'
 
-import { OneBotConnection } from '../src/connection.js'
+import { OneBotConnection, OneBotNotConnectedError } from '../src/connection.js'
 import { ChatBridge, resolveRecordedPreset } from '../src/bridge.js'
 import { MediaStore } from '../src/media.js'
 import { Transcriber } from '../src/stt.js'
@@ -58,7 +58,7 @@ function makeFakeAgents(
 }
 
 /** Full bridge + WS harness: inbound via real WebSocket, outbound captured. */
-async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean }) {
+async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number }) {
   const ctx = new Context()
   const sessionIds: string[] = []
   const captured = { followups: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[] }
@@ -83,7 +83,7 @@ async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; i
       interimMessages: opts?.interimMessages ?? true, sendErrorNotice: true, restrictedMemberPrefix: false,
       sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
       maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
-      textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
+      textImageThreshold: opts?.textImageThreshold ?? 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
       agentPreset: 'standard', workspacePath: mediaDir,
     },
     policy: {
@@ -2078,6 +2078,7 @@ describe('ChatBridge', () => {
     interimMessages?: boolean
     interimRecallMs?: number
     rateLimitPerMinute?: number
+    restrictedMemberPrefix?: boolean
     commands?: unknown
     allowAllUsers?: boolean
   }) {
@@ -2115,7 +2116,8 @@ describe('ChatBridge', () => {
         interimMessages: opts?.interimMessages ?? true,
         ...(opts?.interimRecallMs !== undefined ? { interimRecallMs: opts.interimRecallMs } : {}),
         ...(opts?.rateLimitPerMinute !== undefined ? { rateLimitPerMinute: opts.rateLimitPerMinute } : {}),
-        sendErrorNotice: true, restrictedMemberPrefix: false,
+        sendErrorNotice: true,
+        ...(opts?.restrictedMemberPrefix !== undefined ? { restrictedMemberPrefix: opts.restrictedMemberPrefix } : {}),
         sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
         textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
@@ -2908,4 +2910,446 @@ describe('ChatBridge', () => {
     await h.bridge.stop()
     await h.connection.stop()
   })
+
+  // ---------------------------------------------------------- M2-T0: five-split characterization hardening
+
+  it('slash /help lists the full routed command table for an admin (M2-T0 command table)', async () => {
+    const h = await makeCmdHarness()
+    h.sendText('/help')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('可用命令'))).toBe(true)
+    })
+    const helpText = h.outbound.filter(f => f.action === 'send_msg').map(f => JSON.stringify(f.params)).join('\n')
+    for (const name of ['new', 'stop', 'model', 'workspace', 'preset', 'status', 'retry', 'id', 'ver', 'ocr', 'mode', 'plan', 'goal', 'help']) {
+      expect(helpText).toContain('/' + name)
+    }
+    expect(h.captured.followups).toHaveLength(0)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('rejects every routed slash command for a non-admin with no side effects (M2-T0 command table)', async () => {
+    const commands = { execute: vi.fn(async () => ({ kind: 'success', text: 'unreachable' })) }
+    const h = await makeCmdHarness({ commands })
+    for (const name of ['new', 'stop', 'model', 'workspace', 'preset', 'status', 'retry', 'id', 'ver', 'ocr', 'mode', 'plan', 'goal', 'help']) {
+      const before = h.outbound.length
+      h.sendGroupTextAs('/' + name, 20002)
+      await vi.waitFor(() => {
+        expect(h.outbound.slice(before).some(f => JSON.stringify(f.params).includes('仅管理员可用'))).toBe(true)
+      })
+      expect(h.outbound.slice(before).filter(f => f.action === 'send_msg')).toHaveLength(1)
+    }
+    expect(h.captured.followups).toHaveLength(0)
+    expect(h.chats().size).toBe(0)
+    expect(commands.execute).not.toHaveBeenCalled()
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 60_000)
+
+  it('injects RESTRICTED_PREFIX for restricted group members but not for admins (M2-T0 outbound gate)', async () => {
+    const h = await makeCmdHarness({ restrictedMemberPrefix: true })
+    h.sendGroupTextAs('受限成员提问', 20003)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    expect(h.captured.followups[0].text.startsWith('[受限用户:仅问答] ')).toBe(true)
+    h.sendGroupTextAs('管理员提问', 10001)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    expect(h.captured.followups[1].text.startsWith('[受限用户:仅问答] ')).toBe(false)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('sendToChat while disconnected: queuable final parks and drains on reconnect, non-queuable throws (M2-T0 outbound gate)', async () => {
+    const h = await makeHarness()
+    await inboundAndDisconnect(h)
+    await expect(h.bridge.sendToChat('private:10001', '排队最终回复', { queuable: true })).resolves.toEqual([])
+    await expect(h.bridge.sendToChat('private:10001', '即时回复')).rejects.toThrow(OneBotNotConnectedError)
+    const { client: client2, outbound: outbound2 } = await reconnect(h)
+    await vi.waitFor(() => {
+      expect(sentTexts(outbound2).some(t => t.includes('排队最终回复'))).toBe(true)
+    })
+    expect(sentTexts(outbound2).some(t => t.includes('即时回复'))).toBe(false)
+    client2.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 30_000)
+
+  it('mapping round-trip: a stopped chat resumes with the recorded preset and the live default model (M2-T0 registry)', async () => {
+    const h = await makeHarness()
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+    const { readFile } = await import('node:fs/promises')
+    const mapping = JSON.parse(await readFile(join(h.mediaDir, 'chat-sessions.json'), 'utf8')) as Record<string, string>
+    const recordedSessionId = mapping['private:10001']
+    expect(recordedSessionId).toBe(h.sessionIds[0])
+
+    const resume = vi.fn(async (options: { resumeSessionId: string; agentOptions?: { provider?: string; model?: string }; setup?: (agentCtx: unknown) => unknown }) => {
+      if (typeof options.setup === 'function') {
+        await options.setup({ on: () => () => undefined, systemPrompt: { section: () => () => undefined }, tools: { register: () => () => undefined } })
+      }
+      return {
+        agent: { session: { id: String(options.resumeSessionId), seq: 1, header: { cwd: h.mediaDir } }, status: 'idle', cancel: () => undefined, followup: () => undefined, whenIdle: async () => undefined },
+        dispose: async () => undefined,
+      }
+    })
+    const mountedPresets: Array<string | undefined> = []
+    const sessionPersistence = { inspect: vi.fn(async () => ({ meta: { agentPreset: 'router-flash' }, events: [] })) }
+    const bridge2 = new ChatBridge({
+      ctx: new Context(),
+      connection: new OneBotConnection({ mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3002', accessToken: 'test-token', callTimeoutMs: 3_000 }),
+      media: new MediaStore(join(h.mediaDir, 'media'), 6),
+      transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
+      agents: { create: vi.fn(), resume } as never,
+      sessions: { flush: vi.fn(async () => undefined) } as never,
+      agentPresets: {
+        defaultId: 'standard',
+        resolve: vi.fn(async (id?: string) => ({ id: id ?? 'standard' })),
+        mount: vi.fn(async (_agentCtx: unknown, id?: string) => { mountedPresets.push(id); return { id: id ?? 'standard' } }),
+      } as never,
+      sessionPersistence: sessionPersistence as never,
+      workspaceRegistry: undefined as never,
+      agentDefaultModel: undefined,
+      defaultModel: () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+      config: {
+        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
+        sensitivePatterns: [], mediaDir: h.mediaDir, maxImageBytes: 8 * 1024 * 1024,
+        maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
+        textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
+        agentPreset: 'standard', workspacePath: h.mediaDir,
+      },
+      policy: {
+        dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
+        adminUsers: ['10001'], allowAllUsers: false, requireMention: true,
+      },
+      log: () => undefined,
+    })
+    bridge2.start()
+    const chats2 = (bridge2 as unknown as { chats: Map<string, { sessionId: string }> }).chats
+    await vi.waitFor(() => expect(chats2.get('private:10001')?.sessionId).toBe(recordedSessionId))
+    // The mapping file the first bridge wrote is the resume source.
+    expect(resume).toHaveBeenCalledTimes(1)
+    expect(resume.mock.calls[0][0].resumeSessionId).toBe(recordedSessionId)
+    // Model is NOT per-chat persisted: the resume carries the live default selection.
+    expect(resume.mock.calls[0][0].agentOptions).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
+    // Preset IS backfilled from the session's own durable record, over the config.
+    expect(sessionPersistence.inspect).toHaveBeenCalledTimes(1)
+    expect(mountedPresets).toEqual(['router-flash'])
+    await bridge2.stop()
+  }, 30_000)
+
+  it('heals a session collision end-to-end: the chat rebuilds on a fresh id for the next message (M2-T0 registry)', async () => {
+    const h = await makeHarness()
+    const { readFile } = await import('node:fs/promises')
+    h.sendText('hi')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const oldSessionId = h.sessionIds[0]
+    h.ctx.emit('session/event', { id: oldSessionId } as never, makeEvent('turn/end', {
+      turn: 1,
+      reason: { kind: 'error', error: { code: 'E_COLLISION', message: 'session "' + oldSessionId + '" already has a persisted log on disk that does not match this live session (id collision)' } },
+    }))
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('运行出错'))).toBe(true)
+    })
+    await vi.waitFor(async () => {
+      const mapping = JSON.parse(await readFile(join(h.mediaDir, 'chat-sessions.json'), 'utf8')) as Record<string, string>
+      expect(Object.keys(mapping)).toHaveLength(0)
+    })
+    // The next message rebuilds the chat on a fresh suffixed id and repopulates
+    // the mapping with the truth.
+    h.sendText('再来一条')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    const rebuiltSessionId = h.captured.followups[1].sessionId
+    expect(rebuiltSessionId).not.toBe(oldSessionId)
+    expect(rebuiltSessionId).toMatch(/^onebot-private-10001-[a-z0-9]+$/)
+    await vi.waitFor(async () => {
+      const mapping = JSON.parse(await readFile(join(h.mediaDir, 'chat-sessions.json'), 'utf8')) as Record<string, string>
+      expect(mapping['private:10001']).toBe(rebuiltSessionId)
+    })
+    const retired = JSON.parse(await readFile(join(h.mediaDir, 'retired-sessions.json'), 'utf8')) as string[]
+    expect(retired).toContain(oldSessionId)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 30_000)
+
+  it('inbound pipeline order: policy gate → mention gate → command router → media → quote → dispatch (M2-T0 pipeline)', async () => {
+    const h = await makeCmdHarness()
+    const order: string[] = []
+    const target = h.bridge as unknown as {
+      tryHandleCommand(chatId: string, text: string, userId: string): Promise<boolean>
+      buildBody(text: string, media: unknown[], chatId: string): Promise<string>
+      expandQuote(messageId: string): Promise<string>
+      dispatchFollowup(chatId: string, text: string, role: string, nickname?: string): Promise<void>
+    }
+    const realCommand = target.tryHandleCommand.bind(h.bridge)
+    target.tryHandleCommand = async (chatId, text, userId) => {
+      order.push('command')
+      return await realCommand(chatId, text, userId)
+    }
+    const realBody = target.buildBody.bind(h.bridge)
+    target.buildBody = async (text, media, chatId) => {
+      order.push('media')
+      return await realBody(text, media, chatId)
+    }
+    const realQuote = target.expandQuote.bind(h.bridge)
+    target.expandQuote = async (messageId) => {
+      order.push('quote')
+      return await realQuote(messageId)
+    }
+    const realDispatch = target.dispatchFollowup.bind(h.bridge)
+    target.dispatchFollowup = async (chatId, text, role, nickname) => {
+      order.push('dispatch')
+      return await realDispatch(chatId, text, role, nickname)
+    }
+    const realCall = h.connection.call.bind(h.connection)
+    h.connection.call = (async (action: string, params: unknown) => {
+      if (action === 'get_msg') {
+        return { message: [{ type: 'text', data: { text: '被引用的原文' } }], raw_message: '被引用的原文', sender: { nickname: '引用来源' } }
+      }
+      return await realCall(action, params)
+    }) as never
+
+    // 1. policy gate: a non-admin private DM is dropped before everything
+    //    (dmPolicy 'open' admits admins only).
+    h.sendTextAs('私聊成员消息', 10003)
+    await new Promise(resolve => setTimeout(resolve, 150))
+    expect(order).toEqual([])
+    expect(h.captured.followups).toHaveLength(0)
+
+    // 2. mention gate: an unmentioned group message is dropped before the
+    //    command router (no rejection notice either).
+    h.client.send(JSON.stringify({
+      post_type: 'message', message_type: 'group', user_id: 10001, group_id: 888, self_id: 10002,
+      message: [{ type: 'text', data: { text: '无提及消息' } }], raw_message: '无提及消息',
+      sender: { user_id: 10001, nickname: '小明' },
+    }))
+    await new Promise(resolve => setTimeout(resolve, 150))
+    expect(order).toEqual([])
+    expect(h.captured.followups).toHaveLength(0)
+    expect(h.outbound.some(f => JSON.stringify(f.params).includes('仅管理员可用'))).toBe(false)
+
+    // 3. A normal group turn: the command router runs BEFORE media parsing
+    //    (M1-C6a position, observable even for non-commands), then media,
+    //    then quote expansion, then dispatch.
+    const png = Buffer.from('89504e470d0a1a0a', 'hex').toString('base64')
+    h.client.send(JSON.stringify({
+      post_type: 'message', message_type: 'group', user_id: 10001, group_id: 888, self_id: 10002,
+      message: [
+        { type: 'reply', data: { id: 555 } },
+        { type: 'at', data: { qq: '10002' } },
+        { type: 'text', data: { text: '看看这张' } },
+        { type: 'image', data: { file: 'base64://' + png } },
+      ],
+      raw_message: '[CQ:reply,id=555][CQ:at,qq=10002]看看这张[CQ:image,file=base64://...]',
+      sender: { user_id: 10001, nickname: '小明' },
+    }))
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    expect(order).toEqual(['command', 'media', 'quote', 'dispatch'])
+    const text = h.captured.followups[0].text
+    expect(text).toContain('[引用]引用来源: 被引用的原文')
+    expect(text).toContain('[图片:')
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 30_000)
+
+  it('sendInterim bookkeeping: buffer + id backfill + recall timer, with message-id dedupe (M2-T0 interim timing)', async () => {
+    const h = await makeCmdHarness({ interimRecallMs: 50 })
+    h.sendText('开始长任务')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const session = { id: h.sessionIds[0] }
+    const emit = (id: string, text: string) => {
+      h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+        turn: 1, step: 1, message: { role: 'assistant', id, content: [
+          { type: 'text', text },
+          { type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{}' },
+        ] },
+      }))
+    }
+    emit('im-book-1', '记账中间步')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('记账中间步'))).toBe(true)
+    })
+    const chat = (h.bridge as unknown as { chats: Map<string, {
+      loopBuffer: Array<{ id: string; text: string; sentAt: number }>
+      recallTimers: Map<string, unknown>
+      lastHandledMessageId: string | undefined
+      recalledInterimIds: Set<string>
+    }> }).chats.get('private:10001')!
+    // The completed send is booked: the loop buffer holds the QQ message id
+    // and the text, and a per-message auto-recall timer is armed.
+    expect(chat.loopBuffer).toHaveLength(1)
+    expect(chat.loopBuffer[0].id).toBe('7')
+    expect(chat.loopBuffer[0].text).toBe('记账中间步')
+    expect(chat.recallTimers.has('7')).toBe(true)
+    expect(chat.lastHandledMessageId).toBe('im-book-1')
+
+    // Re-emitting the same message id must not resend or re-book.
+    emit('im-book-1', '重复内容不应发送')
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(h.outbound.filter(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('记账中间步'))).toHaveLength(1)
+    expect(h.outbound.some(f => JSON.stringify(f.params).includes('重复内容不应发送'))).toBe(false)
+    expect(chat.loopBuffer).toHaveLength(1)
+
+    // The 50ms timer revokes the interim alone and records it as recalled.
+    await vi.waitFor(() => expect(h.outbound.some(f => f.action === 'delete_msg')).toBe(true))
+    expect(chat.recalledInterimIds.has('7')).toBe(true)
+
+    // turn/end settles: one summary card for the (already revoked) interim,
+    // and no second recall of the same id.
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('"type":"image"'))).toBe(true)
+    })
+    expect(h.outbound.filter(f => f.action === 'delete_msg')).toHaveLength(1)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 30_000)
+
+  it('settleLoop drains the send chain before snapshotting: an in-flight interim is still summarized and recalled (M2-T0 interim timing)', async () => {
+    const h = await makeCmdHarness({ interimRecallMs: 60_000 })
+    const realCall = h.connection.call.bind(h.connection)
+    h.connection.call = (async (action: string, params: unknown) => {
+      if (action === 'send_msg') await new Promise(resolve => setTimeout(resolve, 120))
+      return await realCall(action, params)
+    }) as never
+    h.sendText('开始长任务')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const session = { id: h.sessionIds[0] }
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 1, message: { role: 'assistant', id: 'im-slow-1', content: [
+        { type: 'text', text: '慢中间步' },
+        { type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{}' },
+      ] },
+    }))
+    // turn/end arrives while the interim send is still in flight (120ms delay).
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('"type":"image"'))).toBe(true)
+    })
+    // Drain-before-snapshot proof: the late interim's id made it into the
+    // snapshot, so its recall follows the summary card.
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'delete_msg')).toBe(true)
+    })
+    const interimIdx = h.outbound.findIndex(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('慢中间步'))
+    const summaryIdx = h.outbound.findIndex(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('"type":"image"'))
+    const deleteIdx = h.outbound.findIndex(f => f.action === 'delete_msg')
+    expect(interimIdx).toBeGreaterThanOrEqual(0)
+    expect(summaryIdx).toBeGreaterThan(interimIdx)
+    expect(deleteIdx).toBeGreaterThan(summaryIdx)
+    // Settled state: the buffer is drained, nothing is deferred, and the
+    // original interim is recalled exactly once.
+    const chat = (h.bridge as unknown as { chats: Map<string, { loopBuffer: unknown[]; loopPending: string | null }> }).chats.get('private:10001')!
+    expect(chat.loopBuffer).toHaveLength(0)
+    expect(chat.loopPending).toBeNull()
+    expect(h.outbound.filter(f => f.action === 'delete_msg')).toHaveLength(1)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 30_000)
+
+  it('golden: private plain-text round produces exactly one text send_msg (M2-T0 golden)', async () => {
+    const h = await makeHarness()
+    h.sendText('你好，帮我看看这个')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    expect(h.captured.followups[0].text).toBe('你好，帮我看看这个')
+    h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('assistant/message', {
+      turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '这是回复' }] },
+    }))
+    h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'send_msg')).toBe(true)
+    })
+    const sends = h.outbound.filter(f => f.action === 'send_msg')
+    expect(sends).toHaveLength(1)
+    expect(sends[0].params).toMatchObject({ user_id: 10001 })
+    expect(sends[0].params.message).toEqual([{ type: 'text', data: { text: '这是回复' } }])
+    expect(h.outbound.some(f => f.action === 'delete_msg' || f.action === 'send_forward_msg' || f.action === 'send_private_forward_msg')).toBe(false)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 30_000)
+
+  it('golden: group @mention with a tool call yields interim → summary card → recall → final in order (M2-T0 golden)', async () => {
+    const h = await makeCmdHarness({ interimRecallMs: 60_000 })
+    h.sendGroupTextAs('帮我查一下', 10001)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    expect(h.captured.followups[0].text).toMatch(/^\[\d{2}:\d{2} 用户10001\(10001\)\]\[@我\] @10002帮我查一下$/)
+    const session = { id: h.sessionIds[0] }
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 1, message: { role: 'assistant', id: 'g-interim-1', content: [
+        { type: 'text', text: '先查资料' },
+        { type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{}' },
+      ] },
+    }))
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('先查资料'))).toBe(true)
+    })
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 2, message: { role: 'assistant', id: 'g-final-1', content: [{ type: 'text', text: '查到了，结论如下' }] },
+    }))
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('查到了，结论如下'))).toBe(true)
+    })
+    const frames = h.outbound.filter(f => ['send_msg', 'delete_msg', 'send_forward_msg', 'send_private_forward_msg'].includes(String(f.action)))
+    const interimIdx = frames.findIndex(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('先查资料'))
+    const summaryIdx = frames.findIndex(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('"type":"image"'))
+    const recallIdx = frames.findIndex(f => f.action === 'delete_msg')
+    const finalIdx = frames.findIndex(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('查到了，结论如下'))
+    expect(interimIdx).toBeGreaterThanOrEqual(0)
+    expect(summaryIdx).toBeGreaterThan(interimIdx)
+    expect(recallIdx).toBeGreaterThan(summaryIdx)
+    expect(finalIdx).toBeGreaterThan(recallIdx)
+    const interimFrame = frames[interimIdx] as { params: { message: Array<{ type: string; data: { text?: string } }> } }
+    expect(interimFrame.params.message).toEqual([{ type: 'text', data: { text: '先查资料' } }])
+    const summaryFrame = frames[summaryIdx] as { params: { message: Array<{ type: string; data: { file?: string } }> } }
+    expect(summaryFrame.params.message).toHaveLength(1)
+    expect(summaryFrame.params.message[0].type).toBe('image')
+    expect(String(summaryFrame.params.message[0].data.file)).toMatch(/^base64:\//)
+    const finalFrame = frames[finalIdx] as { params: { message: Array<{ type: string; data: { text?: string } }> } }
+    expect(finalFrame.params.message).toEqual([{ type: 'text', data: { text: '查到了，结论如下' } }])
+    expect(frames.some(f => f.action === 'send_forward_msg' || f.action === 'send_private_forward_msg')).toBe(false)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 30_000)
+
+  it('golden: a long final renders exactly one t2i image card segment (M2-T0 golden)', async () => {
+    const h = await makeHarness({ textImageThreshold: 10 })
+    h.sendText('长文测试')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const longText = '这是一段非常长的回复内容，长度超过了阈值十，因此渲染为一张文字图卡片发送。'.repeat(3)
+    h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('assistant/message', {
+      turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: longText }] },
+    }))
+    h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('base64://'))).toBe(true)
+    })
+    const sends = h.outbound.filter(f => f.action === 'send_msg')
+    expect(sends).toHaveLength(1)
+    expect(sends[0].params.message).toEqual([{ type: 'image', data: { file: expect.stringMatching(/^base64:\/\//) } }])
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 30_000)
+
+  // TODO(M2-PR3/B8a): concurrent first messages for one chat currently race
+  // ensureChat — chats.set only lands after create+whenIdle, so two dispatches
+  // can both pass the empty-map check and agents.create runs twice with the
+  // same derived session id (double agent; observed on this harness during
+  // M2-T0). Pinning the race green would fossilize a known bug, so this stays
+  // it.todo until B8a fixes it — then assert: exactly ONE agents.create per
+  // chat and the second inbound awaiting the already-created chat. Recorded in
+  // DEVLOG (M2-T0).
+  it.todo('ensureChat concurrent first messages create exactly one agent per chat (M2-T0, unblock with B8a)')
 })
