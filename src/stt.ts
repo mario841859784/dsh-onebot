@@ -8,6 +8,7 @@
  */
 
 import { spawn } from 'node:child_process'
+import { constants } from 'node:fs'
 import { access, mkdir, readFile, readdir, rm } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -67,19 +68,22 @@ function runProcess(
   })
 }
 
-/** Detect a command on PATH. */
-function findCommand(name: string): Promise<string | undefined> {
-  return new Promise(resolve => {
-    const child = spawn('sh', ['-c', 'command -v ' + name], { stdio: ['ignore', 'pipe', 'pipe'] })
-    let out = ''
-    child.stdout.on('data', chunk => {
-      out += String(chunk)
-    })
-    child.on('error', () => resolve(undefined))
-    child.on('close', code => {
-      resolve(code === 0 && out.trim() !== '' ? out.trim().split('\n')[0] : undefined)
-    })
-  })
+/**
+ * Detect a command on PATH by scanning each dir for an executable match
+ * (A8: no shell involved, so the configured name is never shell-interpreted;
+ * builtins/aliases stop being visible — callers only need real binaries).
+ */
+export async function findCommand(name: string): Promise<string | undefined> {
+  for (const dir of (process.env.PATH ?? '').split(process.platform === 'win32' ? ';' : ':')) {
+    const candidate = join(dir, name)
+    try {
+      await access(candidate, constants.X_OK)
+      return candidate
+    } catch {
+      // missing or not executable — try the next dir
+    }
+  }
+  return undefined
 }
 
 /** Locate a whisper.cpp model file for the given model id. */
