@@ -155,6 +155,19 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 全天 | **A3b 门禁接线（commit b187b03，security）**：bridge 新增 mediaSendRoots(sessionId) 访问器——isTurnAdmin 复用 A2 回合级角色语义（不另起第二套角色判定）；roots 口径：member/未知 → 仅 mediaDir，admin → mediaDir + 会话工作区（两支均 realpath 归一）；qq_send_image/voice/video/file 本地路径分支全部过围栏，围栏拒绝转译为中文可行动提示（而非裸抛校验错误）；URL 分支保持原样（NapCat 侧抓取，见边界行）。过渡窗口关闭：tools 恒传 allowedRoots，无兜底放行。tools-gate.spec 新建 +9（门禁逐条）；vitest 149 → 174 |
 | 全天 | **已知边界（后续清理候选）**：①file:// copyFile 分支（NapCat 本地路径场景）未围栏；②qq_send_* 的 URL 出站分支由 NapCat 侧抓取，插件不代理不围栏；③DNS rebinding TOCTOU 未彻底修复——dns.lookup 判定与实际建连之间仍存在时间窗，彻底修需 pinned IP dispatcher（超出本 wave 范围）；④两项清理建议：/ocr 的 fileToBase64 仍为两参调用（未接围栏）、imageSegment 死代码可删 |
 
+### 2026-09-10（M1 Wave3：A8×3/A7/B6/B7/E2/C6a）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **A8-conn WS 帧上限 + reverse 拨入抖动防护（commit 4d32112，security）**：WS 帧上限 `MAX_FRAME_BYTES`=64MiB——取值兼容 get_file base64 大响应（大响应不被误杀）；reverse 拨入抖动防护：60s 滑动窗口限 5 次连接替换，超限拒绝，NapCat 掉线重拨不计入、不受限。**取舍**：抖动防护仅 reverse 侧，forward 行为不变 |
+| 全天 | **A8-stt STT 命令探测去 shell（commit 978e3da，security）**：findCommand 由 `sh -c 'command -v …'` 拼接改为 PATH 逐目录扫描（access X_OK），全仓唯一一处 shell 拼接消除。**取舍**：`command -v` 与 PATH 扫描在 builtin/alias 解析上有差异，但探测对象 ffmpeg/whisper 均为二进制文件，语义等价 |
+| 全天 | **A7 昵称消毒（临时方案）（commit f0a19da，security）**：sanitizeNickname 剥除 CR/LF/控制字符、空白折叠、按码点截断 32（代理对安全，不拆 emoji）；单一收口点接入全部下游（消息前缀/lastNickname/t2i 卡片标题/retry）。**取舍**：正文内伪造前缀行属对话结构注入，归 D5 体系化处理，本包不动 |
+| 全天 | **B6 断线补发队列（commit 00a091c，reliability）**：SendOptions.queuable 白名单仅三个模型最终回复调用点置 true（settleLoop final flush / instant pendingFinal / turn 错误通知），interim/撤回/命令回复不入队；断线入 per-chat FIFO（TTL 5min、上限 20 超限丢最旧），onStatus(true) 按序 drain，drain 中再断线自动重新入队。**取舍**：仅模型最终回复可入队——interim/撤回/命令回复补发无意义（易过期或不该重发） |
+| 全天 | **B7 busy 生命周期 + 入站频控（commit 0a618bc，reliability）**：turn/start 置 busy=true——/retry 防重入首次真正生效、/status 失真修复；新增配置 `rateLimitPerMinute`（默认 30，`0`=禁用）：每 chat 60s 滑动窗口，普通消息超限跳过 dispatch、每窗口至多一条限流提示，命令豁免（配置已进双语 README 配置表） |
+| 全天 | **E2 flush 去抖（commit 0c6121c，reliability）**：onSessionFlush 改走 saveMappingDebounced——映射文件不再每次 flush 全量重写；stop() 强制落盘语义保留 |
+| 全天 | **C6a 清理 + 命令路由前置（commit 4ba73a2，refactor）**：死代码三件删除（imageSegment/cqEscape/恒 false 的 mentioned 字段）；tryHandleCommand 前移到媒体解析/引用展开之前（带图命令不再白付图片下载 I/O）；/ocr 最近图片改惰性两级登记——命令消息中的图片仅在 /ocr 真正执行时才下载，三种场景行为等价核对；retiredSessionIds 数组→Set（磁盘格式不变） |
+| 全天 | **A8-cq 提及门禁收紧（commit da81b7e，security）**：reply 段可判定被回复者时仅回复 bot 自身才算提及（回复群友不再唤醒），不可判定回落现状计为提及。**取舍**：fail-open 有意保留——被回复消息取不到时漏唤醒代价高于误唤醒；requireMention 行为语义变化，双语 README 描述已同步。vitest 174 → 200（+26），tsc 0 错误 |
+| 全天 | **已知边界（后续清理候选）**：①qq_send_* 的 URL 出站分支仍由 NapCat 侧抓取，插件不代理不围栏（承 Wave2）；②DNS rebinding TOCTOU 时间窗仍在，彻底修需 pinned IP dispatcher；③正文内伪造前缀行归 D5；④B6 补发队列为 bridge 层内存态、按 chatId 组织，重启即丢；⑤B7 滑动窗口为内存态（重启清零），每 chat 首条消息不计窗 |
 ---
 
 ## 3. 关键决策与坑（按价值排序）

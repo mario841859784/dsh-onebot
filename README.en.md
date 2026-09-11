@@ -26,7 +26,7 @@ User(QQ) ←→ NapCat ←→ dsh-onebot plugin ←→ dsh Agent (one per chat)
 | Category | Capability |
 |---|---|
 | Connection | Reverse WS (NapCat ws-reverse dials in, default port 8643) or forward WS (plugin dials out, default `ws://127.0.0.1:3001`); auto-reconnect with backoff (2s → 60s) |
-| Inbound | Private/group chats; segment-array-first parsing (CQ string fallback), CQ unescaping, @/reply trigger detection (fail-closed); images resolved from 4 sources (url/base64/file/hash) with auto-shrink (long edge ≤ `imageMaxSize`, GIFs untouched); files received via dual channel (CDN direct link `get_private_file_url` + `get_file` base64/url fallback); face id→emoji/card/poke segment types; quoted messages auto-fetched via `get_msg`; merged forwards auto-expanded via `get_forward_msg` |
+| Inbound | Private/group chats; segment-array-first parsing (CQ string fallback), CQ unescaping, @/reply trigger detection (fail-closed; replies count only when replying to the bot itself); images resolved from 4 sources (url/base64/file/hash) with auto-shrink (long edge ≤ `imageMaxSize`, GIFs untouched); files received via dual channel (CDN direct link `get_private_file_url` + `get_file` base64/url fallback); face id→emoji/card/poke segment types; quoted messages auto-fetched via `get_msg`; merged forwards auto-expanded via `get_forward_msg` |
 | Voice | ffmpeg to 16 kHz WAV + whisper transcription (openai-whisper / whisper.cpp / custom command), falls back to a `[语音]` placeholder on failure |
 | Text image | t2i card renderer (@napi-rs/canvas): headings/bold/italic/strikethrough/quotes/lists/code blocks/tables/inline code pills/color emoji/CJK punctuation rules; same numbers as the Hermes original (800px/26px/rules/right edge 790) |
 | Outbound | Long messages split on sentence boundaries (default ≤100 chars/message); **>150 chars rendered as a t2i text-image card** (AstrBot style: headings/quotes/lists/tables/code blocks/color emoji, auto-fallback to split text on render failure); Markdown stripped to plain QQ text; `[[qq_forward]]` merged-forward cards (group/private); loop interim messages auto-collapsed into a merged-forward card with recall (≥2 buffered → forward + delete_msg, single messages sent as-is); typing indicator (`set_input_status`, private chats only) |
@@ -112,7 +112,8 @@ default). Common options:
 | `reconnectMaxAttempts` | `100` | reconnect give-up limit: auto-reconnect stops after this many consecutive failures (the log includes the limit and recovery guidance); `0` = unlimited retries (backoff capped at 60s) |
 | `accessToken` | empty | OneBot token; **required in reverse mode** — the plugin refuses to start when left empty (fail-closed); may stay empty in forward mode |
 | `botQQ` | empty | bot QQ (empty = auto-learned) |
-| `requireMention` | `true` | groups only respond when @-mentioned or replied to |
+| `requireMention` | `true` | groups only respond when @-mentioned or replying to the bot's own messages (replies to other members don't trigger; when the replied-to message can't be determined, it falls back to counting as mentioned, fail-open) |
+| `rateLimitPerMinute` | `30` | per-chat cap on ordinary messages per minute (60s sliding window): over-limit messages are skipped with a rate-limit notice (at most one per window); commands are exempt; `0` disables |
 | `dmPolicy` | `open` | DM policy: `open`(admins only)/`allowlist`/`disabled` |
 | `groupPolicy` | `open` | group policy: `open`(everyone)/`allowlist`/`disabled` |
 | `adminUsers` | `[]` | admin QQ numbers; or the `ONEBOT_ALLOWED_USERS` env var. **At least one is required**, otherwise DMs (`dmPolicy=open`) and slash commands are unavailable to everyone |
@@ -157,7 +158,7 @@ Private (`dmPolicy`) and group (`groupPolicy`) chats each have three options:
 
 | Option | dmPolicy (private) | groupPolicy (group) |
 |---|---|---|
-| `open` | **Admins only** can DM (`adminUsers`/`ONEBOT_ALLOWED_USERS`; with `allowAllUsers: true` everyone can) | **All groups** can chat (messages gated by `requireMention`: @ or reply required; group members get the `[受限用户:仅问答]` soft limit) |
+| `open` | **Admins only** can DM (`adminUsers`/`ONEBOT_ALLOWED_USERS`; with `allowAllUsers: true` everyone can) | **All groups** can chat (messages gated by `requireMention`: @ or reply-to-bot required; group members get the `[受限用户:仅问答]` soft limit) |
 | `allowlist` | Only the **`allowFrom`** QQ numbers can DM (admin not required) | Only the **`groupAllowFrom`** groups can chat |
 | `disabled` | All DMs rejected | All group chats rejected |
 
@@ -221,7 +222,7 @@ automatically from the system and fixed paths at startup; missing glyphs render 
 
 ```sh
 ./scripts/build.sh                 # compile src/ → lib/
-./node_modules/.bin/vitest run     # 174 tests: unit + real WS peer + full pipeline
+./node_modules/.bin/vitest run     # 200 tests: unit + real WS peer + full pipeline
 ```
 
 Lessons ported from the source DEVLOG:
@@ -243,7 +244,7 @@ Lessons ported from the source DEVLOG:
 
 | Symptom | Cause & fix |
 |---|---|
-| Group chat not responding | With `requireMention: true`, @ or reply is required; @ detection is fail-closed; make sure botQQ was learned from meta events or configured explicitly |
+| Group chat not responding | With `requireMention: true`, @ or reply-to-the-bot is required; @ detection is fail-closed; make sure botQQ was learned from meta events or configured explicitly |
 | Image download 403 | NapCat escapes `&` in URLs to `&amp;` (parsing unescapes automatically); if it still fails, check the media download line in the log |
 | File receive fails | NapCat on a different machine needs the "file-to-URL" switch on, otherwise `get_file` returns an unreachable container path; confirm dsh ↔ NapCat network connectivity |
 | Tofu CJK in text images | Linux without CJK fonts: `apt install fonts-noto-cjk`, and point `fontFiles` at an SC font file |
