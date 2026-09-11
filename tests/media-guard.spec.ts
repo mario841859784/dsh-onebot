@@ -1,7 +1,8 @@
 /**
  * Media download guards (M1-A5): SSRF fence around MediaStore.downloadUrl —
  * protocol whitelist, private/loopback address refusal (literal + resolved),
- * per-hop redirect re-checks, and the mid-stream size cap.
+ * per-hop redirect re-checks, and the mid-stream size cap — plus the outbound
+ * path fence (M1-A3a): resolveContainedPath / fileToBase64 allowedRoots.
  *
  * Rejection paths stub global.fetch to prove it is never reached; DNS is
  * delegated through a wrapper so single tests can fake resolutions. The
@@ -10,13 +11,13 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
-import { readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { lookup } from 'node:dns/promises'
-import { MediaStore } from '../src/media.js'
+import { fileToBase64, MediaStore, resolveContainedPath } from '../src/media.js'
 
 vi.mock('node:dns/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:dns/promises')>()
@@ -151,3 +152,61 @@ describe('MediaStore.downloadUrl SSRF guards (M1-A5)', () => {
   })
 })
 
+describe('resolveContainedPath fence (M1-A3a)', () => {
+  const fence = mkdtempSync(join(tmpdir(), 'media-fence-'))
+  const outside = mkdtempSync(join(tmpdir(), 'media-fence-out-'))
+
+  it('accepts contained paths and returns their realpath', async () => {
+    await writeFile(join(fence, 'a.txt'), 'x')
+    await expect(resolveContainedPath([fence], join(fence, 'a.txt'))).resolves.toBe(join(fence, 'a.txt'))
+    await expect(resolveContainedPath([fence], fence)).resolves.toBe(fence)
+  })
+
+  it('rejects paths outside every root', async () => {
+    await writeFile(join(outside, 'b.txt'), 'x')
+    await expect(resolveContainedPath([fence], join(outside, 'b.txt'))).resolves.toBeNull()
+    await expect(resolveContainedPath([fence], '/etc/hostname')).resolves.toBeNull()
+  })
+
+  it('keeps the separator boundary: root …/foo does not contain …/foobar', async () => {
+    await mkdir(join(fence, 'foo'), { recursive: true })
+    await mkdir(join(fence, 'foobar'), { recursive: true })
+    await writeFile(join(fence, 'foobar', 'x.txt'), 'x')
+    await expect(resolveContainedPath([join(fence, 'foo')], join(fence, 'foobar', 'x.txt'))).resolves.toBeNull()
+    await writeFile(join(fence, 'foo', 'y.txt'), 'x')
+    await expect(resolveContainedPath([join(fence, 'foo')], join(fence, 'foo', 'y.txt'))).resolves.toBe(join(fence, 'foo', 'y.txt'))
+  })
+
+  it('rejects symlink escapes and resolves inner symlinks to the real path', async () => {
+    await writeFile(join(fence, 'in.txt'), 'inner')
+    await writeFile(join(outside, 'out.txt'), 'outer')
+    await symlink(join(outside, 'out.txt'), join(fence, 'escape'))
+    await symlink(join(fence, 'in.txt'), join(fence, 'inside'))
+    await expect(resolveContainedPath([fence], join(fence, 'escape'))).resolves.toBeNull()
+    await expect(resolveContainedPath([fence], join(fence, 'inside'))).resolves.toBe(join(fence, 'in.txt'))
+  })
+
+  it('rejects missing targets and tolerates missing roots', async () => {
+    await expect(resolveContainedPath([fence], join(fence, 'missing.txt'))).resolves.toBeNull()
+    await expect(resolveContainedPath([join(fence, 'no-such-root')], join(fence, 'a.txt'))).resolves.toBeNull()
+    await expect(resolveContainedPath([join(fence, 'no-such-root'), fence], join(fence, 'a.txt'))).resolves.toBe(join(fence, 'a.txt'))
+  })
+})
+
+describe('fileToBase64 allowedRoots (M1-A3a)', () => {
+  it('refuses outside paths and accepts contained ones', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'media-b64-'))
+    const outside = mkdtempSync(join(tmpdir(), 'media-b64-out-'))
+    await writeFile(join(dir, 'ok.txt'), 'contained')
+    await writeFile(join(outside, 'secret.txt'), 'secret')
+    const roots = [dir]
+    await expect(fileToBase64(join(outside, 'secret.txt'), 1000, roots)).rejects.toThrow(/not allowed or does not exist/)
+    await expect(fileToBase64(join(dir, 'ok.txt'), 1000, roots)).resolves.toBe('base64://' + Buffer.from('contained').toString('base64'))
+  })
+
+  it('keeps the legacy uncaged behavior when allowedRoots is omitted (transition until tools wire it)', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'media-b64-out2-'))
+    await writeFile(join(outside, 'legacy.txt'), 'legacy')
+    await expect(fileToBase64(join(outside, 'legacy.txt'), 1000)).resolves.toBe('base64://' + Buffer.from('legacy').toString('base64'))
+  })
+})
