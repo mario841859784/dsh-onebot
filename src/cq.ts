@@ -109,31 +109,36 @@ const CQ_REPLY_RE = /\[CQ:reply,id=([^,\]]+)\]/g
 
 /**
  * Detect whether the message mentions the bot. Prefers the segment array;
- * falls back to CQ-string scanning. Fail-closed: with an unknown bot id and
- * no configured botQQ, group messages are never treated as mentioning us.
+ * falls back to CQ-string scanning. @-detection stays fail-closed: with an
+ * unknown bot id and no configured botQQ, group messages are never treated
+ * as mentioning us. Reply segments count only when the replied-to user is
+ * determinably the bot itself (M1-A8); an undeterminable target (segment
+ * carries no qq) falls back to the previous always-mention behavior — a
+ * deliberate fail-open so tightening the gate never breaks existing setups.
  * @param segments - segment array (may be undefined for CQ-only payloads).
  * @param raw - raw CQ string.
  * @param selfId - learned bot QQ id ('' when unknown).
  * @param botQQ - configured bot QQ id ('' when unset).
- * @param replyId - reply segment already extracted.
  */
 export function detectMention(
   segments: OneBotSegment[] | undefined,
   raw: string,
   selfId: string,
   botQQ: string,
-  replyId?: string,
 ): boolean {
-  if (replyId !== undefined) return true
   const bot = selfId !== '' ? selfId : botQQ
-  if (bot === '') return false
   if (segments !== undefined) {
     for (const seg of segments) {
-      if (seg.type === 'at' && (seg.data.qq === bot || seg.data.qq === 'all')) return true
-      if (seg.type === 'reply') return true
+      if (seg.type === 'reply') {
+        const qq = seg.data.qq ?? ''
+        if (qq === '' || qq === bot) return true
+        continue
+      }
+      if (bot !== '' && seg.type === 'at' && (seg.data.qq === bot || seg.data.qq === 'all')) return true
     }
     return false
   }
+  if (bot === '') return false
   CQ_AT_RE.lastIndex = 0
   for (const m of raw.matchAll(CQ_AT_RE)) {
     if (m[1] === bot || m[1] === 'all') return true

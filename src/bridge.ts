@@ -530,7 +530,7 @@ export class ChatBridge {
     const segments = Array.isArray(event.message) ? event.message as OneBotSegment[] : undefined
     const raw = typeof event.raw_message === 'string' ? event.raw_message : String(event.message ?? '')
     const parsed = parseMessage(segments, raw)
-    const mentioned = detectMention(segments, raw, this.deps.connection.selfId, this.deps.config.botQQ, parsed.replyId)
+    const mentioned = detectMention(segments, raw, this.deps.connection.selfId, this.deps.config.botQQ)
     if (messageType === 'group' && this.deps.config.requireMention && !mentioned) {
       this.deps.log('debug', 'ignoring unmentioned group message in ' + groupId)
       return

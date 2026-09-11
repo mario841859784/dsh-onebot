@@ -73,6 +73,14 @@ describe('detectMention', () => {
   it('detects reply as mention', () => {
     expect(detectMention([{ type: 'reply', data: { id: '1' } }], '', '10001', '')).toBe(true)
   })
+  it('A8: reply mentions only when it determinably replies to the bot itself', () => {
+    // Replied-to user qq == learned selfId → mention.
+    expect(detectMention([{ type: 'reply', data: { id: '1', qq: '10001' } }], '', '10001', '')).toBe(true)
+    // selfId unknown but qq == configured botQQ → mention (same bot-id resolution).
+    expect(detectMention([{ type: 'reply', data: { id: '1', qq: '10002' } }], '', '', '10002')).toBe(true)
+    // Replied-to user is someone else → not a mention.
+    expect(detectMention([{ type: 'reply', data: { id: '1', qq: '999' } }], '', '10001', '')).toBe(false)
+  })
   it('falls back to CQ strings', () => {
     expect(detectMention(undefined, '[CQ:at,qq=10001] hi', '10001', '')).toBe(true)
     expect(detectMention(undefined, 'hi', '10001', '')).toBe(false)
