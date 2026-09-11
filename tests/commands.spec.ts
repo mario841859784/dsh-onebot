@@ -333,7 +333,7 @@ describe('commands', () => {
     // Seed a fake image path and OCR it (ocr_image stubbed above).
     const png = join(h.mediaDir, 'seed.png')
     await writeFile(png, Buffer.from('89504e470d0a1a0a', 'hex'))
-    ;(h.bridge as unknown as { chatLastImagePaths: Map<string, string> }).chatLastImagePaths.set('private:10001', png)
+    ;(h.bridge as unknown as { registry: { getSettings(id: string): { lastImagePath?: string } } }).registry.getSettings('private:10001').lastImagePath = png
     h.sendText('/ocr')
     await vi.waitFor(() => {
       expect(h.outbound.some(f => JSON.stringify(f.params).includes('第一行文字'))).toBe(true)

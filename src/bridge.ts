@@ -8,14 +8,12 @@
  * @module dsh-onebot/bridge
  */
 
-import type { Agent, AgentRegistry, AgentSetup, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
-import { installModelSelection } from '@deepseek-ai/dsh-agent'
+import type { AgentRegistry, ModelSelection } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionId, SessionStore } from '@deepseek-ai/dsh-session'
-import { SessionId as makeSessionId } from '@deepseek-ai/dsh-session'
 import type { Context } from '@deepseek-ai/cordis'
-import { mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { realpath, writeFile } from 'node:fs/promises'
+
 
 import type { OneBotConnection, OneBotEvent } from './connection.js'
 import type { MediaStore } from './media.js'
@@ -27,7 +25,7 @@ import { cqUnescape, detectMention, parseMessage, segmentText } from './cq.js'
 import type { ChatId, UserRole } from './chat.js'
 import {
   buildChatId, buildGroupMessagePrefix, classifyUserRole, dmAllowed, groupAllowed,
-  RESTRICTED_PREFIX, sanitizeNickname, sessionIdForChat, splitChatId,
+  RESTRICTED_PREFIX, sanitizeNickname, splitChatId,
 } from './chat.js'
 import type { AccessPolicyConfig } from './chat.js'
 import { renderTextImage } from './t2i/index.js'
@@ -37,7 +35,8 @@ import { tryHandleCommand as routeCommand, type CommandContext } from './command
 import { relayHostCards as relayCards, type CardRelayContext } from './card-relay.js'
 import { OutboundPipeline } from './outbound.js'
 import type { OutboundSegment, SendOptions } from './outbound.js'
-
+import { ChatRegistry } from './registry.js'
+import type { ChatAgent } from './registry.js'
 /** Resolved runtime configuration for the bridge. */
 export interface BridgeConfig {
   botQQ: string
@@ -84,20 +83,6 @@ export interface SessionPersistenceLike {
     meta: { agentPreset?: string }
     events: readonly { type?: string; data?: { agentPreset?: string } }[]
   }>
-}
-
-/** The preset id a session's own record names: newest logged selection, else the creation header. */
-export function resolveRecordedPreset(
-  inspection: { meta: { agentPreset?: string }; events: readonly { type?: string; data?: { agentPreset?: string } }[] },
-): string | undefined {
-  const events = inspection.events
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index]
-    if (event?.type === 'agent-preset/selected' && typeof event.data?.agentPreset === 'string') {
-      return event.data.agentPreset
-    }
-  }
-  return inspection.meta.agentPreset
 }
 
 /** Workspace registry (dsh-workspace): durable workspace membership. */
@@ -147,57 +132,6 @@ export interface BridgeDeps {
   log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void
 }
 
-/** One live per-chat agent. */
-interface ChatAgent {
-  chatId: ChatId
-  sessionId: SessionId
-  agent: Agent
-  dispose(): Promise<void>
-  /** Per-chat send chain (preserves outbound order). */
-  queue: Promise<unknown>
-  /** Buffered last-step text when interimMessages is off. */
-  pendingFinal: string
-  /** Loop merge (interimMessages on): text deferred one step, awaiting the
-   * next assistant/message to prove it interim — the last one is the final. */
-  loopPending: string | null
-  /** Sent interim messages awaiting turn/end summary (text kept for the recap
-   * t2i card). `sentAt` drives the per-message auto-recall scheduled after
-   * each interim's send completes. */
-  loopBuffer: Array<{ id: string; text: string; sentAt: number }>
-  /** Per-interim 90s (config interimRecallMs) auto-recall timers, keyed by
-   * message id; cleared when turn/end recalls the originals immediately. */
-  recallTimers: Map<string, ReturnType<typeof setTimeout>>
-  /** Interim message ids already auto-revoked by their 90s timer during a long
-   * turn — skipped by the turn/end immediate recall (already gone from QQ). */
-  recalledInterimIds: Set<string>
-  /** Last assistant message id already handled — duplicate session events
-   * (streaming/usage re-emits of the same message) must not re-send it. */
-  lastHandledMessageId: string | undefined
-  /** Whether a turn is currently generating. */
-  busy: boolean
-  /** B7: dispatch timestamps of normal (non-command) messages inside the
-   * current 60s sliding window (rateLimitPerMinute). */
-  dispatchTimes: number[]
-  /** B7: when the last rate-limit notice was sent (at most one per window). */
-  rateLimitNoticeAt: number | undefined
-  typingTimer: ReturnType<typeof setInterval> | undefined
-  lastNickname: string
-  /** Roles of dispatched turns not yet opened (FIFO, consumed at turn/start). */
-  pendingTurnRoles: UserRole[]
-  /** Role of the currently running turn; stays 'member' (fail-closed) until a
-   * turn/start assigns the head of pendingTurnRoles. */
-  activeTurnRole: UserRole
-  /** The last user message text actually fed to the agent (for /retry). */
-  lastFollowup: string | undefined
-  /** Mutable per-agent model selection (installModelSelection-bound); the
-   * /model command swaps `.current` for the next step. */
-  selectionRef: ModelSelectionRef | undefined
-}
-
-/** The mapping file name inside the media dir. */
-const MAPPING_FILE = 'chat-sessions.json'
-/** The retired-session-id file name inside the media dir (append-only). */
-const RETIRED_FILE = 'retired-sessions.json'
 /** Spacing between recall delete_msg calls (NapCat recallMsg is slow; bursting
  * them pushes borderline-late recalls over the server timeout). */
 const RECALL_SPACING_MS = 60
@@ -210,43 +144,37 @@ export class ChatBridge {
   private readonly deps: BridgeDeps
   /** Outbound pipeline (D1-PR2): the same-name bridge methods below delegate here. */
   private readonly outbound: OutboundPipeline
-  private readonly chats = new Map<ChatId, ChatAgent>()
-  private readonly bySession = new Map<string, ChatId>()
-  /** Session-feed listener disposers (freed on stop, so plugin reload/HMR cannot accumulate duplicates). */
+  /** The chat↔session registry (D1-PR3): chats/bySession dual index, the
+   * persistence pair, per-chat settings and the create/resume assembly. */
+  private readonly registry: ChatRegistry
+  /** Live registry indexes — the inbound/outbound/interim/turn links keep
+   * reading them through these same-name views. */
+  private get chats(): Map<ChatId, ChatAgent> { return this.registry.chats }
+  private get bySession(): Map<string, ChatId> { return this.registry.bySession }
   private sessionEventOff: (() => void) | undefined
   private sessionFlushOff: (() => void) | undefined
-  /** Per-chat workspace override set by /workspace (survives /new resets,
-   * so the next agent for the chat is created under the new directory). */
-  private readonly chatWorkspacePaths = new Map<ChatId, string>()
-  /** Per-chat agent-preset override set by /preset (survives /new resets). */
-  private readonly chatPresetOverrides = new Map<ChatId, string>()
-  /** Per-chat outbound-mode override set by /mode (true=interim, false=instant);
-   * undefined defers to the global config. */
-  private readonly chatInterimOverrides = new Map<ChatId, boolean>()
   /** Per-chat FIFO of model final replies parked while disconnected; drained
    * oldest-first on reconnect (M1-B6). */
   private readonly pendingSends = new Map<ChatId, Array<{ text: string; sentAt: number }>>()
-  /** Per-chat goal set by /goal (reminds the model of the objective each turn). */
-  private readonly chatGoals = new Map<ChatId, string>()
-  /** Per-chat most recent inbound image path (for /ocr), survives /new resets. */
-  private readonly chatLastImagePaths = new Map<ChatId, string>()
-  /** C6a: most recent inbound image ref per chat, registered before command
-   * routing so /ocr can resolve it lazily when the message carried a command. */
-  private readonly chatPendingImageRefs = new Map<ChatId, MediaRef>()
   /** Plugin version + git commit, read once for /ver. */
   private pluginVersion: string | undefined
   private pluginCommit: string | undefined
   private stopping = false
-  private mappingSaveTimer: ReturnType<typeof setTimeout> | undefined
-  /** Resolves once the on-disk chat mapping has been loaded. */
-  private mappingLoaded: Promise<void> = Promise.resolve()
-  /** Session ids whose persisted logs are unusable; creates must avoid them. */
-  private readonly brokenSessions = new Set<string>()
-  /** Session ids retired across restarts (durable copy of brokenSessions). */
-  private retiredSessionIds = new Set<string>()
 
   constructor(deps: BridgeDeps) {
     this.deps = deps
+    this.registry = new ChatRegistry({
+      agents: deps.agents,
+      sessionPersistence: deps.sessionPersistence,
+      workspaceRegistry: deps.workspaceRegistry,
+      agentPresets: deps.agentPresets,
+      defaultModel: deps.defaultModel,
+      config: deps.config,
+      log: (level, message) => deps.log(level, message),
+      isStopping: () => this.stopping,
+      onChatRemoved: chat => this.stopTyping(chat),
+      installChannelScope: agentCtx => this.installChannelScope(agentCtx),
+    })
     this.outbound = new OutboundPipeline({
       getChat: chatId => this.chats.get(chatId),
       connected: () => this.deps.connection.connected,
@@ -272,12 +200,12 @@ export class ChatBridge {
       this.deps.log(connected ? 'info' : 'warn', 'OneBot ' + (connected ? 'connected' : 'disconnected'))
       if (connected) this.outbound.drainPendingSends()
     }
-    this.mappingLoaded = this.ready().then(async () => {
-      await this.loadRetired()
-      await this.loadMapping()
+    this.registry.mappingLoaded = this.ready().then(async () => {
+      await this.registry.loadRetired()
+      await this.registry.loadMapping()
     }).then(() => {
       if (this.stopping) return
-      this.deps.log('info', 'bridge ready (' + this.chats.size + ' resumed chat(s))')
+      this.deps.log('info', 'bridge ready (' + this.registry.chats.size + ' resumed chat(s))')
     })
   }
 
@@ -292,22 +220,7 @@ export class ChatBridge {
       this.sessionFlushOff()
       this.sessionFlushOff = undefined
     }
-    if (this.mappingSaveTimer !== undefined) {
-      clearTimeout(this.mappingSaveTimer)
-      this.mappingSaveTimer = undefined
-    }
-    await this.saveMapping()
-    for (const chat of this.chats.values()) {
-      this.stopTyping(chat)
-      this.clearInterimTimers(chat)
-      try {
-        await chat.dispose()
-      } catch (error) {
-        this.deps.log('warn', 'agent dispose failed: ' + String(error))
-      }
-    }
-    this.chats.clear()
-    this.bySession.clear()
+    await this.registry.stop()
   }
 
   /** Map an agent session id back to its chat (for model tools). */
@@ -467,7 +380,7 @@ export class ChatBridge {
     // through to the model). The most recent inbound image is registered from
     // parsed.media up front so /ocr still sees it (resolved lazily there).
     for (const ref of parsed.media) {
-      if (ref.kind === 'image') this.chatPendingImageRefs.set(chatId, ref)
+      if (ref.kind === 'image') this.registry.getSettings(chatId).pendingImageRef = ref
     }
     if (await this.tryHandleCommand(chatId, parsed.text, userId)) {
       return
@@ -552,7 +465,7 @@ export class ChatBridge {
    * so the agent's own plan-mode instruction section governs planning. */
   private prefixTurn(chatId: ChatId, text: string): string {
     let out = text
-    const goal = this.chatGoals.get(chatId)
+    const goal = this.registry.getSettings(chatId).goal
     if (goal !== undefined && goal.trim() !== '') {
       out = '【当前目标】' + goal + '\n' + out
     }
@@ -561,7 +474,7 @@ export class ChatBridge {
 
   /** Per-chat outbound-mode override (/mode), falling back to the global config. */
   private effectiveInterim(chatId: ChatId): boolean {
-    return this.chatInterimOverrides.get(chatId) ?? this.deps.config.interimMessages
+    return this.registry.getSettings(chatId).interimOverride ?? this.deps.config.interimMessages
   }
 
   /** Tool calls whose host-plane UI has no QQ equivalent; relay them to the chat. */
@@ -612,19 +525,20 @@ export class ChatBridge {
       effectiveCwd: chatId => bridge.effectiveCwd(chatId),
       sessionIdFromMapping: chatId => bridge.sessionIdFromMapping(chatId),
       resolvePresetId: chatId => bridge.resolvePresetId(chatId),
-      setChatWorkspacePath: (chatId, path) => bridge.chatWorkspacePaths.set(chatId, path),
-      presetOverride: chatId => bridge.chatPresetOverrides.get(chatId),
-      setPresetOverride: (chatId, id) => { bridge.chatPresetOverrides.set(chatId, id) },
-      hasPresetOverride: chatId => bridge.chatPresetOverrides.has(chatId),
-      interimOverride: chatId => bridge.chatInterimOverrides.get(chatId),
-      setInterimOverride: (chatId, value) => { bridge.chatInterimOverrides.set(chatId, value) },
-      goal: chatId => bridge.chatGoals.get(chatId),
-      setGoal: (chatId, value) => { bridge.chatGoals.set(chatId, value) },
-      deleteGoal: chatId => { bridge.chatGoals.delete(chatId) },
-      lastImagePath: chatId => bridge.chatLastImagePaths.get(chatId),
+      setChatWorkspacePath: (chatId, path) => { bridge.registry.getSettings(chatId).workspacePath = path },
+      presetOverride: chatId => bridge.registry.getSettings(chatId).presetOverride,
+      setPresetOverride: (chatId, id) => { bridge.registry.getSettings(chatId).presetOverride = id },
+      hasPresetOverride: chatId => bridge.registry.getSettings(chatId).presetOverride !== undefined,
+      interimOverride: chatId => bridge.registry.getSettings(chatId).interimOverride,
+      setInterimOverride: (chatId, value) => { bridge.registry.getSettings(chatId).interimOverride = value },
+      goal: chatId => bridge.registry.getSettings(chatId).goal,
+      setGoal: (chatId, value) => { bridge.registry.getSettings(chatId).goal = value },
+      deleteGoal: chatId => { bridge.registry.getSettings(chatId).goal = undefined },
+      lastImagePath: chatId => bridge.registry.getSettings(chatId).lastImagePath,
       takePendingImageRef: chatId => {
-        const ref = bridge.chatPendingImageRefs.get(chatId)
-        if (ref !== undefined) bridge.chatPendingImageRefs.delete(chatId)
+        const settings = bridge.registry.getSettings(chatId)
+        const ref = settings.pendingImageRef
+        if (ref !== undefined) settings.pendingImageRef = undefined
         return ref
       },
       resolveMediaRef: (ref, chatId) => bridge.resolveMediaRef(ref, chatId),
@@ -641,15 +555,7 @@ export class ChatBridge {
 
   /** Read the chat→session mapping file (for /id and /status when no live chat). */
   private async sessionIdFromMapping(chatId: ChatId): Promise<string | undefined> {
-    const file = join(this.deps.config.mediaDir, MAPPING_FILE)
-    try {
-      const text = await readFile(file, 'utf8')
-      const map = JSON.parse(text) as Record<string, string>
-      const id = map[chatId]
-      return typeof id === 'string' && id !== '' ? id : undefined
-    } catch {
-      return undefined
-    }
+    return this.registry.sessionIdFromMapping(chatId)
   }
 
   /**
@@ -695,8 +601,9 @@ export class ChatBridge {
       case 'image':
         // Remember the most recent inbound image for /ocr (survives /new);
         // consume the pre-routing pending ref so /ocr never re-resolves it.
-        this.chatLastImagePaths.set(chatId, resolved.path)
-        this.chatPendingImageRefs.delete(chatId)
+        const settings = this.registry.getSettings(chatId)
+        settings.lastImagePath = resolved.path
+        settings.pendingImageRef = undefined
         return '[图片:' + resolved.path + ']'
       case 'voice': {
         if (this.deps.transcriber.enabled) {
@@ -864,12 +771,6 @@ export class ChatBridge {
       clearTimeout(timer)
       chat.recallTimers.delete(id)
     }
-  }
-
-  /** Clear every pending interim auto-recall timer for a chat (dispose path). */
-  private clearInterimTimers(chat: ChatAgent): void {
-    for (const timer of chat.recallTimers.values()) clearTimeout(timer)
-    chat.recallTimers.clear()
   }
 
   /**
@@ -1078,395 +979,44 @@ export class ChatBridge {
     this.saveMappingDebounced()
   }
 
-  // ------------------------------------------------------------ chat lifecycle
+  // ------------------------------------------------------------ registry facades
 
-  /** C2: default-model wiring shared by the create and resume assembly paths
-   * — agent options for the registry call plus the mutable per-agent
-   * selection ref (undefined when the deployment has no default model). */
-  private modelWiring(): { agentOptions: { provider?: string; model?: string }; selectionRef: ModelSelectionRef | undefined } {
-    const selection = this.deps.defaultModel?.()
-    const agentOptions: { provider?: string; model?: string } = {}
-    if (selection !== undefined) {
-      agentOptions.provider = selection.provider
-      agentOptions.model = selection.model
-    }
-    const selectionRef = selection !== undefined
-      ? { current: selection, assembled: undefined }
-      : undefined
-    return { agentOptions, selectionRef }
-  }
-
-  /** C2: the AgentSetup closure shared by the create and resume assembly
-   * paths. The only difference between the callers is the preset: a resumed
-   * session rejoins the preset it recorded itself; a fresh create reuses the
-   * config/default resolution already recorded in its header meta. */
-  private buildSetup(selectionRef: ModelSelectionRef | undefined, recordedPreset?: string): AgentSetup {
-    return async agentCtx => {
-      this.installChannelScope(agentCtx)
-      await this.joinPreset(agentCtx, recordedPreset)
-      if (selectionRef !== undefined) {
-        installModelSelection(agentCtx, selectionRef)
-      }
-    }
-  }
-
-  /** C2: the ChatAgent literal shared by the create and resume assembly
-   * paths — every field starts at its neutral initial value. `nickname` is
-   * the one deliberate divergence between the callers (create seeds it from
-   * the inbound message, resume keeps the pre-C2 hardcoded ''); pinned by
-   * the M2-C2 characterization tests in bridge.spec.ts. */
-  private createChatAgent(
-    chatId: ChatId,
-    handle: { agent: Agent; dispose(): Promise<void> },
-    selectionRef: ModelSelectionRef | undefined,
-    nickname: string,
-  ): ChatAgent {
-    return {
-      chatId,
-      sessionId: handle.agent.session.id,
-      agent: handle.agent,
-      dispose: () => handle.dispose(),
-      queue: Promise.resolve(),
-      pendingFinal: '',
-      loopPending: null,
-      loopBuffer: [],
-      recallTimers: new Map(),
-      recalledInterimIds: new Set(),
-      lastHandledMessageId: undefined,
-      busy: false,
-      dispatchTimes: [],
-      rateLimitNoticeAt: undefined,
-      typingTimer: undefined,
-      lastNickname: nickname,
-      pendingTurnRoles: [],
-      activeTurnRole: 'member',
-      lastFollowup: undefined,
-      selectionRef,
-    }
-  }
+  /** Same-name delegations to the chat registry (D1-PR3): the command table's
+   * ctx, the interim/turn event links and the outbound pipeline keep calling
+   * the bridge exactly as before the split. */
 
   /** Get (or create) the agent for a chat. */
-  private async ensureChat(chatId: ChatId, nickname: string): Promise<ChatAgent> {
-    const existing = this.chats.get(chatId)
-    if (existing !== undefined) return existing
-    await this.mappingLoaded
-    let sessionId = makeSessionId(sessionIdForChat(chatId))
-    if (this.isSessionIdBlocked(sessionId)) {
-      sessionId = this.freshSessionId(chatId)
-    } else if (await this.hasPersistedLog(sessionId)) {
-      // The bare id still owns a stale on-disk log (e.g. the retired record
-      // was lost in an earlier crash): reusing it would collide, so retire it
-      // NOW and move to a suffixed id instead of failing the chat later.
-      this.retireSession(sessionId)
-      sessionId = this.freshSessionId(chatId)
-    }
-    const { agentOptions, selectionRef } = this.modelWiring()
-    const cwd = this.effectiveCwd(chatId)
-    const presetId = await this.resolvePresetId(chatId)
-    const meta: { cwd: string; agentPreset?: string } = { cwd }
-    if (presetId !== undefined) meta.agentPreset = presetId
-    const setup = this.buildSetup(selectionRef)
-    let handle: { agent: Agent; dispose(): Promise<void> }
-    try {
-      handle = await this.deps.agents.create({
-        sessionId,
-        meta,
-        agentOptions,
-        setup,
-      })
-    } catch (error) {
-      // A stale or foreign persisted log under the same id blocks creation
-      // (id collision). Recover with a fresh suffixed session id instead of
-      // failing the chat.
-      this.retireSession(sessionId)
-      const fallbackId = this.freshSessionId(chatId)
-      this.deps.log('warn', 'agent create failed (' + (error instanceof Error ? error.message : String(error)) + '); retrying with ' + fallbackId)
-      handle = await this.deps.agents.create({
-        sessionId: fallbackId,
-        meta,
-        agentOptions,
-        setup,
-      })
-      this.deps.log('info', 'recovered with fresh session ' + fallbackId + ' for ' + chatId)
-    }
-    // The real session id is authoritative (the fallback path above creates a
-    // different id than the one initially attempted); record it everywhere so
-    // session events route to this chat and the mapping persists the truth.
-    const actualSessionId = handle.agent.session.id
-    await this.attachToWorkspace(actualSessionId, handle.agent.session.header?.cwd)
-    const chat = this.createChatAgent(chatId, handle, selectionRef, nickname)
-    await handle.agent.whenIdle()
-    this.chats.set(chatId, chat)
-    this.bySession.set(actualSessionId, chatId)
-    this.deps.log('info', 'agent created for ' + chatId + ' (session ' + actualSessionId + ')')
-    void this.saveMapping()
-    return chat
+  private ensureChat(chatId: ChatId, nickname: string): Promise<ChatAgent> {
+    return this.registry.ensureChat(chatId, nickname)
   }
 
-  /** Resume persisted chats from the mapping file (best-effort). */
-  private async loadMapping(): Promise<void> {
-    try {
-      const content = await readFile(this.mappingPath(), 'utf8')
-      const mapping = JSON.parse(content) as Record<string, string>
-      this.deps.log('debug', 'mapping file has ' + Object.keys(mapping).length + ' chat(s)')
-      for (const [chatId, sessionId] of Object.entries(mapping)) {
-        this.deps.log('debug', 'attempting resume of ' + chatId + ' @ ' + sessionId)
-        if (this.stopping) return
-        try {
-          const { agentOptions, selectionRef } = this.modelWiring()
-          const recordedPreset = await this.recordedPresetFor(makeSessionId(sessionId))
-          const handle = await this.deps.agents.resume({
-            resumeSessionId: makeSessionId(sessionId),
-            agentOptions,
-            setup: this.buildSetup(selectionRef, recordedPreset),
-          })
-          await this.attachToWorkspace(handle.agent.session.id, handle.agent.session.header?.cwd)
-          // /workspace persistence across restarts: the per-chat override map is
-          // in-memory only, but a session's cwd is frozen in its header. When the
-          // resumed session's directory differs from what this chat would default
-          // to now, restore it as the override so /workspace and future /new
-          // sessions keep using it.
-          const headerCwd = handle.agent.session.header?.cwd
-          if (headerCwd !== undefined && headerCwd !== '' && headerCwd !== this.effectiveCwd()) {
-            this.chatWorkspacePaths.set(chatId, headerCwd)
-            this.deps.log('debug', 'workspace override restored for ' + chatId + ': ' + headerCwd)
-          }
-          const chat = this.createChatAgent(chatId, handle, selectionRef, '')
-          await handle.agent.whenIdle()
-          this.chats.set(chatId, chat)
-          this.bySession.set(handle.agent.session.id, chatId)
-        } catch (error) {
-          this.retireSession(sessionId)
-          this.deps.log('warn', 'resume failed for ' + chatId + ': ' + (error instanceof Error ? error.message : String(error)))
-        }
-      }
-    } catch {
-      // No mapping file yet — fresh start.
-    }
+  private effectiveCwd(chatId?: ChatId): string {
+    return this.registry.effectiveCwd(chatId)
   }
 
-  private mappingPath(): string {
-    return this.deps.config.mediaDir.endsWith('/') || this.deps.config.mediaDir.endsWith('\\')
-      ? this.deps.config.mediaDir + MAPPING_FILE
-      : this.deps.config.mediaDir + '/' + MAPPING_FILE
-  }
-
-  private async saveMapping(): Promise<void> {
-    try {
-      await mkdir(this.deps.config.mediaDir, { recursive: true })
-      const mapping: Record<string, string> = {}
-      for (const chat of this.chats.values()) {
-        mapping[chat.chatId] = chat.sessionId
-      }
-      await writeFile(this.mappingPath(), JSON.stringify(mapping, null, 2), 'utf8')
-    } catch (error) {
-      this.deps.log('warn', 'mapping save failed: ' + (error instanceof Error ? error.message : String(error)))
-    }
+  private resolvePresetId(chatId: ChatId): Promise<string | undefined> {
+    return this.registry.resolvePresetId(chatId)
   }
 
   private saveMappingDebounced(): void {
-    if (this.mappingSaveTimer !== undefined) clearTimeout(this.mappingSaveTimer)
-    this.mappingSaveTimer = setTimeout(() => {
-      this.mappingSaveTimer = undefined
-      void this.saveMapping()
-    }, 2_000).unref()
+    this.registry.saveMappingDebounced()
   }
 
-  // ------------------------------------------------------------ retired ids
-
-  /** Whether a session id must never be created again (this run or on disk). */
-  private isSessionIdBlocked(id: string): boolean {
-    return this.brokenSessions.has(id) || this.retiredSessionIds.has(id)
-  }
-
-  /** A suffixed session id for a chat that avoids every blocked id. */
-  private freshSessionId(chatId: ChatId): SessionId {
-    let id: SessionId
-    do {
-      id = makeSessionId(sessionIdForChat(chatId) + '-' + Date.now().toString(36))
-    } while (this.isSessionIdBlocked(id))
-    return id
-  }
-
-  /** Permanently retire a session id: in-memory plus durable on-disk record,
-   * so a restart never reuses an id whose log collides with a fresh session. */
-  private retireSession(id: string): void {
-    this.brokenSessions.add(id)
-    this.retiredSessionIds.add(id)
-    void this.saveRetired()
-  }
-
-  /** Whether the persistence layer already owns a durable log for this id —
-   * true means reusing the id would collide (stale on-disk log or live entry).
-   * A read failure counts as no log so the caller falls back to the normal
-   * path rather than blocking an id on a transient error. */
-  private async hasPersistedLog(id: SessionId): Promise<boolean> {
-    const persistence = this.deps.sessionPersistence
-    if (persistence === undefined) return false
-    try {
-      await persistence.inspect(id)
-      return true
-    } catch {
-      return false
-    }
-  }
-
-  private retiredPath(): string {
-    return this.deps.config.mediaDir.endsWith('/') || this.deps.config.mediaDir.endsWith('\\')
-      ? this.deps.config.mediaDir + RETIRED_FILE
-      : this.deps.config.mediaDir + '/' + RETIRED_FILE
-  }
-
-  private async loadRetired(): Promise<void> {
-    let content: string
-    try {
-      content = await readFile(this.retiredPath(), 'utf8')
-    } catch (error) {
-      // Only a missing file means "fresh start". ANY other read failure must
-      // not be treated as an empty retired set — a later saveRetired() would
-      // then OVERWRITE the on-disk record with nothing, silently dropping
-      // every retired id (exactly the 2026-08-17 regression: the bare id
-      // lost its retire record and /new collided on the stale log).
-      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-        this.deps.log('warn', 'retired-sessions read failed; keeping the current set: ' + (error instanceof Error ? error.message : String(error)))
-      }
-      return
-    }
-    try {
-      const parsed = JSON.parse(content) as unknown
-      if (Array.isArray(parsed)) {
-        this.retiredSessionIds = new Set(parsed.filter((id): id is string => typeof id === 'string'))
-        for (const id of this.retiredSessionIds) this.brokenSessions.add(id)
-        this.deps.log('debug', 'retired-sessions file has ' + this.retiredSessionIds.size + ' id(s)')
-      } else {
-        this.deps.log('warn', 'retired-sessions file is not a JSON array; ignoring')
-      }
-    } catch (error) {
-      // Corrupt JSON: keep the current in-memory set (never replace it with
-      // an empty array) and warn so a future save does not obliterate history.
-      this.deps.log('warn', 'retired-sessions file is unparsable; keeping the current set: ' + (error instanceof Error ? error.message : String(error)))
-    }
-  }
-
-  private async saveRetired(): Promise<void> {
-    try {
-      await mkdir(this.deps.config.mediaDir, { recursive: true })
-      // Atomic write: a temp file + rename never leaves a half-written file
-      // that a concurrent/future loadRetired could parse into a broken empty set.
-      const tmpPath = this.retiredPath() + '.tmp'
-      await writeFile(tmpPath, JSON.stringify(Array.from(this.retiredSessionIds), null, 2), 'utf8')
-      await rename(tmpPath, this.retiredPath())
-    } catch (error) {
-      this.deps.log('warn', 'retired-sessions save failed: ' + (error instanceof Error ? error.message : String(error)))
-    }
+  private healSessionCollision(chatId: ChatId): Promise<void> {
+    return this.registry.healSessionCollision(chatId)
   }
 
   /**
-   * Recover from a session-log collision: the live session cannot append to
-   * the mismatched on-disk log, so dispose the agent and rebuild the chat on
-   * a fresh session id. The user is asked to resend.
+   * /new: the registry disposes the agent and retires its session id so the
+   * next inbound message creates a brand-new session (fresh history; the old
+   * conversation stays on disk). The confirmation is sent directly through
+   * the outbound pipeline since no agent is left to reply.
    */
-  private async healSessionCollision(chatId: ChatId): Promise<void> {
-    const chat = this.chats.get(chatId)
-    if (chat === undefined) return
-    this.retireSession(chat.sessionId)
-    // The bare derived id shares the chat's stale log; retire it too so the
-    // next ensureChat can never pick it again in this run OR after a restart.
-    this.retireSession(sessionIdForChat(chatId))
-    this.chats.delete(chatId)
-    this.bySession.delete(chat.sessionId)
-    this.stopTyping(chat)
-    try {
-      await chat.dispose()
-    } catch (error) {
-      this.deps.log('warn', 'collision heal dispose failed: ' + String(error))
-    }
-    this.deps.log('warn', 'healed session collision for ' + chatId + '; a fresh session will be created on next message')
-    void this.saveMapping()
-  }
-
-  // ------------------------------------------------------------ workspace & preset
-
-  /**
-   * Effective workspace directory for a chat's sessions: the per-chat
-   * /workspace override when set, else the configured workspacePath, falling
-   * back to the host process cwd.
-   */
-  private effectiveCwd(chatId?: ChatId): string {
-    if (chatId !== undefined) {
-      const override = this.chatWorkspacePaths.get(chatId)
-      if (override !== undefined && override !== '') return override
-    }
-    const configured = this.deps.config.workspacePath
-    return configured !== undefined && configured !== '' ? configured : process.cwd()
-  }
-
-  /**
-   * The preset id a NEW session records and joins: the configured id when set,
-   * else the deployment default — the same resolution the Web surface applies,
-   * so cross-channel sessions carry the same header fact. A roster that cannot
-   * resolve the effective id leaves the header bare and the session uncomposed,
-   * exactly like a failed mount.
-   */
-  private async resolvePresetId(chatId: ChatId): Promise<string | undefined> {
-    // A /preset override wins for this chat (survives /new, so the re-created
-    // session registers the chosen preset in its header).
-    const override = chatId !== undefined ? this.chatPresetOverrides.get(chatId) : undefined
-    if (override !== undefined && override !== '') return override
-    const presets = this.deps.agentPresets
-    if (presets === undefined) return undefined
-    const configured = this.deps.config.agentPreset
-    const wanted = configured !== undefined && configured !== '' ? configured : presets.defaultId
-    try {
-      const preset = await presets.resolve(wanted)
-      return preset.id
-    } catch (error) {
-      this.deps.log('warn', 'agent preset resolve failed; session header records no preset: ' + (error instanceof Error ? error.message : String(error)))
-      return undefined
-    }
-  }
-
-  /**
-   * The preset id a persisted session recorded for itself (newest logged
-   * selection wins, else the creation header), or undefined when it recorded
-   * none or the record cannot be read — a legacy session resumes under the
-   * config/default, preserving its original behavior.
-   */
-  private async recordedPresetFor(sessionId: SessionId): Promise<string | undefined> {
-    const persistence = this.deps.sessionPersistence
-    if (persistence === undefined) return undefined
-    try {
-      const inspection = await persistence.inspect(sessionId)
-      return resolveRecordedPreset(inspection)
-    } catch (error) {
-      this.deps.log('warn', 'preset record read failed for ' + sessionId + ' (falling back to config/default): ' + (error instanceof Error ? error.message : String(error)))
-      return undefined
-    }
-  }
-
-  /**
-   * Join the QQ agent to the configured agent preset (the deployment default
-   * when unset) so its tools/prompt sections/skill catalog resolve against the
-   * preset composition instead of the empty global layer. `preferred` — the
-   * preset the session itself recorded — overrides the config (its history was
-   * produced under that composition; replaying it differently would break the
-   * recorded tool calls); a conflicting config only logs. Best-effort: a
-   * broken preset falls back to the previous behavior rather than failing the
-   * chat.
-   */
-  private async joinPreset(agentCtx: unknown, preferred?: string): Promise<void> {
-    if (this.deps.agentPresets === undefined) return
-    const configured = this.deps.config.agentPreset
-    if (preferred !== undefined && configured !== undefined && configured !== '' && configured !== preferred) {
-      this.deps.log('warn', 'session records preset ' + preferred + ' but plugin config names ' + configured + '; resuming under the recorded preset')
-    }
-    const selected = preferred ?? (configured !== undefined && configured !== '' ? configured : undefined)
-    try {
-      const preset = await this.deps.agentPresets.mount(agentCtx, selected)
-      this.deps.log('debug', 'agent joined preset ' + preset.id)
-    } catch (error) {
-      this.deps.log('warn', 'agent preset mount failed (tools fall back to the global layer): ' + (error instanceof Error ? error.message : String(error)))
-    }
+  private async resetChat(chatId: ChatId): Promise<void> {
+    await this.registry.resetChat(chatId)
+    this.sendToChat(chatId, '✅ 已开启新会话，下一条消息将进入全新会话，旧对话历史保留在之前的会话中。').catch((error: unknown) => {
+      this.deps.log('warn', 'reset notice send failed: ' + String(error))
+    })
   }
 
   /**
@@ -1486,76 +1036,6 @@ export class ChatBridge {
       maxImageBytes: this.deps.config.maxImageBytes,
       maxVoiceBytes: this.deps.config.maxVoiceBytes,
       maxFileBytes: this.deps.config.maxFileBytes,
-    })
-  }
-
-  /**
-   * Attach a chat session to the workspace owning its header cwd, so QQ
-   * sessions group under a workspace in the GUI instead of "Ungrouped".
-   * Best-effort: failure only logs.
-   *
-   * A workspace is auto-created only when the session cwd matches the
-   * configured workspacePath (new sessions). A resumed session carrying a
-   * foreign cwd (e.g. created under an earlier host cwd) is attached only when
-   * a workspace already owns that path — never auto-created, so legacy
-   * sessions cannot spawn accidental workspaces.
-   */
-  private async attachToWorkspace(sessionId: string, headerCwd: string | undefined): Promise<void> {
-    const registry = this.deps.workspaceRegistry
-    if (registry === undefined) return
-    try {
-      if (headerCwd === undefined || headerCwd === '') {
-        this.deps.log('warn', 'workspace attach skipped: session header carries no cwd')
-        return
-      }
-      const workspace = await registry.resolveByPath(headerCwd)
-      if (workspace === undefined) {
-        if (headerCwd !== this.effectiveCwd()) {
-          this.deps.log('debug', 'workspace attach skipped: no workspace owns ' + headerCwd + ' and it differs from the configured workspacePath')
-          return
-        }
-        const created = await registry.create(headerCwd)
-        this.deps.log('info', 'created workspace for ' + headerCwd)
-        await created.attachSession(sessionId)
-        this.deps.log('info', 'attached session ' + sessionId + ' to workspace ' + headerCwd)
-        return
-      }
-      await workspace.attachSession(sessionId)
-      this.deps.log('info', 'attached session ' + sessionId + ' to workspace ' + headerCwd)
-    } catch (error) {
-      this.deps.log('warn', 'workspace attach failed for ' + sessionId + ': ' + (error instanceof Error ? error.message : String(error)))
-    }
-  }
-
-  /**
-   * /new: dispose the current chat agent and retire its session id, so the
-   * next inbound message creates a brand-new session (fresh history; the old
-   * conversation stays on disk). The confirmation is sent directly through
-   * the outbound pipeline since no agent is left to reply.
-   */
-  private async resetChat(chatId: ChatId): Promise<void> {
-    const chat = this.chats.get(chatId)
-    if (chat !== undefined) {
-      this.stopTyping(chat)
-      this.clearInterimTimers(chat)
-      this.retireSession(chat.sessionId)
-      // The bare derived id is forever unsafe for this chat once its history
-      // has moved to a suffixed id: its on-disk log (if any) would collide
-      // with any future bare-id session. Retire it up front so a /new after a
-      // restart — when only the retired file protects us — stays safe.
-      this.retireSession(sessionIdForChat(chatId))
-      this.chats.delete(chatId)
-      this.bySession.delete(chat.sessionId)
-      try {
-        await chat.dispose()
-      } catch (error) {
-        this.deps.log('warn', 'reset dispose failed: ' + (error instanceof Error ? error.message : String(error)))
-      }
-      this.deps.log('info', 'reset chat ' + chatId + ' (old session ' + chat.sessionId + ' retired)')
-    }
-    void this.saveMapping()
-    this.sendToChat(chatId, '✅ 已开启新会话，下一条消息将进入全新会话，旧对话历史保留在之前的会话中。').catch((error: unknown) => {
-      this.deps.log('warn', 'reset notice send failed: ' + String(error))
     })
   }
 

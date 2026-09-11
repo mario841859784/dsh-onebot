@@ -196,7 +196,7 @@ describe('ChatBridge.mediaSendRoots (M1-A3b roots口径)', () => {
     const h = await makeHarness()
     const sessionId = 'acc-ws'
     const chatId = h.seed(sessionId, 'admin')
-    ;(h.bridge as unknown as { chatWorkspacePaths: Map<string, string> }).chatWorkspacePaths.set(chatId, h.otherDir)
+    ;(h.bridge as unknown as { registry: { getSettings(id: string): { workspacePath?: string } } }).registry.getSettings(chatId).workspacePath = h.otherDir
     expect(await h.bridge.mediaSendRoots(sessionId)).toEqual({
       roots: [realpathSync(h.mediaDir), realpathSync(h.otherDir)],
       isTurnAdmin: true,
