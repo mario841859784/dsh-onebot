@@ -175,6 +175,12 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 全天 | **C6a 清理 + 命令路由前置（commit 4ba73a2，refactor）**：死代码三件删除（imageSegment/cqEscape/恒 false 的 mentioned 字段）；tryHandleCommand 前移到媒体解析/引用展开之前（带图命令不再白付图片下载 I/O）；/ocr 最近图片改惰性两级登记——命令消息中的图片仅在 /ocr 真正执行时才下载，三种场景行为等价核对；retiredSessionIds 数组→Set（磁盘格式不变） |
 | 全天 | **A8-cq 提及门禁收紧（commit da81b7e，security）**：reply 段可判定被回复者时仅回复 bot 自身才算提及（回复群友不再唤醒），不可判定回落现状计为提及。**取舍**：fail-open 有意保留——被回复消息取不到时漏唤醒代价高于误唤醒；requireMention 行为语义变化，双语 README 描述已同步。vitest 174 → 200（+26），tsc 0 错误 |
 | 全天 | **已知边界（后续清理候选）**：①qq_send_* 的 URL 出站分支仍由 NapCat 侧抓取，插件不代理不围栏（承 Wave2）；②DNS rebinding TOCTOU 时间窗仍在，彻底修需 pinned IP dispatcher；③正文内伪造前缀行归 D5；④B6 补发队列为 bridge 层内存态、按 chatId 组织，重启即丢；⑤B7 滑动窗口为内存态（重启清零），每 chat 首条消息不计窗 |
+
+### 2026-09-10（M2 启动：T0 测试加固）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **M2-T0 启动（bridge.ts 五拆的测试安全网）**：用户确认生产已升 v0.2.1（90129d2 全量在产）；R5 NapCat 4401 重试 24h 观察由用户豁免收口；trim-cli 会话已建立，真机验证能力就位。T0 范围：①特征化测试补齐（命令路由全表/出站闸门矩阵/registry 持久化 round-trip/入站管线顺序/interim 时序/golden 快照/ensureChat 并发现状）；②tests/README.md 五拆迁移地图（现有用例 → commands/inbound/outbound/interim/registry/card-relay 目标 spec）；③打 pre-refactor-baseline tag。铁律：src/ 零改动，纯特征化钉现状 |
 ---
 
 ## 3. 关键决策与坑（按价值排序）
