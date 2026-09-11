@@ -138,6 +138,13 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 全天 | **A6 入站图片解码炸弹预检（commit 4a4ac96）**：loadImage 前轻量头解析（PNG IHDR / JPEG SOF），声明尺寸超 `MAX_DECODE_EDGE`（8192，image-shrink.ts 命名导出常量）→ 解码前中止（return undefined，调用方保留原图），杜绝 30000×30000 声明 PNG 的 ~3.6GB Skia 分配 OOM；畸形/截断头回落原解码路径。**边界**：WebP/AVIF/HEIF 未预检（QQ 入站主体为 PNG/JPEG）；假阴性=放行（与改前行为一致，不新增失败面）。image-shrink.spec +7 |
 | 全天 | **A2 canEditFiles 回合级角色固化（TOCTOU 修复，commit 23c0523）**：`chat.lastUserId`（最近入站用户）已删，改 `pendingTurnRoles` FIFO + `activeTurnRole`——**在宿主 `turn/start` 事件点 shift 固化**（静态证据链查证 dsh-session 暴露 turn/start 且与 turn/end 同 feed），canEditFiles 只读当前运行回合自己的角色；队列空/未知路径 fail-closed 为 member；/retry 传 admin（命令门禁已在 tryHandleCommand）；/new 与 healSessionCollision 随 ChatAgent 对象消亡结构性清队。**机制否决推演（给未来维护者的重要上下文）**：否决「turn/end 时 shift」方案——交错场景推演证明存在双向错位（管理员回合被误拒、成员后续回合被误放行）；turn/start-shift 的 FIFO 头严格对应当前运行回合，无此错位。**遗留**：turn/start 送达依赖静态证据链，真机冒烟建议加 debug 观测；若宿主不送 turn/start，后果为全员 fail-closed member（安全方向）。bridge.spec +4 |
 
+### 2026-09-10（R1 生产切换收口 + trim-cli 真机验证能力接入）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **R1 生产切换完成（用户执行）**：NapCat ws-reverse 与插件 accessToken 两端配齐、新 lib 部署、dsh 重启——M0 的安全价值（封死未认证 RCE 口子）正式在生产兑现；R5 随之进入 24h 观察窗（NapCat 真实客户端对 4401 拒绝的重试行为，此前仅 e2e 一次实测）；生产 lib 对应 v0.2.0（M1 Wave1 的 4 个 commit 尚未构建进生产 lib，属正常迭代节奏，Wave1 本就属 M1 迭代） |
+| 全天 | **trim-cli 技能接入编排环境**：TRIM NAS（fnOS）命令行客户端——WebSocket 连本机 ws://localhost:5666，登录后可查应用中心/Docker 容器/日志中心/文件/存储/系统监控，支持真机验证 workflow；来源为飞牛论坛附件（club.fnnas.com 附件需论坛登录，无法匿名抓取，技能本体已预装就位，无需再下载）；意义：后续 M1 回归包的「生产部署检查单」「24h 磁盘观察」等真机验证项可由编排方经 trim-cli 直接执行，不再依赖用户手工回报 |
+
 ---
 
 ## 3. 关键决策与坑（按价值排序）
