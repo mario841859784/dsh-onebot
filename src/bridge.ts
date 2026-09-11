@@ -30,7 +30,7 @@ import { cqUnescape, detectMention, parseMessage, segmentText } from './cq.js'
 import type { ChatId, UserRole } from './chat.js'
 import {
   buildChatId, buildGroupMessagePrefix, classifyUserRole, dmAllowed, groupAllowed,
-  RESTRICTED_PREFIX, sessionIdForChat, splitChatId,
+  RESTRICTED_PREFIX, sanitizeNickname, sessionIdForChat, splitChatId,
 } from './chat.js'
 import type { AccessPolicyConfig } from './chat.js'
 import { extractForwardBlocks, scanSensitive, splitLongText, stripMarkdown } from './split.js'
@@ -477,11 +477,13 @@ export class ChatBridge {
     }
 
     const sender = event.sender ?? {}
-    const nickname = typeof sender.card === 'string' && sender.card !== ''
+    // Single choke point: whatever the sender controls must stay single-line
+    // and bounded before it feeds the prefix and lastNickname (M1-A7).
+    const nickname = sanitizeNickname(typeof sender.card === 'string' && sender.card !== ''
       ? sender.card
       : typeof sender.nickname === 'string' && sender.nickname !== ''
         ? sender.nickname
-        : userId
+        : userId)
     const chatId = buildChatId(messageType === 'private' ? 'private' : 'group', messageType === 'private' ? userId : groupId)
 
     // A new user message starts a fresh reply cycle: drop any unmerged loop
