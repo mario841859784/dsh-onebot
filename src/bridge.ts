@@ -1700,6 +1700,71 @@ export class ChatBridge {
 
   // ------------------------------------------------------------ chat lifecycle
 
+  /** C2: default-model wiring shared by the create and resume assembly paths
+   * — agent options for the registry call plus the mutable per-agent
+   * selection ref (undefined when the deployment has no default model). */
+  private modelWiring(): { agentOptions: { provider?: string; model?: string }; selectionRef: ModelSelectionRef | undefined } {
+    const selection = this.deps.defaultModel?.()
+    const agentOptions: { provider?: string; model?: string } = {}
+    if (selection !== undefined) {
+      agentOptions.provider = selection.provider
+      agentOptions.model = selection.model
+    }
+    const selectionRef = selection !== undefined
+      ? { current: selection, assembled: undefined }
+      : undefined
+    return { agentOptions, selectionRef }
+  }
+
+  /** C2: the AgentSetup closure shared by the create and resume assembly
+   * paths. The only difference between the callers is the preset: a resumed
+   * session rejoins the preset it recorded itself; a fresh create reuses the
+   * config/default resolution already recorded in its header meta. */
+  private buildSetup(selectionRef: ModelSelectionRef | undefined, recordedPreset?: string): AgentSetup {
+    return async agentCtx => {
+      this.installChannelScope(agentCtx)
+      await this.joinPreset(agentCtx, recordedPreset)
+      if (selectionRef !== undefined) {
+        installModelSelection(agentCtx, selectionRef)
+      }
+    }
+  }
+
+  /** C2: the ChatAgent literal shared by the create and resume assembly
+   * paths — every field starts at its neutral initial value. `nickname` is
+   * the one deliberate divergence between the callers (create seeds it from
+   * the inbound message, resume keeps the pre-C2 hardcoded ''); pinned by
+   * the M2-C2 characterization tests in bridge.spec.ts. */
+  private createChatAgent(
+    chatId: ChatId,
+    handle: { agent: Agent; dispose(): Promise<void> },
+    selectionRef: ModelSelectionRef | undefined,
+    nickname: string,
+  ): ChatAgent {
+    return {
+      chatId,
+      sessionId: handle.agent.session.id,
+      agent: handle.agent,
+      dispose: () => handle.dispose(),
+      queue: Promise.resolve(),
+      pendingFinal: '',
+      loopPending: null,
+      loopBuffer: [],
+      recallTimers: new Map(),
+      recalledInterimIds: new Set(),
+      lastHandledMessageId: undefined,
+      busy: false,
+      dispatchTimes: [],
+      rateLimitNoticeAt: undefined,
+      typingTimer: undefined,
+      lastNickname: nickname,
+      pendingTurnRoles: [],
+      activeTurnRole: 'member',
+      lastFollowup: undefined,
+      selectionRef,
+    }
+  }
+
   /** Get (or create) the agent for a chat. */
   private async ensureChat(chatId: ChatId, nickname: string): Promise<ChatAgent> {
     const existing = this.chats.get(chatId)
@@ -1715,26 +1780,12 @@ export class ChatBridge {
       this.retireSession(sessionId)
       sessionId = this.freshSessionId(chatId)
     }
-    const selection = this.deps.defaultModel?.()
-    const agentOptions: { provider?: string; model?: string } = {}
-    if (selection !== undefined) {
-      agentOptions.provider = selection.provider
-      agentOptions.model = selection.model
-    }
+    const { agentOptions, selectionRef } = this.modelWiring()
     const cwd = this.effectiveCwd(chatId)
     const presetId = await this.resolvePresetId(chatId)
     const meta: { cwd: string; agentPreset?: string } = { cwd }
     if (presetId !== undefined) meta.agentPreset = presetId
-    const selectionRef = selection !== undefined
-      ? { current: selection, assembled: undefined }
-      : undefined
-    const setup: AgentSetup = async agentCtx => {
-      this.installChannelScope(agentCtx)
-      await this.joinPreset(agentCtx)
-      if (selectionRef !== undefined) {
-        installModelSelection(agentCtx, selectionRef)
-      }
-    }
+    const setup = this.buildSetup(selectionRef)
     let handle: { agent: Agent; dispose(): Promise<void> }
     try {
       handle = await this.deps.agents.create({
@@ -1763,28 +1814,7 @@ export class ChatBridge {
     // session events route to this chat and the mapping persists the truth.
     const actualSessionId = handle.agent.session.id
     await this.attachToWorkspace(actualSessionId, handle.agent.session.header?.cwd)
-    const chat: ChatAgent = {
-      chatId,
-      sessionId: actualSessionId,
-      agent: handle.agent,
-      dispose: () => handle.dispose(),
-      queue: Promise.resolve(),
-      pendingFinal: '',
-      loopPending: null,
-      loopBuffer: [],
-      recallTimers: new Map(),
-      recalledInterimIds: new Set(),
-      lastHandledMessageId: undefined,
-      busy: false,
-      dispatchTimes: [],
-      rateLimitNoticeAt: undefined,
-      typingTimer: undefined,
-      lastNickname: nickname,
-      pendingTurnRoles: [],
-      activeTurnRole: 'member',
-      lastFollowup: undefined,
-      selectionRef,
-    }
+    const chat = this.createChatAgent(chatId, handle, selectionRef, nickname)
     await handle.agent.whenIdle()
     this.chats.set(chatId, chat)
     this.bySession.set(actualSessionId, chatId)
@@ -1803,26 +1833,12 @@ export class ChatBridge {
         this.deps.log('debug', 'attempting resume of ' + chatId + ' @ ' + sessionId)
         if (this.stopping) return
         try {
-          const selection = this.deps.defaultModel?.()
-          const agentOptions: { provider?: string; model?: string } = {}
-          const selectionRef = selection !== undefined
-            ? { current: selection, assembled: undefined }
-            : undefined
-          if (selection !== undefined) {
-            agentOptions.provider = selection.provider
-            agentOptions.model = selection.model
-          }
+          const { agentOptions, selectionRef } = this.modelWiring()
           const recordedPreset = await this.recordedPresetFor(makeSessionId(sessionId))
           const handle = await this.deps.agents.resume({
             resumeSessionId: makeSessionId(sessionId),
             agentOptions,
-            setup: async agentCtx => {
-              this.installChannelScope(agentCtx)
-              await this.joinPreset(agentCtx, recordedPreset)
-              if (selectionRef !== undefined) {
-                installModelSelection(agentCtx, selectionRef)
-              }
-            },
+            setup: this.buildSetup(selectionRef, recordedPreset),
           })
           await this.attachToWorkspace(handle.agent.session.id, handle.agent.session.header?.cwd)
           // /workspace persistence across restarts: the per-chat override map is
@@ -1835,28 +1851,7 @@ export class ChatBridge {
             this.chatWorkspacePaths.set(chatId, headerCwd)
             this.deps.log('debug', 'workspace override restored for ' + chatId + ': ' + headerCwd)
           }
-          const chat: ChatAgent = {
-            chatId,
-            sessionId: handle.agent.session.id,
-            agent: handle.agent,
-            dispose: () => handle.dispose(),
-            queue: Promise.resolve(),
-            pendingFinal: '',
-            loopPending: null,
-            loopBuffer: [],
-            recallTimers: new Map(),
-            recalledInterimIds: new Set(),
-            lastHandledMessageId: undefined,
-            busy: false,
-            dispatchTimes: [],
-            rateLimitNoticeAt: undefined,
-            typingTimer: undefined,
-            lastNickname: '',
-            pendingTurnRoles: [],
-            activeTurnRole: 'member',
-            lastFollowup: undefined,
-            selectionRef,
-          }
+          const chat = this.createChatAgent(chatId, handle, selectionRef, '')
           await handle.agent.whenIdle()
           this.chats.set(chatId, chat)
           this.bySession.set(handle.agent.session.id, chatId)

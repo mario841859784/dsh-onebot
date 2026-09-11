@@ -17,7 +17,7 @@ import { Transcriber } from '../src/stt.js'
 function makeFakeAgents(
   sessionIds: string[],
   captured: { followups: Array<{ text: string; sessionId: string }>; createdMeta?: Array<{ cwd?: string; agentPreset?: string }> },
-  opts?: { failCreateFor?: string },
+  opts?: { failCreateFor?: string; resumeOk?: boolean },
 ) {
   const agents = {
     create: vi.fn(async (options: { sessionId: string; meta?: { cwd?: string; agentPreset?: string }; setup?: (agentCtx: unknown) => unknown }) => {
@@ -50,15 +50,31 @@ function makeFakeAgents(
       }
       return { agent, dispose: async () => undefined }
     }),
-    resume: vi.fn(async () => {
-      throw new Error('not persisted')
+    resume: vi.fn(async (options: { resumeSessionId: string; setup?: (agentCtx: unknown) => unknown }) => {
+      if (opts?.resumeOk !== true) throw new Error('not persisted')
+      const sessionId = String(options.resumeSessionId)
+      sessionIds.push(sessionId)
+      const agent = {
+        session: { id: sessionId, seq: 1, header: { cwd: process.cwd() } },
+        status: 'idle',
+        cancel: () => { agent.status = 'idle' },
+        followup: (message: { content: Array<{ type: string; text?: string }> }) => {
+          const text = message.content.map(b => b.text ?? '').join('')
+          captured.followups.push({ text, sessionId })
+        },
+        whenIdle: async () => undefined,
+      }
+      if (typeof options.setup === 'function') {
+        await options.setup({ on: () => () => undefined, systemPrompt: { section: () => () => undefined }, tools: { register: () => () => undefined } })
+      }
+      return { agent, dispose: async () => undefined }
     }),
   }
   return agents
 }
 
 /** Full bridge + WS harness: inbound via real WebSocket, outbound captured. */
-async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number }) {
+async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; resumeOk?: boolean }) {
   const ctx = new Context()
   const sessionIds: string[] = []
   const captured = { followups: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[] }
@@ -3077,6 +3093,79 @@ describe('ChatBridge', () => {
     await h.bridge.stop()
     await h.connection.stop()
   }, 30_000)
+
+  // ------------------------------------------------------------ M2-C2: shared assembly (create vs resume)
+
+  function chatsOf(h: { bridge: unknown }): Map<string, { lastNickname: string } & Record<string, unknown>> {
+    return (h.bridge as unknown as { chats: Map<string, { lastNickname: string } & Record<string, unknown>> }).chats
+  }
+
+  it('characterization (M2-C2): lastNickname source per assembly path — create seeds it from the message, resume starts empty and the first message re-seeds it', async () => {
+    const h1 = await makeHarness()
+    h1.sendText('你好')
+    await vi.waitFor(() => expect(h1.captured.followups).toHaveLength(1))
+    // Create path (ensureChat): the inbound message's sanitized nickname seeds lastNickname.
+    expect(chatsOf(h1).get('private:10001')!.lastNickname).toBe('小明')
+    h1.client.close()
+    await h1.bridge.stop()
+    await h1.connection.stop()
+
+    // Resume path (loadMapping): the mapping file records no nickname, the
+    // resumed agent starts with the pre-C2 hardcoded '' and the first
+    // post-resume message re-seeds it from its own sender.
+    const h2 = await makeHarness({ mediaDir: h1.mediaDir, resumeOk: true })
+    await vi.waitFor(() => expect(chatsOf(h2).get('private:10001')).toBeDefined())
+    expect(chatsOf(h2).get('private:10001')!.lastNickname).toBe('')
+    h2.sendText('重启后第一条')
+    await vi.waitFor(() => expect(h2.captured.followups).toHaveLength(1))
+    expect(chatsOf(h2).get('private:10001')!.lastNickname).toBe('小明')
+    h2.client.close()
+    await h2.bridge.stop()
+    await h2.connection.stop()
+  })
+
+  it('field snapshot (M2-C2): create and resume assemble identical initial ChatAgent state apart from the intended lastNickname divergence', async () => {
+    // Assembly-initial state only (identity/handle fields excluded; runtime
+    // message effects excluded by driving ensureChat directly — the registry
+    // internal-path direct call is this file's convention).
+    const snapshot = (c: Record<string, unknown>) => ({
+      pendingFinal: c.pendingFinal,
+      loopPending: c.loopPending,
+      loopBuffer: c.loopBuffer,
+      recallTimers: c.recallTimers,
+      recalledInterimIds: c.recalledInterimIds,
+      lastHandledMessageId: c.lastHandledMessageId,
+      busy: c.busy,
+      dispatchTimes: c.dispatchTimes,
+      rateLimitNoticeAt: c.rateLimitNoticeAt,
+      pendingTurnRoles: c.pendingTurnRoles,
+      activeTurnRole: c.activeTurnRole,
+      lastFollowup: c.lastFollowup,
+      selectionRef: c.selectionRef,
+      typingTimer: c.typingTimer,
+    })
+    const h1 = await makeHarness()
+    await (h1.bridge as unknown as { ensureChat(chatId: string, nickname: string): Promise<unknown> }).ensureChat('private:10001', '小明')
+    const created = chatsOf(h1).get('private:10001')!
+    const createdSnapshot = snapshot(created)
+    h1.client.close()
+    await h1.bridge.stop()
+    await h1.connection.stop()
+
+    // Resume path: loadMapping assembles the resumed agent from the mapping.
+    const h2 = await makeHarness({ mediaDir: h1.mediaDir, resumeOk: true })
+    await vi.waitFor(() => expect(chatsOf(h2).get('private:10001')).toBeDefined())
+    const resumed = chatsOf(h2).get('private:10001')!
+    expect(snapshot(resumed)).toEqual(createdSnapshot)
+    // The one deliberate divergence, kept per caller in the C2 factory:
+    expect(created.lastNickname).toBe('小明')
+    expect(resumed.lastNickname).toBe('')
+    // Identity fields differ by construction (two distinct agent instances).
+    expect(created.agent).not.toBe(resumed.agent)
+    h2.client.close()
+    await h2.bridge.stop()
+    await h2.connection.stop()
+  })
 
   it('inbound pipeline order: policy gate → mention gate → command router → media → quote → dispatch (M2-T0 pipeline)', async () => {
     const h = await makeCmdHarness()
