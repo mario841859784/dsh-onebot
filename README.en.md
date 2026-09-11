@@ -107,10 +107,10 @@ default). Common options:
 | Key | Default | Description |
 |---|---|---|
 | `mode` | `reverse` | `reverse`/`forward` |
-| `host` / `port` | `0.0.0.0` / `8643` | reverse listen address |
+| `host` / `port` | `127.0.0.1` / `8643` | reverse listen address; for cross-machine deployment (NapCat dialing in from another machine), explicitly set this to `0.0.0.0` |
 | `url` | `ws://127.0.0.1:3001` | forward target |
 | `reconnectMaxAttempts` | `100` | reconnect give-up limit: auto-reconnect stops after this many consecutive failures (the log includes the limit and recovery guidance); `0` = unlimited retries (backoff capped at 60s) |
-| `accessToken` | empty | OneBot token |
+| `accessToken` | empty | OneBot token; **required in reverse mode** — the plugin refuses to start when left empty (fail-closed); may stay empty in forward mode |
 | `botQQ` | empty | bot QQ (empty = auto-learned) |
 | `requireMention` | `true` | groups only respond when @-mentioned or replied to |
 | `dmPolicy` | `open` | DM policy: `open`(admins only)/`allowlist`/`disabled` |
@@ -128,6 +128,8 @@ default). Common options:
 | `imageMaxSize` | `2048` | inbound image long-edge limit (px): larger images are proportionally shrunk before reaching the vision model (transparent PNGs preserved, GIFs untouched); `<=0` disables |
 | `agentPreset` | empty | agent preset for sessions (empty = default) |
 | `workspacePath` | empty | workspace for sessions (empty = host cwd) |
+
+> ⚠️ **BREAKING (M0 security hardening)**: in reverse mode an empty `accessToken` refuses to start (fail-closed); the `host` default changed from `0.0.0.0` to `127.0.0.1` (loopback only) — cross-machine deployments must explicitly configure `host: 0.0.0.0`.
 
 Env vars: `ONEBOT_ALLOWED_USERS` (comma-separated admins), `ONEBOT_ALLOW_ALL_USERS=true` (development).
 
