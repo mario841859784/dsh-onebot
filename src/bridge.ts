@@ -14,15 +14,13 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionId, SessionStore } from '@deepseek-ai/dsh-session'
 import { SessionId as makeSessionId } from '@deepseek-ai/dsh-session'
 import type { Context } from '@deepseek-ai/cordis'
-import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-import { mkdir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 
 import type { OneBotConnection, OneBotEvent } from './connection.js'
 import { OneBotActionError, OneBotNotConnectedError } from './connection.js'
 import type { MediaStore } from './media.js'
-import { extForInboundName, fileToBase64 } from './media.js'
+import { extForInboundName } from './media.js'
 import type { Transcriber } from './stt.js'
 import { transcriptLabel } from './stt.js'
 import type { OneBotSegment, MediaRef } from './cq.js'
@@ -37,6 +35,7 @@ import { extractForwardBlocks, scanSensitive, splitLongText, stripMarkdown } fro
 import { renderTextImage } from './t2i/index.js'
 import { buildPlatformPrompt } from './prompt.js'
 import { registerTools } from './tools.js'
+import { tryHandleCommand as routeCommand, type CommandContext } from './commands.js'
 
 /** One OneBot message segment for outbound sends. */
 export interface OutboundSegment {
@@ -737,473 +736,53 @@ export class ChatBridge {
    * @param userId - sender QQ number.
    * @returns true when the message was consumed by a command.
    */
-  private async tryHandleCommand(chatId: ChatId, text: string, userId: string): Promise<boolean> {
-    const normalized = text.replace(/^@\d+\s*/, '')
-    const first = (normalized.split(/\s+/, 1)[0] ?? '').trim()
-    if (!/^\/[A-Za-z][A-Za-z0-9_-]*$/.test(first)) return false
-
-    const isAdmin = classifyUserRole(userId, this.deps.policy.adminUsers) === 'admin'
-    if (!isAdmin) {
-      await this.sendToChat(chatId, '该命令仅管理员可用。')
-      return true
-    }
-
-    const name = first.slice(1).toLowerCase()
-    this.deps.log('debug', 'slash /' + name + ' for ' + chatId)
-    if (name === 'new') {
-      this.deps.log('info', 'slash /new for ' + chatId)
-      await this.resetChat(chatId)
-      return true
-    }
-    if (name === 'stop') {
-      const chat = this.chats.get(chatId)
-      if (chat !== undefined && chat.agent.status === 'running') {
-        chat.agent.cancel({ kind: 'user' })
-        // Drop the deferred loop state so the cancelled turn settles silently
-        // instead of flushing its partial text as a final.
-        chat.loopPending = null
-        chat.loopBuffer = []
-        await this.sendToChat(chatId, '⏹ 已停止生成。')
-      } else {
-        await this.sendToChat(chatId, '当前没有正在进行的生成。')
-      }
-      return true
-    }
-    if (name === 'model') {
-      await this.handleModelCommand(chatId, normalized.slice(first.length).trim())
-      return true
-    }
-    if (name === 'workspace') {
-      await this.handleWorkspaceCommand(chatId, normalized.slice(first.length).trim())
-      return true
-    }
-    if (name === 'id') {
-      await this.handleIdCommand(chatId)
-      return true
-    }
-    if (name === 'ver') {
-      await this.handleVerCommand(chatId)
-      return true
-    }
-    if (name === 'status') {
-      await this.handleStatusCommand(chatId)
-      return true
-    }
-    if (name === 'mode') {
-      await this.handleModeCommand(chatId, normalized.slice(first.length).trim())
-      return true
-    }
-    if (name === 'retry') {
-      await this.handleRetryCommand(chatId)
-      return true
-    }
-    if (name === 'ocr') {
-      await this.handleOcrCommand(chatId)
-      return true
-    }
-    if (name === 'preset') {
-      await this.handlePresetCommand(chatId, normalized.slice(first.length).trim())
-      return true
-    }
-    if (name === 'plan') {
-      await this.handlePlanCommand(chatId, normalized.slice(first.length).trim())
-      return true
-    }
-    if (name === 'goal') {
-      await this.handleGoalCommand(chatId, normalized.slice(first.length).trim())
-      return true
-    }
-    if (name === 'help') {
-      await this.sendToChat(chatId, '可用命令：\n/new 开启新会话（清空上下文）\n/stop 停止当前生成\n/model [provider/model] 查看或切换模型\n/workspace [路径|list] 查看或切换工作区\n/preset [id] 查看或切换 agent 预设\n/status 会话全景状态\n/retry 重跑上一条\n/id 查看 session/chat id\n/ver 插件版本\n/ocr 识别最近一张图片\n/mode [interim|instant] 切换出站模式\n/plan [off|内容] 宿主计划模式（/plan off 退出）\n/goal [目标|clear] 查看/设置目标\n/help 本帮助\n\n其他 / 开头的文本会直接交给模型。')
-      return true
-    }
-    return false
+  private tryHandleCommand(chatId: ChatId, text: string, userId: string): Promise<boolean> {
+    return routeCommand(this.commandCtx, chatId, text, userId)
   }
 
-  /** /model: show the current model (+ discoverable providers), or switch. */
-  private async handleModelCommand(chatId: ChatId, arg: string): Promise<void> {
-    const chat = this.chats.get(chatId)
-    const current = chat?.selectionRef?.current
-      ?? this.safeDefaultModel()
-    if (arg === '') {
-      const cur = current !== undefined ? current.provider + '/' + current.model : '（未设置）'
-      let out = '当前模型：' + cur
-      try {
-        const providers = this.deps.ctx.llm.listProviders()
-        for (const p of providers.slice(0, 6)) {
-          try {
-            const models = await this.deps.ctx.llm.listModels(p.id)
-            out += '\n' + p.id + ': ' + models.slice(0, 10).map(m => m.id).join(', ')
-          } catch (error) {
-            out += '\n' + p.id + ': （列表不可用）'
-            this.deps.log('warn', 'listModels failed for ' + p.id + ': ' + String(error))
-          }
-        }
-      } catch (error) {
-        out += '\n（模型列表不可用）'
-        this.deps.log('warn', 'listProviders failed: ' + String(error))
-      }
-      await this.sendToChat(chatId, out)
-      return
+  /**
+   * The CommandContext handed to the command table (D1-PR1): exposes exactly
+   * the bridge capabilities the routed commands use, resolved live per
+   * invocation (ctx.llm especially must stay a live service lookup).
+   */
+  private get commandCtx(): CommandContext {
+    const bridge = this
+    return {
+      sendToChat: (chatId, text) => bridge.sendToChat(chatId, text),
+      log: (level, message) => bridge.deps.log(level, message),
+      isAdmin: userId => classifyUserRole(userId, bridge.deps.policy.adminUsers) === 'admin',
+      getChat: chatId => bridge.chats.get(chatId),
+      hasChat: chatId => bridge.chats.has(chatId),
+      resetChat: chatId => bridge.resetChat(chatId),
+      dispatchFollowup: (chatId, text, role, nickname) => bridge.dispatchFollowup(chatId, text, role, nickname),
+      effectiveCwd: chatId => bridge.effectiveCwd(chatId),
+      sessionIdFromMapping: chatId => bridge.sessionIdFromMapping(chatId),
+      resolvePresetId: chatId => bridge.resolvePresetId(chatId),
+      setChatWorkspacePath: (chatId, path) => bridge.chatWorkspacePaths.set(chatId, path),
+      presetOverride: chatId => bridge.chatPresetOverrides.get(chatId),
+      setPresetOverride: (chatId, id) => { bridge.chatPresetOverrides.set(chatId, id) },
+      hasPresetOverride: chatId => bridge.chatPresetOverrides.has(chatId),
+      interimOverride: chatId => bridge.chatInterimOverrides.get(chatId),
+      setInterimOverride: (chatId, value) => { bridge.chatInterimOverrides.set(chatId, value) },
+      goal: chatId => bridge.chatGoals.get(chatId),
+      setGoal: (chatId, value) => { bridge.chatGoals.set(chatId, value) },
+      deleteGoal: chatId => { bridge.chatGoals.delete(chatId) },
+      lastImagePath: chatId => bridge.chatLastImagePaths.get(chatId),
+      takePendingImageRef: chatId => {
+        const ref = bridge.chatPendingImageRefs.get(chatId)
+        if (ref !== undefined) bridge.chatPendingImageRefs.delete(chatId)
+        return ref
+      },
+      resolveMediaRef: (ref, chatId) => bridge.resolveMediaRef(ref, chatId),
+      get llm() { return bridge.deps.ctx.llm },
+      workspaceRegistry: bridge.deps.workspaceRegistry,
+      agentDefaultModel: bridge.deps.agentDefaultModel,
+      agentPresets: bridge.deps.agentPresets,
+      commands: bridge.deps.commands,
+      connection: bridge.deps.connection,
+      dshHome: bridge.deps.dshHome,
+      config: { interimMessages: bridge.deps.config.interimMessages, maxImageBytes: bridge.deps.config.maxImageBytes },
     }
-    const m = /^(\S+)[\s/]+(\S+)$/.exec(arg)
-    if (m === null) {
-      await this.sendToChat(chatId, '用法：/model <provider> <model> 或 /model <provider>/<model>')
-      return
-    }
-    const provider = m[1]
-    const model = m[2]
-    try {
-      const models = await this.deps.ctx.llm.listModels(provider)
-      if (models.length > 0 && !models.some(x => x.id === model)) {
-        await this.sendToChat(chatId, `❌ ${provider} 下没有模型 ${model}。可用：` + models.slice(0, 10).map(x => x.id).join(', '))
-        return
-      }
-    } catch (error) {
-      this.deps.log('debug', 'model switch precheck failed for ' + provider + ': ' + String(error))
-    }
-    const next = { provider, model }
-    if (chat?.selectionRef !== undefined) {
-      chat.selectionRef.current = next
-    }
-    if (this.deps.agentDefaultModel !== undefined) {
-      try {
-        await this.deps.agentDefaultModel.saveSelection(next)
-      } catch (error) {
-        this.deps.log('warn', 'saveSelection failed: ' + String(error))
-      }
-    }
-    await this.sendToChat(chatId, `✅ 已切换模型：${provider}/${model}（下一步生效）`)
-  }
-
-  /** /workspace: show current cwd, list workspaces, or switch directory. */
-  private async handleWorkspaceCommand(chatId: ChatId, arg: string): Promise<void> {
-    if (arg === '') {
-      const cwd = this.effectiveCwd(chatId)
-      let suffix = ''
-      try {
-        const ws = await this.deps.workspaceRegistry.resolveByPath(cwd)
-        suffix = ws !== undefined ? `（工作区 ${ws.id}，${ws.sessionIds.length} 个会话）` : '（无 workspace 记录）'
-      } catch (error) {
-        this.deps.log('debug', 'resolveByPath failed: ' + String(error))
-      }
-      await this.sendToChat(chatId, `当前工作目录：${cwd} ${suffix}\n用法：/workspace <目录路径> 切换；/workspace list 列出全部`)
-      return
-    }
-    if (arg === 'list') {
-      try {
-        const list = this.deps.workspaceRegistry.list()
-        if (list.length === 0) {
-          await this.sendToChat(chatId, '（没有任何 workspace 记录）')
-          return
-        }
-        await this.sendToChat(chatId, list.map(w => `${w.id}  ${w.path}（${w.sessionIds.length} 会话）`).join('\n'))
-      } catch (error) {
-        this.deps.log('debug', 'workspace list failed: ' + String(error))
-        await this.sendToChat(chatId, '❌ 无法列出工作区。')
-      }
-      return
-    }
-    try {
-      const path = await realpath(arg)
-      const s = await stat(path)
-      if (!s.isDirectory()) {
-        await this.sendToChat(chatId, `❌ 不是目录：${arg}`)
-        return
-      }
-      const hadChat = this.chats.has(chatId)
-      this.chatWorkspacePaths.set(chatId, path)
-      if (hadChat) {
-        // Retire the current agent: its session cwd is frozen at creation, so
-        // the next message re-creates the session under the new directory.
-        await this.resetChat(chatId)
-      }
-      await this.sendToChat(chatId, `✅ 工作区已切换：${path}\n下一条消息将使用新工作区（新会话）。`)
-      this.deps.log('info', 'workspace switch for ' + chatId + ' -> ' + path)
-    } catch (error) {
-      this.deps.log('debug', 'workspace switch failed: ' + String(error))
-      await this.sendToChat(chatId, `❌ 目录无效或不可访问：${arg}`)
-    }
-  }
-
-  /** /id: show the chat/session identity (admin debug aid). */
-  private async handleIdCommand(chatId: ChatId): Promise<void> {
-    const sessionId = this.chats.get(chatId)?.sessionId ?? await this.sessionIdFromMapping(chatId)
-    await this.sendToChat(chatId,
-      'chat    : ' + chatId + '\n' +
-      'session : ' + (sessionId ?? '（未建立会话，下一条消息创建）') + '\n' +
-      'cwd     : ' + this.effectiveCwd(chatId))
-  }
-
-  /** /ver: plugin version + git commit (each read once and cached). */
-  private async handleVerCommand(chatId: ChatId): Promise<void> {
-    const commit = this.gitCommit()
-    await this.sendToChat(chatId, 'dsh-onebot v' + (this.packageVersion() ?? '?') + (commit !== undefined ? ' (' + commit + ')' : ''))
-  }
-
-  /** /status: one-shot snapshot of the chat session state. */
-  private async handleStatusCommand(chatId: ChatId): Promise<void> {
-    const chat = this.chats.get(chatId)
-    const sessionId = chat?.sessionId ?? await this.sessionIdFromMapping(chatId)
-    const override = this.chatPresetOverrides.get(chatId)
-    let preset: string
-    if (override !== undefined) {
-      preset = override + '（/preset 覆盖）'
-    } else {
-      const resolved = await this.resolvePresetId(chatId)
-      preset = (resolved ?? undefined) !== undefined ? (resolved ?? '') + '（默认/配置）' : '（未记录）'
-    }
-    const current = chat?.selectionRef?.current ?? this.safeDefaultModel()
-    const model = current !== undefined ? current.provider + '/' + current.model : '（未设置）'
-    const cwd = this.effectiveCwd(chatId)
-    let wsSuffix = ''
-    try {
-      const ws = await this.deps.workspaceRegistry?.resolveByPath(cwd)
-      wsSuffix = ws !== undefined ? `（工作区 ${ws.id}，${ws.sessionIds.length} 个会话）` : '（无 workspace 记录）'
-    } catch (error) {
-      this.deps.log('debug', 'resolveByPath failed: ' + String(error))
-    }
-    const interim = this.chatInterimOverrides.get(chatId)
-    const modeLabel = interim !== undefined
-      ? (interim ? 'interim（合并卡片）' : 'instant（逐条即时）') + '（/mode 覆盖）'
-      : (this.deps.config.interimMessages ? 'interim（合并卡片）' : 'instant（逐条即时）') + '（全局配置）'
-    const agentState = chat !== undefined
-      ? 'busy=' + chat.busy + ' loopBuffer=' + chat.loopBuffer.length
-      : '（未建立会话）'
-    await this.sendToChat(chatId,
-      'chat    : ' + chatId + '\n' +
-      'session : ' + (sessionId ?? '（未建立会话）') + '\n' +
-      'preset  : ' + preset + '\n' +
-      'model   : ' + model + '\n' +
-      'cwd     : ' + cwd + ' ' + wsSuffix + '\n' +
-      '出站     : ' + modeLabel + '\n' +
-      'agent   : ' + agentState)
-  }
-
-  /** /mode: per-chat outbound-mode override (interim vs instant). */
-  private async handleModeCommand(chatId: ChatId, arg: string): Promise<void> {
-    const v = arg.trim().toLowerCase()
-    if (v === '' || v === 'status' || v === 'view') {
-      const interim = this.chatInterimOverrides.get(chatId)
-      const eff = interim ?? this.deps.config.interimMessages
-      const suffix = interim !== undefined ? '（/mode 覆盖）' : '（全局配置）'
-      await this.sendToChat(chatId, `当前出站模式：${eff ? 'interim（合并卡片）' : 'instant（逐条即时）'}${suffix}\n用法：/mode interim|instant 切换；/mode 查看`)
-      return
-    }
-    if (v === 'interim' || v === 'on' || v === 'merge') {
-      this.chatInterimOverrides.set(chatId, true)
-      await this.sendToChat(chatId, '✅ 出站模式已切换为 interim（合并卡片）。下一条回复生效。')
-      return
-    }
-    if (v === 'instant' || v === 'off' || v === 'direct') {
-      this.chatInterimOverrides.set(chatId, false)
-      await this.sendToChat(chatId, '✅ 出站模式已切换为 instant（逐条即时）。下一条回复生效。')
-      return
-    }
-    await this.sendToChat(chatId, '用法：/mode interim|instant 切换；/mode 查看当前')
-  }
-
-  /** /retry: re-feed the last user message into the agent. */
-  private async handleRetryCommand(chatId: ChatId): Promise<void> {
-    const chat = this.chats.get(chatId)
-    if (chat === undefined) {
-      await this.sendToChat(chatId, '没有可重试的上一条消息。')
-      return
-    }
-    if (chat.busy) {
-      await this.sendToChat(chatId, '当前正在生成，请稍后再重试。')
-      return
-    }
-    const text = chat.lastFollowup
-    if (text === undefined || text === '') {
-      await this.sendToChat(chatId, '没有可重试的上一条消息。')
-      return
-    }
-    // Start a fresh reply cycle exactly like a new inbound turn.
-    chat.loopBuffer = []
-    chat.loopPending = null
-    this.deps.log('info', 'retry for ' + chatId)
-    // /retry is admin-gated in tryHandleCommand, so the retried turn's role is
-    // the admin who issued the command (M1-A2).
-    await this.dispatchFollowup(chatId, text, 'admin', chat.lastNickname)
-  }
-
-  /** /ocr: OCR the most recent inbound image via NapCat's ocr_image. */
-  private async handleOcrCommand(chatId: ChatId): Promise<void> {
-    // C6a: the command routed before media parsing — resolve the registered
-    // pending image ref now (downloads on first use, records the last-image
-    // path exactly like the normal path).
-    const pending = this.chatPendingImageRefs.get(chatId)
-    if (pending !== undefined) {
-      this.chatPendingImageRefs.delete(chatId)
-      await this.resolveMediaRef(pending, chatId)
-    }
-    const path = this.chatLastImagePaths.get(chatId)
-    if (path === undefined || path === '') {
-      await this.sendToChat(chatId, '请先在对话里发一张图片，再 /ocr。')
-      return
-    }
-    let b64: string
-    try {
-      b64 = await fileToBase64(path, this.deps.config.maxImageBytes)
-    } catch (error) {
-      this.deps.log('warn', 'ocr image read failed: ' + String(error))
-      await this.sendToChat(chatId, `❌ 读取图片失败：${error instanceof Error ? error.message : String(error)}`)
-      return
-    }
-    let lines: string
-    try {
-      const data = await this.deps.connection.call('ocr_image', { image: 'base64://' + b64 }) as { texts?: Array<{ text?: string }> }
-      const texts = Array.isArray(data.texts) ? data.texts.map(t => t.text ?? '').filter(t => t !== '') : []
-      lines = texts.join('\n')
-    } catch (error) {
-      this.deps.log('warn', 'ocr_image failed: ' + String(error))
-      await this.sendToChat(chatId, `❌ OCR 失败：${error instanceof Error ? error.message : String(error)}`)
-      return
-    }
-    if (lines.trim() === '') {
-      await this.sendToChat(chatId, 'OCR 未识别到文本。')
-      return
-    }
-    await this.sendToChat(chatId, 'OCR 结果：\n' + lines)
-  }
-
-  /** /preset: show available agent presets and the current one, or switch. */
-  private async handlePresetCommand(chatId: ChatId, arg: string): Promise<void> {
-    const listed = await this.listPresets()
-    if (arg.trim() === '') {
-      const current = this.chatPresetOverrides.get(chatId)
-        ?? await this.resolvePresetId(chatId)
-        ?? this.deps.agentPresets?.defaultId
-      let out = '当前预设：' + (current ?? '（未记录）') + (this.chatPresetOverrides.has(chatId) ? '（/preset 覆盖）' : '')
-      if (listed.length > 0) out += '\n可用预设：\n' + listed.join('\n')
-      out += '\n用法：/preset <id> 切换（重建会话）；/preset 查看'
-      await this.sendToChat(chatId, out)
-      return
-    }
-    const id = arg.trim()
-    if (this.deps.agentPresets === undefined) {
-      await this.sendToChat(chatId, '❌ 当前宿主未提供 agentPresets 服务。')
-      return
-    }
-    let resolvedId: string
-    try {
-      const preset = await this.deps.agentPresets.resolve(id)
-      resolvedId = preset.id
-    } catch (error) {
-      this.deps.log('debug', 'preset resolve failed: ' + String(error))
-      await this.sendToChat(chatId, '❌ 预设不存在：' + id + (listed.length > 0 ? '\n可用：' + listed.join(', ') : ''))
-      return
-    }
-    this.chatPresetOverrides.set(chatId, resolvedId)
-    if (this.chats.has(chatId)) {
-      await this.resetChat(chatId)
-    }
-    this.deps.log('info', 'preset switch for ' + chatId + ' -> ' + resolvedId)
-    await this.sendToChat(chatId, `✅ 预设已切换：${resolvedId}\n下一条消息将重建会话并按新预设运行。`)
-  }
-
-  /** /plan: per-chat plan mode — turns are prefixed with a plan-only directive. */
-  /** /plan: forward to the HOST plan command so QQ enters/leaves host plan
-   * mode (the host `/plan off` path exits directly, no Web review card). The
-   * plugin no longer runs its own prefix plan mode — that duplicated the host
-   * semantic and shadowed the host `/plan off` exit. */
-  private async handlePlanCommand(chatId: ChatId, arg: string): Promise<void> {
-    const chat = this.chats.get(chatId)
-    if (chat === undefined) {
-      await this.sendToChat(chatId, '请先发一条消息建立会话，再 /plan。')
-      return
-    }
-    const commands = this.deps.commands
-    if (commands === undefined) {
-      await this.sendToChat(chatId, '❌ 宿主未提供 commands 服务，无法切换计划模式。')
-      return
-    }
-    const line = arg.trim() === '' ? '/plan' : '/plan ' + arg.trim()
-    try {
-      // The host command runtime requires a signal (it reads `signal.aborted`
-      // unconditionally) — pass a fresh never-aborted one; QQ user-initiated
-      // /plan must not be interruptible by our own cancellation.
-      const result = await commands.execute(chat.agent as never, line, new AbortController().signal)
-      const text = result?.text !== undefined && result.text !== '' ? result.text : (arg.trim().toLowerCase() === 'off' ? '已退出计划模式。' : '已进入计划模式。')
-      const hint = arg.trim().toLowerCase() === 'off' ? '' : '\n（QQ 退出计划模式：发 /plan off）'
-      await this.sendToChat(chatId, text + hint)
-      this.deps.log('info', 'host plan command for ' + chatId + ': ' + line)
-    } catch (error) {
-      this.deps.log('warn', 'host plan command failed: ' + String(error))
-      await this.sendToChat(chatId, '❌ 计划模式切换失败：' + (error instanceof Error ? error.message : String(error)))
-    }
-  }
-
-  /** /goal: per-chat objective — recorded and reminded on each turn. */
-  private async handleGoalCommand(chatId: ChatId, arg: string): Promise<void> {
-    const v = arg.trim()
-    if (v === '') {
-      const goal = this.chatGoals.get(chatId)
-      await this.sendToChat(chatId, '当前目标：' + (goal !== undefined && goal !== '' ? '\n' + goal : '（未设置）') + '\n用法：/goal <目标> 设置/更新；/goal clear 清除')
-      return
-    }
-    if (v.toLowerCase() === 'clear' || v === '删除' || v === '移除') {
-      this.chatGoals.delete(chatId)
-      await this.sendToChat(chatId, '✅ 目标已清除。')
-      return
-    }
-    this.chatGoals.set(chatId, v)
-    await this.sendToChat(chatId, '✅ 目标已记录（每轮自动附带提醒）：\n' + v)
-  }
-
-  /** Enumerate the on-disk agent presets (<dsh-home>/.agent-presets/*). */
-  private async listPresets(): Promise<string[]> {
-    const home = this.deps.dshHome
-    if (home === undefined || home === '') return []
-    const root = join(home, '.agent-presets')
-    try {
-      const entries = await readdir(root, { withFileTypes: true })
-      const out: string[] = []
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue
-        let label = entry.name
-        try {
-          const text = await readFile(join(root, entry.name, 'preset.yml'), 'utf8')
-          const m = /^name\s*:\s*(.+?)\s*$/m.exec(text)
-          if (m !== null && m[1].trim() !== '') label = m[1].trim()
-        } catch {
-          // no preset.yml — fall back to the directory id
-        }
-        out.push(entry.name + (label !== entry.name ? '（' + label + '）' : ''))
-      }
-      return out.sort()
-    } catch (error) {
-      this.deps.log('debug', 'preset enumeration failed: ' + String(error))
-      return []
-    }
-  }
-
-  /** Plugin version from package.json, read once. */
-  private packageVersion(): string | undefined {
-    if (this.pluginVersion === undefined) {
-      try {
-        const pkg = JSON.parse(readFileSync(join(dirname(__dirname), 'package.json'), 'utf8')) as { version?: string }
-        this.pluginVersion = typeof pkg.version === 'string' ? pkg.version : undefined
-      } catch {
-        this.pluginVersion = undefined
-      }
-    }
-    return this.pluginVersion
-  }
-
-  /** Git short commit of the plugin repo, read once (best-effort). */
-  private gitCommit(): string | undefined {
-    if (this.pluginCommit === undefined) {
-      try {
-        const root = dirname(__dirname)
-        const commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
-        this.pluginCommit = commit !== '' ? commit : undefined
-      } catch {
-        this.pluginCommit = undefined
-      }
-    }
-    return this.pluginCommit
   }
 
   /** Read the chat→session mapping file (for /id and /status when no live chat). */
@@ -1215,15 +794,6 @@ export class ChatBridge {
       const id = map[chatId]
       return typeof id === 'string' && id !== '' ? id : undefined
     } catch {
-      return undefined
-    }
-  }
-
-  /** Current default model selection, best-effort (absent services return undefined). */
-  private safeDefaultModel(): ModelSelection | undefined {    try {
-      return this.deps.agentDefaultModel?.currentSelection()
-    } catch (error) {
-      this.deps.log('debug', 'currentSelection failed: ' + String(error))
       return undefined
     }
   }

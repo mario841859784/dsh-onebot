@@ -156,6 +156,8 @@ export async function makeCmdHarness(opts?: {
   restrictedMemberPrefix?: boolean
   commands?: unknown
   allowAllUsers?: boolean
+  agentDefaultModel?: unknown
+  workspaceRegistry?: unknown
 }) {
   const ctx = new Context()
   const sessionIds: string[] = []
@@ -183,8 +185,8 @@ export async function makeCmdHarness(opts?: {
         return { kind: 'success', text: 'Plan mode on. Use /plan off to leave.' }
       }),
     }) as never,
-    workspaceRegistry: undefined as never,
-    agentDefaultModel: undefined,
+    workspaceRegistry: (opts?.workspaceRegistry ?? undefined) as never,
+    agentDefaultModel: (opts?.agentDefaultModel ?? undefined) as never,
     defaultModel: () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
     config: {
       botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
