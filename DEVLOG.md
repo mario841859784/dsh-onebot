@@ -34,6 +34,13 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 - **会话**：每个 QQ 会话一个持久 Agent（session id 稳定派生），重启自动 resume
 - **依赖**：@deepseek-ai/*（宿主符号链接）+ ws + @napi-rs/canvas + fontkit
 
+
+### 2026-09-10（M1 收尾：v0.2.1 发布）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **M1 里程碑完成**——11/11 工作包（Wave1 A2/A6/B4/B5、Wave2 C3/A5/A3a+A3b、Wave3 A7/B6/B7/E2/C6a/A8×3），测试 99→200（+101），tsc 0 错误；安全回归清单随各包验收在库（鉴权 3 路径/路径围栏/SSRF 矩阵/覆盖状态文件防护/解码炸弹/门禁 TOCTOU）；遗留：R5 NapCat 4401 重试行为 24h 观察（生产 v0.2.0 运行中）、真机检查待 trim-cli 登录后执行、file:// 分支与 DNS rebinding 与正文伪前缀（D5）为已知边界 |
+| 全天 | **发布 v0.2.1**——版本号 0.2.0→0.2.1；tag v0.2.1；生产升级待用户执行（git pull + ./scripts/build.sh + 重启 dsh，注意生产 accessToken 已配置无需再动） |
 ---
 
 ## 2. 开发时间线
