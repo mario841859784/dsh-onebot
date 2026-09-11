@@ -59,6 +59,33 @@ function resolveChat(bridge: ChatBridge, exec: ToolRunContext, chatIdArg: unknow
 }
 
 /**
+ * Outbound media fence roots for the calling session's current turn
+ * (M1-A3b): the plugin media dir always, plus the chat workspace on admin
+ * turns. An unknown caller session degrades to mediaDir-only inside the
+ * bridge — fail-closed.
+ */
+async function mediaRoots(bridge: ChatBridge, exec: ToolRunContext): Promise<string[]> {
+  const gate = await bridge.mediaSendRoots(exec.agent?.session.id)
+  return gate.roots
+}
+
+/**
+ * Read one local media file behind the outbound fence, translating the
+ * fence refusal (which reaches the model verbatim) into an actionable
+ * hint; size-cap and OS errors keep their original message.
+ */
+async function fencedMediaFile(path: string, maxBytes: number, allowedRoots: string[]): Promise<string> {
+  try {
+    return await fileToBase64(path, maxBytes, allowedRoots)
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('path not allowed or does not exist')) {
+      throw new Error('本地路径不在允许的媒体目录内（管理员回合可另读会话工作区），或文件不存在：' + path)
+    }
+    throw error
+  }
+}
+
+/**
  * Register all qq_* tools on the context. Registration is effect-based: the
  * returned disposer unregisters them.
  * @param ctx - plugin context.
@@ -105,6 +132,7 @@ export function registerTools(
       if (sources.length === 0) throw new Error('qq_send_image: sources 不能为空')
       if (sources.length > 9) throw new Error('qq_send_image: 一次最多 9 张图片')
       const chatId = resolveChat(bridge, exec, a.chat_id)
+      const allowedRoots = await mediaRoots(bridge, exec)
       const segments: Array<{ type: string; data: Record<string, unknown> }> = []
       if (typeof a.caption === 'string' && a.caption !== '') {
         segments.push({ type: 'text', data: { text: a.caption } })
@@ -113,7 +141,7 @@ export function registerTools(
         if (isUrl(source)) {
           segments.push({ type: 'image', data: { url: source } })
         } else {
-          segments.push({ type: 'image', data: { file: await fileToBase64(source, limits.maxImageBytes) } })
+          segments.push({ type: 'image', data: { file: await fencedMediaFile(source, limits.maxImageBytes, allowedRoots) } })
         }
       }
       const messageId = await bridge.sendSegments(chatId, segments)
@@ -134,8 +162,9 @@ export function registerTools(
       const a = args as { path?: unknown; chat_id?: unknown }
       if (typeof a.path !== 'string' || a.path === '') throw new Error('qq_send_voice: path 必填')
       const chatId = resolveChat(bridge, exec, a.chat_id)
+      const allowedRoots = await mediaRoots(bridge, exec)
       const messageId = await bridge.sendSegments(chatId, [
-        { type: 'record', data: { file: await fileToBase64(a.path, limits.maxVoiceBytes) } },
+        { type: 'record', data: { file: await fencedMediaFile(a.path, limits.maxVoiceBytes, allowedRoots) } },
       ])
       return { sent: true, messageId: messageId ?? null }
     },
@@ -154,8 +183,9 @@ export function registerTools(
       const a = args as { path?: unknown; chat_id?: unknown }
       if (typeof a.path !== 'string' || a.path === '') throw new Error('qq_send_video: path 必填')
       const chatId = resolveChat(bridge, exec, a.chat_id)
+      const allowedRoots = await mediaRoots(bridge, exec)
       const messageId = await bridge.sendSegments(chatId, [
-        { type: 'video', data: { file: await fileToBase64(a.path, limits.maxFileBytes) } },
+        { type: 'video', data: { file: await fencedMediaFile(a.path, limits.maxFileBytes, allowedRoots) } },
       ])
       return { sent: true, messageId: messageId ?? null }
     },
@@ -175,9 +205,10 @@ export function registerTools(
       const a = args as { path?: unknown; name?: unknown; chat_id?: unknown }
       if (typeof a.path !== 'string' || a.path === '') throw new Error('qq_send_file: path 必填')
       const chatId = resolveChat(bridge, exec, a.chat_id)
+      const allowedRoots = await mediaRoots(bridge, exec)
       const name = typeof a.name === 'string' && a.name !== '' ? a.name : a.path.split('/').pop() ?? 'file'
       const messageId = await bridge.sendSegments(chatId, [
-        { type: 'file', data: { file: await fileToBase64(a.path, limits.maxFileBytes), name } },
+        { type: 'file', data: { file: await fencedMediaFile(a.path, limits.maxFileBytes, allowedRoots), name } },
       ])
       return { sent: true, messageId: messageId ?? null }
     },

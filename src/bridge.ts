@@ -311,6 +311,32 @@ export class ChatBridge {
     return this.chats.get(chatId)?.activeTurnRole === 'admin'
   }
 
+  /**
+   * Outbound media fence roots for one agent session's current turn (M1-A3b):
+   * the plugin media dir always, plus the chat's workspace directory when the
+   * running turn's initiator is an admin. The role reuses the M1-A2 turn-level
+   * semantics (canEditFiles: frozen at turn/start, fail-closed member); a
+   * session with no known chat stays mediaDir-only even though canEditFiles
+   * would trust it — the media gate itself fails closed. Roots are
+   * realpath-normalized here; the MediaStore fence re-checks containment
+   * (the double check is harmless).
+   */
+  async mediaSendRoots(sessionId: string | undefined): Promise<{ roots: string[]; isTurnAdmin: boolean }> {
+    const isTurnAdmin = sessionId !== undefined && this.canEditFiles(sessionId)
+    const chatId = sessionId !== undefined ? this.bySession.get(sessionId) : undefined
+    const candidates = [this.deps.config.mediaDir]
+    if (chatId !== undefined && isTurnAdmin) candidates.push(this.effectiveCwd(chatId))
+    const roots: string[] = []
+    for (const root of candidates) {
+      try {
+        roots.push(await realpath(root))
+      } catch {
+        roots.push(root) // missing root: kept as-is; the fence skips it (cannot contain anything)
+      }
+    }
+    return { roots, isTurnAdmin }
+  }
+
   /** Whether the connection is usable for sends. */
   get connected(): boolean {
     return this.deps.connection.connected
