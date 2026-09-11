@@ -470,3 +470,115 @@ describe('reconnect policy and port conflict (M1-B5)', () => {
     await new Promise<void>(resolve => occupier.close(() => resolve()))
   })
 })
+
+describe('frame cap and reverse churn guard (M1-A8)', () => {
+  interface A8Internals {
+    socket?: unknown
+    reverseReplaces: number[]
+  }
+  const internals = (connection: OneBotConnection): A8Internals => connection as unknown as A8Internals
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /** Dial into the running reverse server with the valid token. */
+  const dial = (port: number): WebSocket => new WebSocket('ws://127.0.0.1:' + port + '/ws', { headers: { Authorization: 'Bearer tok' } })
+
+  /** Fake-timer poll: advance in small steps (real I/O settles between ticks) until the predicate holds. */
+  const advanceUntil = async (predicate: () => boolean, budgetMs = 5_000): Promise<void> => {
+    for (let advanced = 0; advanced <= budgetMs && !predicate(); advanced += 50) {
+      await vi.advanceTimersByTimeAsync(50)
+    }
+    expect(predicate()).toBe(true)
+  }
+
+  it('closes with 1009 a frame that exceeds the 64MiB cap', async () => {
+    const connection = new OneBotConnection({ ...CONFIG, accessToken: 'tok' })
+    connection.start()
+    await vi.waitFor(() => expect(connection.address()).toBeDefined())
+    const port = connection.address()!.port
+    const client = dial(port)
+    await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
+    let close: { code: number; reason: string } | undefined
+    client.on('close', (code, reason) => {
+      close = { code, reason: reason.toString() }
+    })
+    // One binary frame a single byte over the cap: the server must abort it
+    // instead of buffering the frame (the ws default cap is 100MiB).
+    client.send(Buffer.alloc(64 * 1024 * 1024 + 1, 0x61))
+    await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.CLOSED), { timeout: 10_000 })
+    expect(close?.code).toBe(1009)
+    await connection.stop()
+  })
+
+  it('dials forward with the same 64MiB frame cap', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+    await new Promise<void>(resolve => {
+      server.on('listening', () => resolve())
+    })
+    const port = (server.address() as { port: number }).port
+    const connection = new OneBotConnection({ ...CONFIG, mode: 'forward', url: 'ws://127.0.0.1:' + port, accessToken: 'tok' })
+    connection.start()
+    await vi.waitFor(() => expect(connection.connected).toBe(true))
+    // The dial must carry maxPayload; ws stores it on the post-upgrade Receiver.
+    const receiver = (internals(connection).socket as { _receiver?: { _maxPayload?: number } } | undefined)?._receiver
+    expect(receiver?._maxPayload).toBe(64 * 1024 * 1024)
+    await connection.stop()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  })
+
+  it('rejects the 6th healthy-socket replacement within the 60s window', async () => {
+    vi.useFakeTimers()
+    const connection = new OneBotConnection({ ...CONFIG, accessToken: 'tok' })
+    connection.start()
+    await advanceUntil(() => connection.address() !== undefined)
+    const port = connection.address()!.port
+    let current = dial(port)
+    await advanceUntil(() => connection.connected && current.readyState === WebSocket.OPEN)
+    // Five replacements of the healthy dial-in land inside the window...
+    for (let i = 0; i < 5; i++) {
+      const previous = current
+      current = dial(port)
+      await advanceUntil(() => connection.connected && current.readyState === WebSocket.OPEN && previous.readyState === WebSocket.CLOSED)
+    }
+    // ...so the 6th dial-in is rejected without touching the healthy socket.
+    const warnSpy = vi.spyOn(console, 'warn')
+    const sixth = dial(port)
+    let sixthClose: { code: number; reason: string } | undefined
+    sixth.on('close', (code, reason) => {
+      sixthClose = { code, reason: reason.toString() }
+    })
+    await advanceUntil(() => sixthClose !== undefined)
+    expect(sixthClose?.code).toBe(4000)
+    expect(sixthClose?.reason).toBe('too many connections')
+    expect(current.readyState).toBe(WebSocket.OPEN) // the legitimate socket survives
+    expect(connection.connected).toBe(true)
+    expect(warnSpy.mock.calls.some(call => String(call[0]).includes('too many connection replacements'))).toBe(true)
+    warnSpy.mockRestore()
+    await connection.stop()
+  })
+
+  it('allows paced replacements and the drop-then-redial flow', async () => {
+    vi.useFakeTimers()
+    const connection = new OneBotConnection({ ...CONFIG, accessToken: 'tok' })
+    connection.start()
+    await advanceUntil(() => connection.address() !== undefined)
+    const port = connection.address()!.port
+    let current = dial(port)
+    await advanceUntil(() => connection.connected && current.readyState === WebSocket.OPEN)
+    for (let i = 0; i < 2; i++) {
+      const previous = current
+      await vi.advanceTimersByTimeAsync(10_000) // normal redial spacing, still inside the window
+      current = dial(port)
+      await advanceUntil(() => connection.connected && current.readyState === WebSocket.OPEN && previous.readyState === WebSocket.CLOSED)
+    }
+    // NapCat drop-then-redial: the dead socket never counts as a replacement.
+    current.close()
+    await advanceUntil(() => !connection.connected)
+    const redial = dial(port)
+    await advanceUntil(() => connection.connected && redial.readyState === WebSocket.OPEN)
+    expect(internals(connection).reverseReplaces).toHaveLength(2) // only the healthy replacements counted
+    await connection.stop()
+  })
+})

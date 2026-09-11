@@ -57,7 +57,20 @@ export interface ConnectionConfig {
 const RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 const MAX_RECONNECT_ATTEMPTS = 100
 const HEARTBEAT_MS = 30_000
-
+/**
+ * Per-frame byte cap for both directions. ws defaults to 100MiB, letting a
+ * token holder pin memory with a single giant frame. 64MiB keeps ample
+ * headroom over the 20MiB maxInboundFileBytes default: a get_file response
+ * carrying a max-size file is ~27MiB as base64 plus JSON framing.
+ */
+const MAX_FRAME_BYTES = 64 * 1024 * 1024
+/**
+ * Reverse churn guard: at most CHURN_MAX_REPLACES replacements of a healthy
+ * dial-in within CHURN_WINDOW_MS; further dial-ins are rejected so rapid
+ * re-dials cannot endlessly squeeze out the legitimate NapCat.
+ */
+const CHURN_WINDOW_MS = 60_000
+const CHURN_MAX_REPLACES = 5
 /** Error thrown for action calls that fail or time out. */
 export class OneBotActionError extends Error {
   constructor(message: string) {
@@ -106,6 +119,8 @@ export class OneBotConnection {
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined
   private reconnectAttempts = 0
   private connectedFlag = false
+  /** Reverse churn guard: timestamps (ms) of recent healthy-socket replacements. */
+  private reverseReplaces: number[] = []
 
   /** The bot's own QQ id, learned from meta events (or config botQQ). */
   selfId = ''
@@ -221,7 +236,7 @@ export class OneBotConnection {
     if (this.config.accessToken === '') {
       throw new Error('reverse mode requires a non-empty accessToken')
     }
-    const server = new WebSocketServer({ host: this.config.host, port: this.config.port })
+    const server = new WebSocketServer({ host: this.config.host, port: this.config.port, maxPayload: MAX_FRAME_BYTES })
     this.server = server
     server.on('error', error => {
       const code = (error as NodeJS.ErrnoException).code
@@ -242,6 +257,16 @@ export class OneBotConnection {
       // Last-wins: NapCat expects a single dial-in; close any older socket.
       const previous = this.socket
       if (previous !== undefined && previous.readyState < WebSocket.CLOSING) {
+        // Churn guard: endlessly replacing the healthy dial-in squeezes out
+        // the legitimate NapCat, so cap replacements per rolling window.
+        const now = Date.now()
+        this.reverseReplaces = this.reverseReplaces.filter(at => now - at < CHURN_WINDOW_MS)
+        if (this.reverseReplaces.length >= CHURN_MAX_REPLACES) {
+          console.warn('[dsh-onebot] rejecting reverse WS client: too many connection replacements within ' + CHURN_WINDOW_MS / 1000 + 's')
+          socket.close(4000, 'too many connections')
+          return
+        }
+        this.reverseReplaces.push(now)
         try {
           previous.close(4000, 'replaced')
         } catch {
@@ -270,7 +295,7 @@ export class OneBotConnection {
     if (this.config.accessToken !== '') headers.Authorization = 'Bearer ' + this.config.accessToken
     let socket: WebSocket
     try {
-      socket = new WebSocket(url, { headers, handshakeTimeout: 10_000 })
+      socket = new WebSocket(url, { headers, handshakeTimeout: 10_000, maxPayload: MAX_FRAME_BYTES })
     } catch (error) {
       console.error('[dsh-onebot] forward WS connect failed:', error)
       this.scheduleReconnect()
