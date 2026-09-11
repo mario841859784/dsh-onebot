@@ -1218,7 +1218,7 @@ describe('ChatBridge', () => {
     expect(inspect).toHaveBeenCalled()
     expect(sessionIds[0]).toMatch(/^onebot-private-10001-[a-z0-9]+$/)
     expect(sessionIds[0]).not.toBe('onebot-private-10001')
-    const retired = (bridge as unknown as { retiredSessionIds: string[] }).retiredSessionIds
+    const retired = (bridge as unknown as { retiredSessionIds: Set<string> }).retiredSessionIds
     expect(retired).toContain('onebot-private-10001')
     await bridge.stop()
   })
@@ -1272,7 +1272,7 @@ describe('ChatBridge', () => {
     // rebuild it on a colliding id.
     expect(String((chat as { sessionId: string }).sessionId)).toBe('onebot-private-10001')
     await (bridge as unknown as { resetChat(chatId: string): Promise<void> }).resetChat('private:10001')
-    const retired = (bridge as unknown as { retiredSessionIds: string[] }).retiredSessionIds
+    const retired = (bridge as unknown as { retiredSessionIds: Set<string> }).retiredSessionIds
     expect(retired).toContain('onebot-private-10001')
     await bridge.stop()
   })
@@ -1313,7 +1313,7 @@ describe('ChatBridge', () => {
     })
     await (bridge as unknown as { loadRetired(): Promise<void> }).loadRetired()
     const logLinesSnapshot = [...logLines]
-    const retiredIds = (bridge as unknown as { retiredSessionIds: string[] }).retiredSessionIds
+    const retiredIds = (bridge as unknown as { retiredSessionIds: Set<string> }).retiredSessionIds
     const retiredSnapshot = [...retiredIds]
     // Corrupt JSON must NOT be treated as an empty retired set (the 2026-08-17
     // regression): the load warns, keeps the in-memory array, and later saves
@@ -2337,6 +2337,65 @@ describe('ChatBridge', () => {
       expect(h.outbound.some(f => JSON.stringify(f.params).includes('第二行文字'))).toBe(true)
     })
 
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('command messages carrying media skip media downloads (M1-C6a)', async () => {
+    const h = await makeCmdHarness()
+    const media = (h.bridge as unknown as { deps: { media: MediaStore } }).deps.media
+    let downloads = 0
+    const realDownload = media.downloadUrl.bind(media)
+    media.downloadUrl = async (...args: Parameters<MediaStore['downloadUrl']>) => {
+      downloads += 1
+      return await realDownload(...args)
+    }
+    // '/help' text first so the message parses as a command; the attached
+    // image must NOT be downloaded before the command consumes the message.
+    h.client.send(JSON.stringify({
+      post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002,
+      message: [
+        { type: 'text', data: { text: '/help ' } },
+        { type: 'image', data: { url: 'http://127.0.0.1:1/a.png' } },
+      ],
+      raw_message: '/help [CQ:image,url=http://127.0.0.1:1/a.png]',
+      sender: { user_id: 10001, nickname: '小明' },
+    }))
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('可用命令'))).toBe(true)
+    })
+    expect(downloads).toBe(0)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('/ocr resolves the image registered from a command message (M1-C6a)', async () => {
+    const h = await makeCmdHarness({ ocrResult: { texts: [{ text: '命令消息里的图片' }] } })
+    const media = (h.bridge as unknown as { deps: { media: MediaStore } }).deps.media
+    let downloads = 0
+    const realDownload = media.downloadUrl.bind(media)
+    media.downloadUrl = async (...args: Parameters<MediaStore['downloadUrl']>) => {
+      downloads += 1
+      return await realDownload(...args)
+    }
+    // base64 image: materialized locally without downloadUrl, so the lazy
+    // /ocr resolution is fully observable (download count must stay 0).
+    const png = Buffer.from('89504e470d0a1a0a', 'hex').toString('base64')
+    h.client.send(JSON.stringify({
+      post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002,
+      message: [
+        { type: 'text', data: { text: '/ocr ' } },
+        { type: 'image', data: { file: 'base64://' + png } },
+      ],
+      raw_message: '/ocr [CQ:image,file=base64://...]',
+      sender: { user_id: 10001, nickname: '小明' },
+    }))
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('命令消息里的图片'))).toBe(true)
+    })
+    expect(downloads).toBe(0)
     h.client.close()
     await h.bridge.stop()
     await h.connection.stop()

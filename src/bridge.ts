@@ -247,6 +247,9 @@ export class ChatBridge {
   private readonly chatGoals = new Map<ChatId, string>()
   /** Per-chat most recent inbound image path (for /ocr), survives /new resets. */
   private readonly chatLastImagePaths = new Map<ChatId, string>()
+  /** C6a: most recent inbound image ref per chat, registered before command
+   * routing so /ocr can resolve it lazily when the message carried a command. */
+  private readonly chatPendingImageRefs = new Map<ChatId, MediaRef>()
   /** Plugin version + git commit, read once for /ver. */
   private pluginVersion: string | undefined
   private pluginCommit: string | undefined
@@ -257,7 +260,7 @@ export class ChatBridge {
   /** Session ids whose persisted logs are unusable; creates must avoid them. */
   private readonly brokenSessions = new Set<string>()
   /** Session ids retired across restarts (durable copy of brokenSessions). */
-  private retiredSessionIds: string[] = []
+  private retiredSessionIds = new Set<string>()
 
   constructor(deps: BridgeDeps) {
     this.deps = deps
@@ -554,7 +557,19 @@ export class ChatBridge {
     // Fire-and-forget temp cleanup on each inbound.
     void this.deps.media.cleanupExpired()
 
-    const body = await this.buildBody(parsed.text, parsed.media, chatId, userId, messageType)
+    // C6a: route slash commands BEFORE any media/quote I/O — a message that
+    // happens to carry media must not pay for downloads or get_msg calls just
+    // to be consumed as a command (admin-only; unknown /-words still fall
+    // through to the model). The most recent inbound image is registered from
+    // parsed.media up front so /ocr still sees it (resolved lazily there).
+    for (const ref of parsed.media) {
+      if (ref.kind === 'image') this.chatPendingImageRefs.set(chatId, ref)
+    }
+    if (await this.tryHandleCommand(chatId, parsed.text, userId)) {
+      return
+    }
+
+    const body = await this.buildBody(parsed.text, parsed.media, chatId)
 
     let quote = ''
     if (parsed.replyId !== undefined) {
@@ -566,12 +581,6 @@ export class ChatBridge {
     }
 
     const isAdmin = classifyUserRole(userId, policy.adminUsers) === 'admin'
-
-    // Slash commands (admin only): /new, /stop, /model, /workspace, /help.
-    // Unknown /-words fall through to the model (Hermes-style).
-    if (await this.tryHandleCommand(chatId, parsed.text, userId)) {
-      return
-    }
     if (this.rateLimited(chatId)) return
 
     let final = body
@@ -1021,6 +1030,14 @@ export class ChatBridge {
 
   /** /ocr: OCR the most recent inbound image via NapCat's ocr_image. */
   private async handleOcrCommand(chatId: ChatId): Promise<void> {
+    // C6a: the command routed before media parsing — resolve the registered
+    // pending image ref now (downloads on first use, records the last-image
+    // path exactly like the normal path).
+    const pending = this.chatPendingImageRefs.get(chatId)
+    if (pending !== undefined) {
+      this.chatPendingImageRefs.delete(chatId)
+      await this.resolveMediaRef(pending, chatId)
+    }
     const path = this.chatLastImagePaths.get(chatId)
     if (path === undefined || path === '') {
       await this.sendToChat(chatId, '请先在对话里发一张图片，再 /ocr。')
@@ -1219,15 +1236,13 @@ export class ChatBridge {
     text: string,
     media: MediaRef[],
     chatId: ChatId,
-    userId: string,
-    messageType: string,
   ): Promise<string> {
     if (media.length === 0) return text
     let out = text
     for (const ref of media) {
       const placeholder = placeholderFor(ref)
       const idx = out.indexOf(placeholder)
-      const annotation = await this.resolveMediaRef(ref, chatId, userId, messageType)
+      const annotation = await this.resolveMediaRef(ref, chatId)
       if (idx >= 0 && annotation !== '') {
         out = out.slice(0, idx) + annotation + out.slice(idx + placeholder.length)
       }
@@ -1236,7 +1251,7 @@ export class ChatBridge {
   }
 
   /** Resolve one media ref to a text annotation with a local path. */
-  private async resolveMediaRef(ref: MediaRef, chatId: ChatId, userId: string, messageType: string): Promise<string> {
+  private async resolveMediaRef(ref: MediaRef, chatId: ChatId): Promise<string> {
     if (ref.kind === 'file') {
       return await this.resolveNasFile(ref)
     }
@@ -1254,8 +1269,10 @@ export class ChatBridge {
     if (resolved === undefined) return ''
     switch (resolved.kind) {
       case 'image':
-        // Remember the most recent inbound image for /ocr (survives /new).
+        // Remember the most recent inbound image for /ocr (survives /new);
+        // consume the pre-routing pending ref so /ocr never re-resolves it.
         this.chatLastImagePaths.set(chatId, resolved.path)
+        this.chatPendingImageRefs.delete(chatId)
         return '[图片:' + resolved.path + ']'
       case 'voice': {
         if (this.deps.transcriber.enabled) {
@@ -1884,7 +1901,7 @@ export class ChatBridge {
 
   /** Whether a session id must never be created again (this run or on disk). */
   private isSessionIdBlocked(id: string): boolean {
-    return this.brokenSessions.has(id) || this.retiredSessionIds.includes(id)
+    return this.brokenSessions.has(id) || this.retiredSessionIds.has(id)
   }
 
   /** A suffixed session id for a chat that avoids every blocked id. */
@@ -1900,9 +1917,7 @@ export class ChatBridge {
    * so a restart never reuses an id whose log collides with a fresh session. */
   private retireSession(id: string): void {
     this.brokenSessions.add(id)
-    if (!this.retiredSessionIds.includes(id)) {
-      this.retiredSessionIds.push(id)
-    }
+    this.retiredSessionIds.add(id)
     void this.saveRetired()
   }
 
@@ -1945,9 +1960,9 @@ export class ChatBridge {
     try {
       const parsed = JSON.parse(content) as unknown
       if (Array.isArray(parsed)) {
-        this.retiredSessionIds = parsed.filter((id): id is string => typeof id === 'string')
+        this.retiredSessionIds = new Set(parsed.filter((id): id is string => typeof id === 'string'))
         for (const id of this.retiredSessionIds) this.brokenSessions.add(id)
-        this.deps.log('debug', 'retired-sessions file has ' + this.retiredSessionIds.length + ' id(s)')
+        this.deps.log('debug', 'retired-sessions file has ' + this.retiredSessionIds.size + ' id(s)')
       } else {
         this.deps.log('warn', 'retired-sessions file is not a JSON array; ignoring')
       }
@@ -1964,7 +1979,7 @@ export class ChatBridge {
       // Atomic write: a temp file + rename never leaves a half-written file
       // that a concurrent/future loadRetired could parse into a broken empty set.
       const tmpPath = this.retiredPath() + '.tmp'
-      await writeFile(tmpPath, JSON.stringify(this.retiredSessionIds, null, 2), 'utf8')
+      await writeFile(tmpPath, JSON.stringify(Array.from(this.retiredSessionIds), null, 2), 'utf8')
       await rename(tmpPath, this.retiredPath())
     } catch (error) {
       this.deps.log('warn', 'retired-sessions save failed: ' + (error instanceof Error ? error.message : String(error)))
@@ -2229,11 +2244,6 @@ function nodeContentText(content: unknown): string {
   }
   if (typeof content === 'string') return content.trim()
   return ''
-}
-
-/** Convenience for tools: file → base64 segment with the plugin's caps. */
-export async function imageSegment(path: string, maxBytes: number): Promise<OutboundSegment> {
-  return { type: 'image', data: { file: await fileToBase64(path, maxBytes) } }
 }
 
 export { OneBotNotConnectedError, OneBotActionError }

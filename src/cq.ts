@@ -33,7 +33,6 @@ export interface ParsedMessage {
   replyId?: string
   /** OneBot forward id embedded in the message, if any. */
   forwardId?: string
-  mentioned: boolean
 }
 
 /**
@@ -51,14 +50,6 @@ export function cqUnescape(value: string): string {
     .replaceAll('&amp;', '&')
 }
 
-/** Escape the other way (used when embedding user text into CQ attributes). */
-export function cqEscape(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('[', '&#91;')
-    .replaceAll(']', '&#93;')
-    .replaceAll(',', '&#44;')
-}
 
 /** QQ face id → emoji (common set; unknown ids fall back to a neutral face). */
 const FACE_EMOJI: Record<string, string> = {
@@ -271,7 +262,7 @@ export function parseMessage(segments: OneBotSegment[] | undefined, raw: string)
   }
 
   const text = textParts.join('').trim()
-  return { text, media, replyId, forwardId, mentioned: false }
+  return { text, media, replyId, forwardId }
 }
 
 /** Extract the plain text of a quoted (get_msg) message for [引用] expansion. */
