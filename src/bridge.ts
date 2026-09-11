@@ -1203,6 +1203,8 @@ export class ChatBridge {
     // otherwise overwrite chat-sessions.json etc.); only a whitelisted
     // extension survives into the fresh media_* name.
     const ext = extForInboundName(name)
+    // Streaming size cap for both URL branches below (0 = uncapped).
+    const maxBytes = this.deps.config.maxInboundFileBytes > 0 ? this.deps.config.maxInboundFileBytes : undefined
     const fid = ref.fileId ?? ref.file ?? ''
     if (fid === '') return ''
     try {
@@ -1211,10 +1213,12 @@ export class ChatBridge {
         url?: string
       }
       if (direct.url !== undefined && direct.url !== '') {
-        const localPath = await this.downloadToMedia(direct.url, ext)
-        if (localPath !== '') {
+        try {
+          const localPath = await this.deps.media.downloadUrl(direct.url, ext, maxBytes)
           this.deps.log('info', 'qq file fetched via direct link: ' + localPath)
           return '[文件:' + localPath + ']'
+        } catch (error) {
+          this.deps.log('warn', 'qq file direct download failed: ' + (error instanceof Error ? error.message : String(error)))
         }
       }
     } catch (error) {
@@ -1242,10 +1246,12 @@ export class ChatBridge {
         }
       }
       if (data.url !== undefined && /^https?:\/\//.test(data.url)) {
-        const localPath = await this.downloadToMedia(data.url, ext)
-        if (localPath !== '') {
+        try {
+          const localPath = await this.deps.media.downloadUrl(data.url, ext, maxBytes)
           this.deps.log('info', 'qq file fetched via get_file url: ' + localPath)
           return '[文件:' + localPath + ']'
+        } catch (error) {
+          this.deps.log('warn', 'qq file direct download failed: ' + (error instanceof Error ? error.message : String(error)))
         }
       }
     } catch (error) {
@@ -1253,26 +1259,6 @@ export class ChatBridge {
     }
     this.deps.log('warn', 'qq file fetch failed: no direct link / base64 / http url available for ' + fid)
     return ''
-  }
-
-  /** Download a URL into the media dir under a fresh name; returns the path or ''. */
-  private async downloadToMedia(url: string, ext: string): Promise<string> {
-    try {
-      const response = await fetch(url)
-      if (!response.ok || response.body === null) {
-        this.deps.log('warn', 'qq file direct download failed: HTTP ' + response.status)
-        return ''
-      }
-      const buffer = Buffer.from(await response.arrayBuffer())
-      if (this.deps.config.maxInboundFileBytes > 0 && buffer.length > this.deps.config.maxInboundFileBytes) {
-        this.deps.log('warn', 'qq file too large (' + buffer.length + 'B), skipping')
-        return ''
-      }
-      return await this.writeMediaFile(buffer, ext)
-    } catch (error) {
-      this.deps.log('warn', 'qq file direct download failed: ' + (error instanceof Error ? error.message : String(error)))
-      return ''
-    }
   }
 
   /** Write bytes into the media dir under a fresh unpredictable name; returns the path or ''. */
