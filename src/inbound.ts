@@ -23,7 +23,7 @@ import { cqUnescape, detectMention, parseMessage, segmentText } from './cq.js'
 import type { AccessPolicyConfig, ChatId, UserRole } from './chat.js'
 import {
   buildChatId, buildGroupMessagePrefix, classifyUserRole, dmAllowed, groupAllowed,
-  RESTRICTED_PREFIX, sanitizeNickname,
+  RESTRICTED_PREFIX, sanitizeNickname, wrapUserMessage,
 } from './chat.js'
 import type { BridgeConfig } from './bridge.js'
 import type { ChatSettings } from './registry.js'
@@ -57,7 +57,8 @@ export interface NormalizedInbound {
   /** OneBot forward id embedded in the message, if any. */
   forwardId?: string
   /** Raw sender-controlled nickname (card ?? nickname ?? userId) — NOT yet
-   * sanitized; the M1-A7 sanitize choke point stays in the pipeline. */
+   * sanitized; the pipeline's M3-D5 identity whitelist sanitizes it before it
+   * reaches the prefix, the boundary attribute or lastNickname. */
   nickname: string
 }
 
@@ -193,8 +194,9 @@ export class InboundPipeline {
       return
     }
 
-    // Single choke point: whatever the sender controls must stay single-line
-    // and bounded before it feeds the prefix and lastNickname (M1-A7).
+    // M3-D5 identity whitelist: the sanitized nickname feeds the single-line
+    // prefix, the <user_message> attribute and lastNickname — one value,
+    // provably line-safe and markup-free for all three surfaces.
     const nickname = sanitizeNickname(inbound.nickname)
 
     // B8c: lazy idle eviction before processing each inbound message (flush →
@@ -238,18 +240,20 @@ export class InboundPipeline {
     const isAdmin = classifyUserRole(userId, policy.adminUsers) === 'admin'
     if (this.rateLimited(chatId)) return
 
-    let final = body
-    if (quote !== '') final = quote + '\n' + final
-    if (forward !== '') final = forward + '\n' + final
+    // M3-D5: the whole sender-controlled payload (body + quote/forward
+    // expansions) enters the prompt inside the <user_message> boundary, so
+    // forged prefix lines, restricted-member tags and system-prompt-like text
+    // stay pure data. The framework-generated group prefix and
+    // RESTRICTED_PREFIX remain outside — the only trusted metadata.
+    const content = [forward, quote, body].filter(part => part !== '').join('\n')
+    if (content.trim() === '') return
+    let final = wrapUserMessage(content, userId, nickname)
     if (kind === 'group') {
       final = buildGroupMessagePrefix(nickname, userId, mentioned) + final
       if (!isAdmin && this.ctx.config.restrictedMemberPrefix) {
         final = RESTRICTED_PREFIX + final
       }
     }
-    final = final.trim()
-    if (final === '') return
-
     await this.ctx.dispatchFollowup(chatId, final, isAdmin ? 'admin' : 'member', nickname)
   }
 

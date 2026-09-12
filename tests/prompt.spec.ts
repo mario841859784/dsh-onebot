@@ -9,10 +9,12 @@ describe('buildPlatformPrompt', () => {
     expect(text).toContain('纯文本提问并等待用户回复')
     // Host plan mode must be exit-able from QQ without the Web review card.
     expect(text).toContain('/plan off')
+    // M3-D5: the user_message boundary declaration is part of the platform section.
+    expect(text).toContain('<user_message')
   })
 
   it('keeps the restricted-member prefix note only when enabled', () => {
-    expect(buildPlatformPrompt(false)).not.toContain('受限用户')
-    expect(buildPlatformPrompt(true)).toContain('受限用户')
+    expect(buildPlatformPrompt(false)).not.toContain('来自受限用户')
+    expect(buildPlatformPrompt(true)).toContain('来自受限用户')
   })
 })

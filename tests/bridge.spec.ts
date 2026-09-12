@@ -446,7 +446,7 @@ describe('ChatBridge', () => {
     const h = await makeHarness()
     h.sendText('你好，帮我看看这个')
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
-    expect(h.captured.followups[0].text).toBe('你好，帮我看看这个')
+    expect(h.captured.followups[0].text).toBe('<user_message qq="10001" nickname="小明">\n你好，帮我看看这个\n</user_message>')
     h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('assistant/message', {
       turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '这是回复' }] },
     }))
@@ -468,7 +468,7 @@ describe('ChatBridge', () => {
     const h = await makeCmdHarness({ interimRecallMs: 60_000 })
     h.sendGroupTextAs('帮我查一下', 10001)
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
-    expect(h.captured.followups[0].text).toMatch(/^\[\d{2}:\d{2} 用户10001\(10001\)\]\[@我\] @10002帮我查一下$/)
+    expect(h.captured.followups[0].text).toMatch(/^\[\d{2}:\d{2} 用户10001\(10001\)\]\[@我\] <user_message qq="10001" nickname="用户10001">\n@10002帮我查一下\n<\/user_message>$/)
     const session = { id: h.sessionIds[0] }
     h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
       turn: 1, step: 1, message: { role: 'assistant', id: 'g-interim-1', content: [
