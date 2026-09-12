@@ -182,6 +182,20 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 |---|---|
 | 全天 | **M2-T0 启动（bridge.ts 五拆的测试安全网）**：用户确认生产已升 v0.2.1（90129d2 全量在产）；R5 NapCat 4401 重试 24h 观察由用户豁免收口；trim-cli 会话已建立，真机验证能力就位。T0 范围：①特征化测试补齐（命令路由全表/出站闸门矩阵/registry 持久化 round-trip/入站管线顺序/interim 时序/golden 快照/ensureChat 并发现状）；②tests/README.md 五拆迁移地图（现有用例 → commands/inbound/outbound/interim/registry/card-relay 目标 spec）；③打 pre-refactor-baseline tag。铁律：src/ 零改动，纯特征化钉现状 |
 | 全天 | **T0 记录（commit 见 git log）**：vitest **212 passed + 1 todo（213）**（基线 200 → +12 特征化 +1 todo）、tsc 0 错误。新增 12 用例：/help 全表快照、14 命令非管理员拒绝矩阵（无副作用断言）、RESTRICTED_PREFIX 注入（成员注/管理员不注）、断线闸门直测（queuable 入队重连补发/非 queuable 抛 OneBotNotConnectedError）、mapping 真 round-trip（钉死：preset 从会话记录回填压过 config、model 无按会话持久化用当前 defaultModel）、collision 自愈端到端（映射清空→新后缀 id 重建+回填）、入站管线顺序 spy（policy→mention→command→media→quote→dispatch）、sendInterim 记账+回填+去重、settleLoop 先排空发送链再快照、golden×3（私聊纯文本/群聊@+工具调用 interim→摘要卡→撤回→final/长文本单 t2i 卡片）。桩设施增量：makeHarness +textImageThreshold、makeCmdHarness +restrictedMemberPrefix。**疑似已知竞态（实证）**：同 chatId 并发首条消息时 ensureChat 双过空表检查——agents.create 被调 2 次、同一裸 session id、chats 仅存后者（80ms create 延迟双并发实测）→ 按 PM 指示 it.todo 留待 M2-PR3 B8a 修复后转正，不固化绿断言；tests/README.md 已载实测证据。src/ 零改动 |
+### 2026-09-11（M2 五拆进行中：T0/C2/PR1/PR2/PR3）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **M2-T0 特征化加固收口（commit 238ba61，src 零改动）**：+12 特征化用例钉现状——14 命令×非管理员拒绝矩阵（无副作用断言）、出站闸门直测（queuable 入队重连补发/非 queuable 抛 OneBotNotConnectedError）、mapping 真 round-trip（preset 从会话记录回填压过 config、model 无按会话持久化）、入站管线顺序 spy（policy→mention→command→media→quote→dispatch）、interim 时序（sendInterim 记账+settleLoop 排空）、golden×3（私聊纯文本/群聊@+工具调用 interim→摘要卡→撤回→final/长文本单 t2i 卡片）；ensureChat 并发竞态实证（80ms 双并发 agents.create×2、后者覆盖前者成孤儿）按 PM 指示 it.todo 留位不固化绿断言；tests/README.md 五拆迁移地图（65 条用例→五拆目标 spec；共享桩提取随 9b5701e 为 PR1 前置）；打基线 tag pre-refactor-baseline。**取舍**：纯钉现状——已知竞态进 todo 不进基线，红线留给 B8a 转正 |
+| 全天 | **M2-C2 createChatAgent 工厂（commit fd3f33c）**：19 字段字面量 + buildSetup + modelWiring 三件套统一 ensureChat/loadMapping 双份装配（行为零变化）；lastNickname 分歧按现状保留并特征化钉死；字段快照测试钉装配面。**取舍**：分歧不趁 refactor 顺手改——改行为走独立评审，五拆期间断言语义不动 |
+| 全天 | **M2-PR1 命令表化（commit da7b549）**：新建 src/commands.ts（568 行）——14 命令一行一注册；窄接口 CommandContext（30 成员，按处理器实际触达面收敛）；/help 由表生成（与原硬编码逐字一致）；adminOnly 从分支判断改声明性元数据；15 条命令用例迁 tests/commands.spec.ts；bridge.ts 2249→1814；tools.ts diff=0。**取舍**：门禁仍守路由入口单点，不随 adminOnly 元数据散落各处理器 |
+| 全天 | **M2-PR2 出站管线（commit 4243625）**：新建 src/outbound.ts（249 行，OutboundPipeline 类，B6 pendingSends 随迁）+ src/card-relay.ts（83 行，计划书/提问卡渲染近乎纯函数）；bridge 保留同名 facade（sendToChat 等调用面不变）；interim 五件套零触碰走 facade；bridge.ts →1624；golden 三条留守 bridge.spec。**取舍**：facade 防涟漪——tools.ts 零改动优先于一次性搬净 |
+| 全天 | **M2-PR3a 会话注册表（commit 66b2dbe）**：新建 src/registry.ts（786 行，ChatRegistry）——chats/bySession/ensureChat/loadMapping/createChatAgent/mapping/retired 全域搬入；ChatSettings 值对象收拢 5 Map+pendingImageRef（/new survive 语义逐字保持）。**取舍**：行为零变化为唯一验收——持久化格式逐字节不变 |
+| 全天 | **M2-PR3b B8 四子项（commit 278006f）**：a) ensureChat in-flight 缓存——T0 it.todo 转正（并发 10 条 create 恰 1 次）；b) 孤儿 agent dispose（create/resume 双路径）；c) 空闲淘汰 `chatIdleEvictDays`（默认 7，`0`=禁用；flush 成功才 dispose、不 retire、映射保留可 resume；双语 README 配置表已加行）；d) 发送链解耦——outbound 自有 sendChains，未注册 chat 也串行；bridge.ts →1116，持久化 JSON 格式逐字节不变。合并树 vitest **221/221** 全绿（200→221，+21）、tsc 0 错误。**取舍**：淘汰只清内存态——先 flush 后 dispose 且映射保留，宁多一次 resume 不丢会话 |
+| 全天 | **已知边界（后续清理候选）**：①outbound 自有 pendingSends 后，bridge.ts 残留同名死字段/死代码路径，PR4 清理；②B8c 空闲淘汰连 ChatSettings 一并清空——/workspace /preset /mode 等 per-chat override 随之重置，与 /new survive 语义不一致，是否保留属产品决策待定；③commands 命令表冻结、CommandChatView 结构子型——扩命令/触达面须同步 CommandContext 窄接口；④qq_send_* URL 出站分支 NapCat 侧抓取、DNS rebinding TOCTOU 时间窗——承 M1 Wave2/Wave3 已知边界未变 |
+
+补记：生产 v0.2.1 运行由用户确认、R5 NapCat 4401 重试 24h 观察由用户豁免收口、trim-cli 会话就位（真机验证能力可用）——此前仅口头确认、只在 2026-09-10「M2 启动」T0 行随 T0 前置带过，本行集中补记存档。
+
 ---
 
 ## 3. 关键决策与坑（按价值排序）

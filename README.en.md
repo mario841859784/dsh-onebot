@@ -130,6 +130,7 @@ default). Common options:
 | `allowPrivateHosts` | `false` | allow downloads from private/loopback addresses (skips only the private-network check; the protocol allowlist and size limits still apply); enable only in trusted setups such as a local reverse proxy |
 | `agentPreset` | empty | agent preset for sessions (empty = default) |
 | `workspacePath` | empty | workspace for sessions (empty = host cwd) |
+| `chatIdleEvictDays` | `7` | idle-session eviction (days): when a chat has had no activity for longer than this, its in-memory agent is cleaned up before the next inbound message is processed (the session is flushed to disk first and the mapping is kept, so a later message from the same chat resumes the original session); `0` = disabled |
 
 > ⚠️ **BREAKING (M0 security hardening)**: in reverse mode an empty `accessToken` refuses to start (fail-closed); the `host` default changed from `0.0.0.0` to `127.0.0.1` (loopback only) — cross-machine deployments must explicitly configure `host: 0.0.0.0`.
 
@@ -222,7 +223,7 @@ automatically from the system and fixed paths at startup; missing glyphs render 
 
 ```sh
 ./scripts/build.sh                 # compile src/ → lib/
-./node_modules/.bin/vitest run     # 200 tests: unit + real WS peer + full pipeline
+./node_modules/.bin/vitest run     # 221 tests: unit + real WS peer + full pipeline
 ```
 
 Lessons ported from the source DEVLOG:

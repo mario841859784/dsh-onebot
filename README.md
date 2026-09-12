@@ -126,6 +126,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `allowPrivateHosts` | `false` | 下载媒体 URL 时允许私网/环回地址（仅跳过私网检查，协议白名单与限长仍生效）；仅本机反代等可信场景开启，公网部署保持 `false` |
 | `agentPreset` | 空 | 会话挂载的 agent preset（留空=默认） |
 | `workspacePath` | 空 | 会话挂载的工作区（留空=宿主 cwd） |
+| `chatIdleEvictDays` | `7` | 会话空闲淘汰天数：chat 超过该天数无任何活动时，在下一条入站消息处理前清理其内存态 agent（会话先 flush 落盘、映射保留，同一 chat 之后再发消息可 resume 恢复原会话）；`0` = 禁用 |
 
 > ⚠️ **BREAKING（M0 安全加固）**：reverse 模式下 `accessToken` 留空会拒绝启动（fail-closed）；`host` 默认从 `0.0.0.0` 改为 `127.0.0.1`（仅本机监听），跨机部署需显式配置 `host: 0.0.0.0`。
 
@@ -249,7 +250,7 @@ header cwd 回填（会话 cwd 创建时冻结）：只要该 chat 用的是非�
 
 ```sh
 ./scripts/build.sh                 # 编译 src/ → lib/
-./node_modules/.bin/vitest run     # 200 个测试：单元 + 真实 WS 对端 + 全管线
+./node_modules/.bin/vitest run     # 221 个测试：单元 + 真实 WS 对端 + 全管线
 ```
 
 要点（来自移植源 DEVLOG 的教训）：
