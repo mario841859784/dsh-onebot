@@ -45,6 +45,10 @@ export interface BridgeConfig {
    * while the turn is still running (QQ recall window ~2 min); absent → 90s.
    * At turn/end the remaining originals are recalled immediately regardless. */
   interimRecallMs?: number
+  /** M3-D2b degrade switch: false = send-only interims — no auto-recall
+   * timers, no turn/end immediate recall and no summary card (the turn ends
+   * with the final text only). Absent/true = the full recall behavior. */
+  interimRecall?: boolean
   sendErrorNotice: boolean
   /** B7: per-chat per-minute sliding-window cap for normal (non-command)
    * messages; absent → 30, 0 disables. */

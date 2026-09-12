@@ -94,7 +94,7 @@ export interface InterimContext {
   /** Bridge log line callback. */
   log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void
   /** The only config fields the interim domain reads. */
-  config: Pick<BridgeConfig, 'interimRecallMs' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies'>
+  config: Pick<BridgeConfig, 'interimRecallMs' | 'interimRecall' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies'>
 }
 
 /**
@@ -312,7 +312,8 @@ export class InterimTracker {
   /** Send completion: backfill the placeholder in place with one entry per
    * message id (a placeholder already dropped from the buffer — the inbound
    * residue reset swapped the array — is never re-added) and arm the per-id
-   * auto-recall timers regardless: the messages are on screen. */
+   * auto-recall timers (skipped when the interimRecall degrade switch is
+   * false): the messages are on screen. */
   private completeInterim(chatId: ChatId, chat: InterimChat, entry: { id: string; text: string; sentAt: number }, ids: string[]): void {
     const sentAt = Date.now()
     const index = chat.loopBuffer.indexOf(entry)
@@ -320,9 +321,11 @@ export class InterimTracker {
       chat.loopBuffer.splice(index, 1, ...ids.map(id => ({ id, text: entry.text, sentAt })))
     }
     const delay = this.ctx.config.interimRecallMs ?? 90_000
-    for (const id of ids) {
-      const timer = setTimeout(() => this.revokeInterim(chatId, chat, id), delay)
-      chat.recallTimers.set(id, timer)
+    if (this.ctx.config.interimRecall ?? true) {
+      for (const id of ids) {
+        const timer = setTimeout(() => this.revokeInterim(chatId, chat, id), delay)
+        chat.recallTimers.set(id, timer)
+      }
     }
   }
 
@@ -340,7 +343,9 @@ export class InterimTracker {
    * set (bookkeeping: enqueue count == completion count — no reliance on
    * microtask registration order), then render ONE t2i summary card of
    * all interims, immediately recall the still-on-screen originals, and finally
-   * send the deferred final text. No merged-forward any more — QQ refuses to
+   * send the deferred final text. With the interimRecall degrade switch off,
+   * the summary card and the immediate recall are skipped — the turn ends
+   * with the final text only. No merged-forward any more — QQ refuses to
    * recall messages older than ~2 min, and a forward of aged interims would
    * leave the originals plus a duplicate card, so interims are surfaced live
    * and auto-revoked per message (90s) during long turns.
@@ -359,7 +364,7 @@ export class InterimTracker {
     await Promise.all(rec.inFlight)
     const buf = chat.loopBuffer
     chat.loopBuffer = []
-    if (buf.length >= 1) {
+    if ((this.ctx.config.interimRecall ?? true) && buf.length >= 1) {
       try {
         await this.sendInterimSummary(chatId, buf)
       } catch (error) {

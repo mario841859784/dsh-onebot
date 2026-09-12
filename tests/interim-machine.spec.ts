@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest'
 import { InterimTracker } from '../src/interim.js'
 import type { InterimChat } from '../src/interim.js'
 
-function makeHarness(opts?: { interim?: boolean; interimRecallMs?: number; failSends?: boolean; sendIds?: string[] }) {
+function makeHarness(opts?: { interim?: boolean; interimRecallMs?: number; interimRecall?: boolean; failSends?: boolean; sendIds?: string[] }) {
   const sentTexts: string[] = []
   const recalledIds: string[] = []
   const summaryCards: number[] = []
@@ -38,6 +38,7 @@ function makeHarness(opts?: { interim?: boolean; interimRecallMs?: number; failS
     log: () => undefined,
     config: {
       interimRecallMs: opts?.interimRecallMs,
+      interimRecall: opts?.interimRecall,
       maxImageBytes: 8 * 1024 * 1024,
       cardFooter: 'dsh',
       fontFiles: [],
@@ -238,5 +239,19 @@ describe('InterimTracker state machine (M3-D2a)', () => {
     await new Promise(resolve => setTimeout(resolve, 60))
     expect(h.recalledIds).toEqual(['7'])
     expect(h.chat.recalledInterimIds.has('7')).toBe(true)
+  })
+
+  it('interimRecall=false: settlement skips the card and the recall, flushes only the final', async () => {
+    const h = makeHarness({ interimRecall: false })
+    h.tracker.onAssistantMessage('private:10001', h.chat, h.assistant('中间步', { toolCall: true }) as never)
+    h.tracker.onAssistantMessage('private:10001', h.chat, h.assistant('最终答') as never)
+    h.tracker.onTurnEnd('private:10001', h.chat)
+    await h.settle()
+    expect(h.tracker.stateOf(h.chat)).toBe('idle')
+    expect(h.summaryCards).toEqual([])
+    expect(h.recalledIds).toEqual([])
+    expect(h.sentTexts).toEqual(['中间步', '最终答'])
+    expect(h.chat.recallTimers.size).toBe(0)
+    expect(h.chat.loopBuffer).toHaveLength(0)
   })
 })

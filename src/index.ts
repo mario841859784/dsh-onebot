@@ -78,6 +78,8 @@ export interface Config {
   interimMessages: boolean
   /** Per-interim auto-recall delay (ms) from each interim's send completion. */
   interimRecallMs: number
+  /** M3-D2b: interim recall degrade switch (false = send-only interims). */
+  interimRecall: boolean
   sendErrorNotice: boolean
   /** Per-chat per-minute sliding-window cap for normal (non-command) messages; 0 disables. */
   rateLimitPerMinute: number
@@ -158,6 +160,8 @@ export const Config: z<Config> = z.object({
     .description('是否把模型每步（含工具调用之间的中间回复）的文本立即发出；false 则只发最终回复。true 时：中间消息实时可见、每条在 interimRecallMs 后自动单独撤回、回合结束先发一张整轮 t2i 小结卡再发最终回复'),
   interimRecallMs: z.number().default(90_000)
     .description('中间消息各自发送完成后多久自动单独撤回（毫秒；QQ 撤回时限约 2 分钟，建议 ≤110000）'),
+  interimRecall: z.boolean().default(true)
+    .description('中间消息撤回开关：true（默认）=每条中间消息在 interimRecallMs 后自动撤回，回合结束先发整轮 t2i 小结卡再立即撤回原消息；false=只发不撤——中间消息照常实时发出但保留在聊天里：不排自动撤回定时器、回合结束不发小结卡也不撤回原消息，只发最终回复'),
   sendErrorNotice: z.boolean().default(true)
     .description('一轮运行出错时向用户发送 ⚠️ 错误提示'),
   rateLimitPerMinute: z.number().default(30)
@@ -316,6 +320,7 @@ export function apply(ctx: Context, config: Config): void {
       requireMention: config.requireMention,
       interimMessages: config.interimMessages,
       interimRecallMs: config.interimRecallMs,
+      interimRecall: config.interimRecall,
       sendErrorNotice: config.sendErrorNotice,
       rateLimitPerMinute: config.rateLimitPerMinute,
       restrictedMemberPrefix: config.restrictedMemberPrefix,

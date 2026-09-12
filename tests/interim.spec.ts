@@ -541,3 +541,86 @@ describe('interim tracker', () => {
     await h.connection.stop()
   }, 30_000)
 })
+
+describe('interimRecall=false degrade switch (M3-D2b): send-only interims', () => {
+  it('sends interims live but never recalls: no auto-recall timer, no turn/end card, no delete_msg', async () => {
+    const h = await makeCmdHarness({ interimRecallMs: 40, interimRecall: false })
+    h.sendText('开始长任务')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const session = { id: h.sessionIds[0] }
+    // A tool-carrying interim goes out live as usual…
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 1, message: { role: 'assistant', id: 'dr-1', content: [
+        { type: 'text', text: '第一步：查资料' },
+        { type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{}' },
+      ] },
+    }))
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('第一步'))).toBe(true)
+    })
+    // …but its 40ms auto-recall window elapses while the turn runs: nothing revoked.
+    await new Promise(resolve => setTimeout(resolve, 150))
+    expect(h.outbound.some(f => f.action === 'delete_msg')).toBe(false)
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 2, message: { role: 'assistant', id: 'dr-2', content: [{ type: 'text', text: '最终结论' }] },
+    }))
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    // Settlement sends the final only: no summary card, no immediate recall.
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('最终结论'))).toBe(true)
+    })
+    expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('"type":"image"'))).toBe(false)
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(h.outbound.some(f => f.action === 'delete_msg')).toBe(false)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 30_000)
+
+  it('keeps every step live and ends the turn with only the final (deferred path, no card/recall)', async () => {
+    const h = await makeCmdHarness({ interimRecall: false })
+    h.sendText('开始长任务')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const session = { id: h.sessionIds[0] }
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 1, message: { role: 'assistant', id: 'dr-3', content: [{ type: 'text', text: '中间评论一' }] },
+    }))
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 2, message: { role: 'assistant', id: 'dr-4', content: [{ type: 'text', text: '中间评论二' }] },
+    }))
+    // Step 1 flushes as interim when step 2 proves it; step 2 stays deferred.
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('中间评论一'))).toBe(true)
+    })
+    expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('中间评论二'))).toBe(false)
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('中间评论二'))).toBe(true)
+    })
+    expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('"type":"image"'))).toBe(false)
+    expect(h.outbound.some(f => f.action === 'delete_msg')).toBe(false)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 30_000)
+
+  it('combines with interimMessages=false: pure instant mode — exactly one final send', async () => {
+    const h = await makeCmdHarness({ interimMessages: false, interimRecall: false })
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const session = { id: h.sessionIds[0] }
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 1, message: { role: 'assistant', id: 'dr-5', content: [{ type: 'text', text: '这是回复' }] },
+    }))
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('这是回复'))).toBe(true)
+    })
+    expect(h.outbound.filter(f => f.action === 'send_msg')).toHaveLength(1)
+    expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('"type":"image"'))).toBe(false)
+    expect(h.outbound.some(f => f.action === 'delete_msg')).toBe(false)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 30_000)
+})
