@@ -196,6 +196,12 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 
 补记：生产 v0.2.1 运行由用户确认、R5 NapCat 4401 重试 24h 观察由用户豁免收口、trim-cli 会话就位（真机验证能力可用）——此前仅口头确认、只在 2026-09-10「M2 启动」T0 行随 T0 前置带过，本行集中补记存档。
 
+### 2026-09-12（M2 收官：五拆完成，v0.3.0）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **M2 收官核对 + 发布 v0.3.0**：五拆完成——bridge.ts 2249→681（-70%），七模块 bridge/registry/commands/inbound/outbound/interim/card-relay 合计 3168 行；测试 200→234（vitest 234/234、tsc 0 错误）；行为零变化（唯一有意变更 = C5a /model 会话级语义）；全程 tools.ts diff=0；基线 tag pre-refactor-baseline →五个 PR 逐个独立 commit 可 revert。B8 收尾核对五项全部测试落位：B8a ensureChat in-flight 缓存（tests/registry.spec.ts:967，并发首条 create 恰 1 次）；B8b 孤儿 agent dispose（tests/registry.spec.ts:978，whenIdle 抛错路径 dispose×1+零残留）；B8c 空闲淘汰 chatIdleEvictDays（tests/registry.spec.ts:1001，dispose+映射保留+resume 同会话恢复）；B8d 发送链解耦（tests/bridge.spec.ts:533，未注册 chat 亦串行）；recalledInterimIds turn/start 修剪（tests/interim.spec.ts:490，同 id 复用不复发）。**已知边界承前**：file:// 分支、DNS rebinding TOCTOU、URL 出站（NapCat 侧抓取）、正文伪前缀属 D5；B8c 淘汰即重置 per-chat override 待产品决策；commands 直写 ChatAgent interim 字段待 D2 收口 |
+
 ---
 
 ## 3. 关键决策与坑（按价值排序）
