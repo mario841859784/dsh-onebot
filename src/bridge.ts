@@ -12,21 +12,15 @@ import type { AgentRegistry, ModelSelection } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionId, SessionStore } from '@deepseek-ai/dsh-session'
 import type { Context } from '@deepseek-ai/cordis'
-import { realpath, writeFile } from 'node:fs/promises'
+import { realpath } from 'node:fs/promises'
 
 
 import type { OneBotConnection, OneBotEvent } from './connection.js'
 import type { MediaStore } from './media.js'
-import { extForInboundName } from './media.js'
 import type { Transcriber } from './stt.js'
-import { transcriptLabel } from './stt.js'
-import type { OneBotSegment, MediaRef } from './cq.js'
-import { cqUnescape, detectMention, parseMessage, segmentText } from './cq.js'
+import type { MediaRef } from './cq.js'
 import type { ChatId, UserRole } from './chat.js'
-import {
-  buildChatId, buildGroupMessagePrefix, classifyUserRole, dmAllowed, groupAllowed,
-  RESTRICTED_PREFIX, sanitizeNickname, splitChatId,
-} from './chat.js'
+import { classifyUserRole, splitChatId } from './chat.js'
 import type { AccessPolicyConfig } from './chat.js'
 import { renderTextImage } from './t2i/index.js'
 import { buildPlatformPrompt } from './prompt.js'
@@ -37,6 +31,8 @@ import { OutboundPipeline } from './outbound.js'
 import type { OutboundSegment, SendOptions } from './outbound.js'
 import { ChatRegistry } from './registry.js'
 import type { ChatAgent } from './registry.js'
+import { InboundPipeline, normalizeOneBot11 } from './inbound.js'
+import type { NormalizedInbound } from './inbound.js'
 /** Resolved runtime configuration for the bridge. */
 export interface BridgeConfig {
   botQQ: string
@@ -151,15 +147,15 @@ export class ChatBridge {
   /** The chat↔session registry (D1-PR3): chats/bySession dual index, the
    * persistence pair, per-chat settings and the create/resume assembly. */
   private readonly registry: ChatRegistry
+  /** Inbound pipeline (D1-PR4): normalizeOneBot11 + the policy→media→quote→
+   * dispatch path; the same-name bridge methods below delegate here. */
+  private readonly inbound: InboundPipeline
   /** Live registry indexes — the inbound/outbound/interim/turn links keep
    * reading them through these same-name views. */
   private get chats(): Map<ChatId, ChatAgent> { return this.registry.chats }
   private get bySession(): Map<string, ChatId> { return this.registry.bySession }
   private sessionEventOff: (() => void) | undefined
   private sessionFlushOff: (() => void) | undefined
-  /** Per-chat FIFO of model final replies parked while disconnected; drained
-   * oldest-first on reconnect (M1-B6). */
-  private readonly pendingSends = new Map<ChatId, Array<{ text: string; sentAt: number }>>()
   /** Plugin version + git commit, read once for /ver. */
   private pluginVersion: string | undefined
   private pluginCommit: string | undefined
@@ -186,6 +182,23 @@ export class ChatBridge {
       selfId: () => this.deps.connection.selfId,
       call: (action, params) => this.deps.connection.call(action, params),
       isStopping: () => this.stopping,
+      log: (level, message) => this.deps.log(level, message),
+      config: deps.config,
+    })
+    this.inbound = new InboundPipeline({
+      call: (action, params) => this.deps.connection.call(action, params),
+      selfId: () => this.deps.connection.selfId,
+      policy: deps.policy,
+      getChat: chatId => this.chats.get(chatId),
+      getSettings: chatId => this.registry.getSettings(chatId),
+      sweepIdleChats: () => this.registry.sweepIdleChats(),
+      media: deps.media,
+      transcriber: deps.transcriber,
+      tryHandleCommand: (chatId, text, userId) => this.tryHandleCommand(chatId, text, userId),
+      buildBody: (text, media, chatId) => this.buildBody(text, media, chatId),
+      expandQuote: messageId => this.expandQuote(messageId),
+      dispatchFollowup: (chatId, text, role, nickname) => this.dispatchFollowup(chatId, text, role, nickname),
+      sendToChat: (chatId, text) => this.sendToChat(chatId, text),
       log: (level, message) => this.deps.log(level, message),
       config: deps.config,
     })
@@ -321,128 +334,16 @@ export class ChatBridge {
   async handleInbound(event: OneBotEvent): Promise<void> {
     if (this.stopping) return
     try {
-      await this.processInbound(event)
+      const inbound = normalizeOneBot11(event)
+      if (inbound === null) return
+      await this.processInbound(inbound)
     } catch (error) {
       this.deps.log('error', 'inbound handling failed: ' + (error instanceof Error ? error.message : String(error)))
     }
   }
 
-  private async processInbound(event: OneBotEvent): Promise<void> {
-    const messageType = event.message_type
-    if (messageType !== 'private' && messageType !== 'group') return
-    const userId = String(event.user_id ?? '')
-    if (userId === '') return
-    if (this.deps.config.ignoreSelf && this.deps.connection.selfId !== '' && userId === this.deps.connection.selfId) {
-      return
-    }
-    const groupId = messageType === 'group' ? String(event.group_id ?? '') : ''
-    const policy = this.deps.policy
-    if (messageType === 'private') {
-      if (!dmAllowed(userId, policy)) {
-        this.deps.log('debug', 'ignoring DM from non-allowed user ' + userId)
-        return
-      }
-    } else {
-      if (!groupAllowed(groupId, policy)) {
-        this.deps.log('debug', 'ignoring group message from non-allowed group ' + groupId)
-        return
-      }
-    }
-
-    const segments = Array.isArray(event.message) ? event.message as OneBotSegment[] : undefined
-    const raw = typeof event.raw_message === 'string' ? event.raw_message : String(event.message ?? '')
-    const parsed = parseMessage(segments, raw)
-    const mentioned = detectMention(segments, raw, this.deps.connection.selfId, this.deps.config.botQQ)
-    if (messageType === 'group' && this.deps.config.requireMention && !mentioned) {
-      this.deps.log('debug', 'ignoring unmentioned group message in ' + groupId)
-      return
-    }
-
-    const sender = event.sender ?? {}
-    // Single choke point: whatever the sender controls must stay single-line
-    // and bounded before it feeds the prefix and lastNickname (M1-A7).
-    const nickname = sanitizeNickname(typeof sender.card === 'string' && sender.card !== ''
-      ? sender.card
-      : typeof sender.nickname === 'string' && sender.nickname !== ''
-        ? sender.nickname
-        : userId)
-    const chatId = buildChatId(messageType === 'private' ? 'private' : 'group', messageType === 'private' ? userId : groupId)
-
-    // B8c: lazy idle eviction before processing each inbound message (flush →
-    // dispose → remove; the mapping is kept so the chat can resume).
-    await this.registry.sweepIdleChats()
-
-    // A new user message starts a fresh reply cycle: drop any unmerged loop
-    // residue from the previous cycle so interims never merge across turns.
-    const priorChat = this.chats.get(chatId)
-    if (priorChat !== undefined) {
-      priorChat.loopBuffer = []
-      priorChat.loopPending = null
-    }
-
-    // Fire-and-forget temp cleanup on each inbound.
-    void this.deps.media.cleanupExpired()
-
-    // C6a: route slash commands BEFORE any media/quote I/O — a message that
-    // happens to carry media must not pay for downloads or get_msg calls just
-    // to be consumed as a command (admin-only; unknown /-words still fall
-    // through to the model). The most recent inbound image is registered from
-    // parsed.media up front so /ocr still sees it (resolved lazily there).
-    for (const ref of parsed.media) {
-      if (ref.kind === 'image') this.registry.getSettings(chatId).pendingImageRef = ref
-    }
-    if (await this.tryHandleCommand(chatId, parsed.text, userId)) {
-      return
-    }
-
-    const body = await this.buildBody(parsed.text, parsed.media, chatId)
-
-    let quote = ''
-    if (parsed.replyId !== undefined) {
-      quote = await this.expandQuote(parsed.replyId)
-    }
-    let forward = ''
-    if (parsed.forwardId !== undefined) {
-      forward = await this.expandForward(parsed.forwardId)
-    }
-
-    const isAdmin = classifyUserRole(userId, policy.adminUsers) === 'admin'
-    if (this.rateLimited(chatId)) return
-
-    let final = body
-    if (quote !== '') final = quote + '\n' + final
-    if (forward !== '') final = forward + '\n' + final
-    if (messageType === 'group') {
-      final = buildGroupMessagePrefix(nickname, userId, mentioned) + final
-      if (!isAdmin && this.deps.config.restrictedMemberPrefix) {
-        final = RESTRICTED_PREFIX + final
-      }
-    }
-    final = final.trim()
-    if (final === '') return
-
-    await this.dispatchFollowup(chatId, final, isAdmin ? 'admin' : 'member', nickname)
-  }
-
-  /** B7: sliding-window inbound rate limit for normal (non-command) messages.
-   * Commands consumed by tryHandleCommand never reach this. Returns true when
-   * the message must be dropped; at most one notice is sent per window. */
-  private rateLimited(chatId: ChatId): boolean {
-    const limit = this.deps.config.rateLimitPerMinute ?? 30
-    if (limit <= 0) return false
-    const chat = this.chats.get(chatId)
-    if (chat === undefined) return false
-    const now = Date.now()
-    chat.dispatchTimes = chat.dispatchTimes.filter(t => now - t < 60_000)
-    if (chat.dispatchTimes.length < limit) {
-      chat.dispatchTimes.push(now)
-      return false
-    }
-    if (chat.rateLimitNoticeAt === undefined || now - chat.rateLimitNoticeAt >= 60_000) {
-      chat.rateLimitNoticeAt = now
-      void this.sendToChat(chatId, '⏳ 消息太频繁，请稍后再试。').catch(() => undefined)
-    }
-    return true
+  private async processInbound(inbound: NormalizedInbound): Promise<void> {
+    await this.inbound.processInbound(inbound)
   }
 
   /** Feed one user message into a chat's agent (create on demand). Records
@@ -572,194 +473,18 @@ export class ChatBridge {
    * Build the message body text: placeholders become annotated local paths
    * (images/voices/videos) and voice files are transcribed when enabled.
    */
-  private async buildBody(
-    text: string,
-    media: MediaRef[],
-    chatId: ChatId,
-  ): Promise<string> {
-    if (media.length === 0) return text
-    let out = text
-    for (const ref of media) {
-      const placeholder = placeholderFor(ref)
-      const idx = out.indexOf(placeholder)
-      const annotation = await this.resolveMediaRef(ref, chatId)
-      if (idx >= 0 && annotation !== '') {
-        out = out.slice(0, idx) + annotation + out.slice(idx + placeholder.length)
-      }
-    }
-    return out
+  private buildBody(text: string, media: MediaRef[], chatId: ChatId): Promise<string> {
+    return this.inbound.buildBody(text, media, chatId)
   }
 
   /** Resolve one media ref to a text annotation with a local path. */
-  private async resolveMediaRef(ref: MediaRef, chatId: ChatId): Promise<string> {
-    if (ref.kind === 'file') {
-      return await this.resolveNasFile(ref)
-    }
-    const resolved = await this.deps.media.resolve(ref, async (kind, file) => {
-      if (kind === 'image') {
-        const data = await this.deps.connection.call('get_image', { file }) as { url?: string; file?: string }
-        return { url: data.url, file: data.file }
-      }
-      if (kind === 'voice') {
-        const data = await this.deps.connection.call('get_record', { file, out_format: 'mp3' }) as { file?: string }
-        return { file: data.file }
-      }
-      return undefined
-    })
-    if (resolved === undefined) return ''
-    switch (resolved.kind) {
-      case 'image':
-        // Remember the most recent inbound image for /ocr (survives /new);
-        // consume the pre-routing pending ref so /ocr never re-resolves it.
-        const settings = this.registry.getSettings(chatId)
-        settings.lastImagePath = resolved.path
-        settings.pendingImageRef = undefined
-        return '[图片:' + resolved.path + ']'
-      case 'voice': {
-        if (this.deps.transcriber.enabled) {
-          try {
-            const text = await this.deps.transcriber.transcribe(resolved.path)
-            const label = transcriptLabel(text)
-            if (label !== '') return '[语音]' + label
-          } catch (error) {
-            this.deps.log('warn', 'STT failed: ' + (error instanceof Error ? error.message : String(error)))
-          }
-        }
-        return '[语音]'
-      }
-      case 'video':
-        return '[视频:' + resolved.path + ']'
-      default:
-        return '[文件:' + resolved.path + ']'
-    }
+  private resolveMediaRef(ref: MediaRef, chatId: ChatId): Promise<string> {
+    return this.inbound.resolveMediaRef(ref, chatId)
   }
 
   /** Expand a quoted (reply) message into [引用] text via get_msg. */
-  private async expandQuote(messageId: string): Promise<string> {
-    try {
-      const data = await this.deps.connection.call('get_msg', { message_id: Number(messageId) }) as {
-        message?: unknown
-        raw_message?: string
-        sender?: { nickname?: string }
-      }
-      const segments = Array.isArray(data.message) ? data.message as OneBotSegment[] : undefined
-      const raw = typeof data.raw_message === 'string' ? data.raw_message : ''
-      const text = cqUnescape(segmentText(segments, raw))
-      if (text.trim() === '') return ''
-      const name = data.sender?.nickname ?? ''
-      return '[引用]' + (name !== '' ? name + ': ' : '') + text
-    } catch (error) {
-      this.deps.log('debug', 'quote expansion failed: ' + (error instanceof Error ? error.message : String(error)))
-      return ''
-    }
-  }
-
-  /**
-   * Fetch an inbound QQ file to a local path. NapCat's get_file may return
-   * container-internal paths unreachable from this host, so:
-   *   1. prefer the private-file direct link (get_private_file_url → HTTP
-   *      CDN download, works for private chats);
-   *   2. fall back to get_file base64 / http-url payloads.
-   * Returns the [文件:path] annotation, or '' when disabled/failed.
-   */
-  private async resolveNasFile(ref: MediaRef): Promise<string> {
-    const name = ref.name !== undefined && ref.name !== '' ? ref.name : 'file'
-    // The sender-controlled name never becomes the on-disk path (it could
-    // otherwise overwrite chat-sessions.json etc.); only a whitelisted
-    // extension survives into the fresh media_* name.
-    const ext = extForInboundName(name)
-    // Streaming size cap for both URL branches below (0 = uncapped).
-    const maxBytes = this.deps.config.maxInboundFileBytes > 0 ? this.deps.config.maxInboundFileBytes : undefined
-    const fid = ref.fileId ?? ref.file ?? ''
-    if (fid === '') return ''
-    try {
-      // 1. Private-chat direct link (works without any container access).
-      const direct = await this.deps.connection.call('get_private_file_url', { file_id: fid }) as {
-        url?: string
-      }
-      if (direct.url !== undefined && direct.url !== '') {
-        try {
-          const localPath = await this.deps.media.downloadUrl(direct.url, ext, maxBytes)
-          this.deps.log('info', 'qq file fetched via direct link: ' + localPath)
-          return '[文件:' + localPath + ']'
-        } catch (error) {
-          this.deps.log('warn', 'qq file direct download failed: ' + (error instanceof Error ? error.message : String(error)))
-        }
-      }
-    } catch (error) {
-      this.deps.log('debug', 'get_private_file_url failed (falling back to get_file): ' + (error instanceof Error ? error.message : String(error)))
-    }
-    // 2. get_file: with NapCat's file server enabled it returns a `base64`
-    //    payload or an http(s) `url`; otherwise a container path we cannot reach.
-    try {
-      const data = await this.deps.connection.call('get_file', { file: fid }) as {
-        file?: string
-        url?: string
-        base64?: string
-        file_size?: string | number
-      }
-      const size = Number(data.file_size ?? 0)
-      if (this.deps.config.maxInboundFileBytes > 0 && size > this.deps.config.maxInboundFileBytes) {
-        this.deps.log('warn', 'qq file too large (' + size + 'B), skipping fetch')
-        return ''
-      }
-      if (data.base64 !== undefined && data.base64 !== '') {
-        const localPath = await this.writeMediaFile(Buffer.from(data.base64, 'base64'), ext)
-        if (localPath !== '') {
-          this.deps.log('info', 'qq file fetched via get_file base64: ' + localPath)
-          return '[文件:' + localPath + ']'
-        }
-      }
-      if (data.url !== undefined && /^https?:\/\//.test(data.url)) {
-        try {
-          const localPath = await this.deps.media.downloadUrl(data.url, ext, maxBytes)
-          this.deps.log('info', 'qq file fetched via get_file url: ' + localPath)
-          return '[文件:' + localPath + ']'
-        } catch (error) {
-          this.deps.log('warn', 'qq file direct download failed: ' + (error instanceof Error ? error.message : String(error)))
-        }
-      }
-    } catch (error) {
-      this.deps.log('debug', 'get_file base64/url path failed: ' + (error instanceof Error ? error.message : String(error)))
-    }
-    this.deps.log('warn', 'qq file fetch failed: no direct link / base64 / http url available for ' + fid)
-    return ''
-  }
-
-  /** Write bytes into the media dir under a fresh unpredictable name; returns the path or ''. */
-  private async writeMediaFile(buffer: Buffer, ext: string): Promise<string> {
-    try {
-      // freshPath mints media_<ts>_<uuid><ext>: inbound data can never land
-      // on a known name (chat-sessions.json etc.) no matter what the sender
-      // chose as the file name.
-      await this.deps.media.ensure()
-      const localPath = this.deps.media.freshPath(ext)
-      await writeFile(localPath, buffer)
-      return localPath
-    } catch (error) {
-      this.deps.log('warn', 'media write failed: ' + (error instanceof Error ? error.message : String(error)))
-      return ''
-    }
-  }
-
-  /** Expand a combined-forward id into "name: content" lines. */
-  private async expandForward(forwardId: string): Promise<string> {
-    try {
-      const data = await this.deps.connection.call('get_forward_msg', { id: forwardId }) as {
-        messages?: Array<{ sender?: { nickname?: string; user_id?: number | string }; content?: unknown }>
-      }
-      const lines: string[] = []
-      for (const node of data.messages ?? []) {
-        const name = node.sender?.nickname ?? String(node.sender?.user_id ?? '未知')
-        const text = nodeContentText(node.content)
-        if (text !== '') lines.push(name + ': ' + text)
-      }
-      if (lines.length === 0) return ''
-      return '[合并转发]\n' + lines.join('\n')
-    } catch (error) {
-      this.deps.log('debug', 'forward expansion failed: ' + (error instanceof Error ? error.message : String(error)))
-      return '[合并转发]'
-    }
+  private expandQuote(messageId: string): Promise<string> {
+    return this.inbound.expandQuote(messageId)
   }
 
   // ------------------------------------------------------------ outbound
@@ -1082,35 +807,6 @@ export class ChatBridge {
       event_type: 0,
     }).catch(() => undefined)
   }
-}
-
-/** The placeholder a media ref contributes to the parsed text. */
-function placeholderFor(ref: MediaRef): string {
-  switch (ref.kind) {
-    case 'image': return '[图片]'
-    case 'voice': return '[语音]'
-    case 'video': return '[视频]'
-    default: return ref.name !== undefined ? '[文件:' + ref.name + ']' : '[文件]'
-  }
-}
-
-/**
- * Extract text from a forward-node content (segment array or CQ string).
- */
-function nodeContentText(content: unknown): string {
-  if (Array.isArray(content)) {
-    return content
-      .map(seg => {
-        const s = seg as { type?: string; data?: Record<string, unknown> }
-        if (s?.type === 'text') return String(s.data?.text ?? '')
-        if (s?.type === 'face') return '😀'
-        return '[非文本]'
-      })
-      .join('')
-      .trim()
-  }
-  if (typeof content === 'string') return content.trim()
-  return ''
 }
 
 export { OneBotNotConnectedError, OneBotActionError } from './connection.js'
