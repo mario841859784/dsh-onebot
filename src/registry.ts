@@ -21,6 +21,7 @@ import type { MediaRef } from './cq.js'
 import type { ChatId, UserRole } from './chat.js'
 import { sessionIdForChat } from './chat.js'
 import type { AgentPresetsLike, BridgeConfig, SessionPersistenceLike, WorkspaceRegistryLike } from './bridge.js'
+import { describeError } from './errors.js'
 
 /** The mapping file name inside the media dir. */
 const MAPPING_FILE = 'chat-sessions.json'
@@ -303,7 +304,7 @@ export class ChatRegistry {
       } catch (error) {
         this.retireSession(evicted.session)
         this.evictedChats.delete(chatId)
-        this.deps.log('warn', 'resume of evicted session failed for ' + chatId + '; falling back to a fresh session: ' + (error instanceof Error ? error.message : String(error)))
+        this.deps.log('warn', 'resume of evicted session failed for ' + chatId + '; falling back to a fresh session: ' + describeError(error))
       }
     }
     let sessionId = makeSessionId(sessionIdForChat(chatId))
@@ -336,7 +337,7 @@ export class ChatRegistry {
       // failing the chat.
       this.retireSession(sessionId)
       const fallbackId = this.freshSessionId(chatId)
-      this.deps.log('warn', 'agent create failed (' + (error instanceof Error ? error.message : String(error)) + '); retrying with ' + fallbackId)
+      this.deps.log('warn', 'agent create failed (' + describeError(error) + '); retrying with ' + fallbackId)
       handle = await this.deps.agents.create({
         sessionId: fallbackId,
         meta,
@@ -394,7 +395,7 @@ export class ChatRegistry {
           await this.resumeChat(chatId, sessionId)
         } catch (error) {
           this.retireSession(sessionId)
-          this.deps.log('warn', 'resume failed for ' + chatId + ': ' + (error instanceof Error ? error.message : String(error)))
+          this.deps.log('warn', 'resume failed for ' + chatId + ': ' + describeError(error))
         }
       }
     } catch {
@@ -457,7 +458,7 @@ export class ChatRegistry {
       }
       await writeFile(this.mappingPath(), JSON.stringify(mapping, null, 2), 'utf8')
     } catch (error) {
-      this.deps.log('warn', 'mapping save failed: ' + (error instanceof Error ? error.message : String(error)))
+      this.deps.log('warn', 'mapping save failed: ' + describeError(error))
     }
   }
 
@@ -570,7 +571,7 @@ export class ChatRegistry {
       // every retired id (exactly the 2026-08-17 regression: the bare id
       // lost its retire record and /new collided on the stale log).
       if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-        this.deps.log('warn', 'retired-sessions read failed; keeping the current set: ' + (error instanceof Error ? error.message : String(error)))
+        this.deps.log('warn', 'retired-sessions read failed; keeping the current set: ' + describeError(error))
       }
       return
     }
@@ -586,7 +587,7 @@ export class ChatRegistry {
     } catch (error) {
       // Corrupt JSON: keep the current in-memory set (never replace it with
       // an empty array) and warn so a future save does not obliterate history.
-      this.deps.log('warn', 'retired-sessions file is unparsable; keeping the current set: ' + (error instanceof Error ? error.message : String(error)))
+      this.deps.log('warn', 'retired-sessions file is unparsable; keeping the current set: ' + describeError(error))
     }
   }
 
@@ -599,7 +600,7 @@ export class ChatRegistry {
       await writeFile(tmpPath, JSON.stringify(Array.from(this.retiredSessionIds), null, 2), 'utf8')
       await rename(tmpPath, this.retiredPath())
     } catch (error) {
-      this.deps.log('warn', 'retired-sessions save failed: ' + (error instanceof Error ? error.message : String(error)))
+      this.deps.log('warn', 'retired-sessions save failed: ' + describeError(error))
     }
   }
 
@@ -663,7 +664,7 @@ export class ChatRegistry {
       const preset = await presets.resolve(wanted)
       return preset.id
     } catch (error) {
-      this.deps.log('warn', 'agent preset resolve failed; session header records no preset: ' + (error instanceof Error ? error.message : String(error)))
+      this.deps.log('warn', 'agent preset resolve failed; session header records no preset: ' + describeError(error))
       return undefined
     }
   }
@@ -681,7 +682,7 @@ export class ChatRegistry {
       const inspection = await persistence.inspect(sessionId)
       return resolveRecordedPreset(inspection)
     } catch (error) {
-      this.deps.log('warn', 'preset record read failed for ' + sessionId + ' (falling back to config/default): ' + (error instanceof Error ? error.message : String(error)))
+      this.deps.log('warn', 'preset record read failed for ' + sessionId + ' (falling back to config/default): ' + describeError(error))
       return undefined
     }
   }
@@ -707,7 +708,7 @@ export class ChatRegistry {
       const preset = await this.deps.agentPresets.mount(agentCtx, selected)
       this.deps.log('debug', 'agent joined preset ' + preset.id)
     } catch (error) {
-      this.deps.log('warn', 'agent preset mount failed (tools fall back to the global layer): ' + (error instanceof Error ? error.message : String(error)))
+      this.deps.log('warn', 'agent preset mount failed (tools fall back to the global layer): ' + describeError(error))
     }
   }
 
@@ -745,7 +746,7 @@ export class ChatRegistry {
       await workspace.attachSession(sessionId)
       this.deps.log('info', 'attached session ' + sessionId + ' to workspace ' + headerCwd)
     } catch (error) {
-      this.deps.log('warn', 'workspace attach failed for ' + sessionId + ': ' + (error instanceof Error ? error.message : String(error)))
+      this.deps.log('warn', 'workspace attach failed for ' + sessionId + ': ' + describeError(error))
     }
   }
 
@@ -771,7 +772,7 @@ export class ChatRegistry {
       try {
         await chat.dispose()
       } catch (error) {
-        this.deps.log('warn', 'reset dispose failed: ' + (error instanceof Error ? error.message : String(error)))
+        this.deps.log('warn', 'reset dispose failed: ' + describeError(error))
       }
       this.deps.log('info', 'reset chat ' + chatId + ' (old session ' + chat.sessionId + ' retired)')
     }

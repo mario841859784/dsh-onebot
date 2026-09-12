@@ -10,6 +10,7 @@ import { join, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { shrinkImage } from './image-shrink.js'
+import { describeError } from './errors.js'
 
 /** Size limits (bytes), matching the Hermes adapter's constants. */
 export const IMAGE_MAX_BYTES = 8 * 1024 * 1024
@@ -98,7 +99,7 @@ export class MediaStore {
         }
       }
     } catch (error) {
-      console.warn('[dsh-onebot] media cleanup failed:', error instanceof Error ? error.message : String(error))
+      console.warn('[dsh-onebot] media cleanup failed:', describeError(error))
     }
   }
 
@@ -121,7 +122,7 @@ export class MediaStore {
         const shrunk = await shrinkImage(result.path, this.imageMaxSize)
         if (shrunk !== undefined) result.path = shrunk
       } catch (error) {
-        console.warn('[dsh-onebot] image shrink failed, keeping original:', error instanceof Error ? error.message : String(error))
+        console.warn('[dsh-onebot] image shrink failed, keeping original:', describeError(error))
       }
     }
     return result
@@ -171,7 +172,7 @@ export class MediaStore {
       }
       return undefined
     } catch (error) {
-      console.warn('[dsh-onebot] media resolve failed:', error instanceof Error ? error.message : String(error))
+      console.warn('[dsh-onebot] media resolve failed:', describeError(error))
       return undefined
     }
   }
@@ -263,7 +264,7 @@ async function assertDownloadableUrl(rawUrl: string, allowPrivate: boolean): Pro
   try {
     addresses = await lookup(host, { all: true })
   } catch (cause) {
-    throw new Error('download refused: DNS lookup failed for ' + host + ': ' + (cause instanceof Error ? cause.message : String(cause)))
+    throw new Error('download refused: DNS lookup failed for ' + host + ': ' + describeError(cause))
   }
   if (addresses.some(entry => isPrivateIp(entry.address))) {
     throw new Error('download refused: ' + host + ' resolves to a private/loopback address: ' + rawUrl)

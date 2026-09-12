@@ -22,6 +22,7 @@ import type { BridgeConfig } from './bridge.js'
 import type { ChatId } from './chat.js'
 import type { OutboundSegment, SendOptions } from './outbound.js'
 import { renderTextImage } from './t2i/index.js'
+import { describeError } from './errors.js'
 
 /** Spacing between recall delete_msg calls (NapCat recallMsg is slow; bursting
  * them pushes borderline-late recalls over the server timeout). */
@@ -216,7 +217,7 @@ export class InterimTracker {
       if (final !== null) {
         chat.loopPending = null
         this.ctx.sendToChat(chatId, final, { queuable: true }).catch(error => {
-          this.ctx.log('warn', 'final send failed: ' + (error instanceof Error ? error.message : String(error)))
+          this.ctx.log('warn', 'final send failed: ' + describeError(error))
         })
       }
     }
@@ -245,7 +246,7 @@ export class InterimTracker {
         chat.recalledInterimIds.add(id)
         await new Promise(resolve => setTimeout(resolve, RECALL_SPACING_MS))
       } catch (error) {
-        this.ctx.log('debug', 'loop recall delete_msg failed for ' + id + ': ' + (error instanceof Error ? error.message : String(error)))
+        this.ctx.log('debug', 'loop recall delete_msg failed for ' + id + ': ' + describeError(error))
       }
     }
   }
@@ -256,7 +257,7 @@ export class InterimTracker {
     this.ctx.call('delete_msg', { message_id: id }).then(() => {
       chat.recalledInterimIds.add(id)
     }).catch(error => {
-      this.ctx.log('debug', 'interim auto-recall failed for ' + id + ': ' + (error instanceof Error ? error.message : String(error)))
+      this.ctx.log('debug', 'interim auto-recall failed for ' + id + ': ' + describeError(error))
     })
   }
 
@@ -273,7 +274,7 @@ export class InterimTracker {
         fontFamilies: this.ctx.config.fontFamilies,
       })
     } catch (error) {
-      this.ctx.log('warn', 'interim summary t2i failed, sending as text: ' + (error instanceof Error ? error.message : String(error)))
+      this.ctx.log('warn', 'interim summary t2i failed, sending as text: ' + describeError(error))
       await this.ctx.sendToChat(chatId, body)
       return
     }
@@ -300,7 +301,7 @@ export class InterimTracker {
       this.completeInterim(chatId, chat, entry, ids)
     }, error => {
       this.dropInterim(chat, entry)
-      this.ctx.log('warn', 'interim send failed: ' + (error instanceof Error ? error.message : String(error)))
+      this.ctx.log('warn', 'interim send failed: ' + describeError(error))
     })
     rec.inFlight.push(settled)
     void settled.then(() => {
@@ -368,12 +369,12 @@ export class InterimTracker {
       try {
         await this.sendInterimSummary(chatId, buf)
       } catch (error) {
-        this.ctx.log('warn', 'interim summary send failed: ' + (error instanceof Error ? error.message : String(error)))
+        this.ctx.log('warn', 'interim summary send failed: ' + describeError(error))
       }
       try {
         await this.recallLoopMessages(chatId, chat, buf)
       } catch (error) {
-        this.ctx.log('warn', 'loop recall failed: ' + (error instanceof Error ? error.message : String(error)))
+        this.ctx.log('warn', 'loop recall failed: ' + describeError(error))
       }
     }
     if (chat.loopPending !== null) {
@@ -382,7 +383,7 @@ export class InterimTracker {
       try {
         await this.ctx.sendToChat(chatId, final, { queuable: true })
       } catch (error) {
-        this.ctx.log('warn', 'final send failed: ' + (error instanceof Error ? error.message : String(error)))
+        this.ctx.log('warn', 'final send failed: ' + describeError(error))
       }
     }
     // The settlement owns 'settling' only until it completes; a user turn or

@@ -18,6 +18,7 @@ import type { MediaRef } from './cq.js'
 import type { ChatId, UserRole } from './chat.js'
 import { fileToBase64 } from './media.js'
 import type { AgentDefaultModelLike, AgentPresetsLike, BridgeConfig, BridgeDeps, LlmCatalogPort, WorkspaceRegistryLike } from './bridge.js'
+import { describeError } from './errors.js'
 
 /** Narrow view of a live chat the command handlers may read or mutate —
  * the structural subset of the bridge's internal ChatAgent that the
@@ -412,7 +413,7 @@ async function handleOcrCommand(ctx: CommandContext, chatId: ChatId): Promise<vo
     b64 = await fileToBase64(path, ctx.config.maxImageBytes)
   } catch (error) {
     ctx.log('warn', 'ocr image read failed: ' + String(error))
-    await ctx.sendToChat(chatId, `❌ 读取图片失败：${error instanceof Error ? error.message : String(error)}`)
+    await ctx.sendToChat(chatId, `❌ 读取图片失败：${describeError(error)}`)
     return
   }
   let lines: string
@@ -422,7 +423,7 @@ async function handleOcrCommand(ctx: CommandContext, chatId: ChatId): Promise<vo
     lines = texts.join('\n')
   } catch (error) {
     ctx.log('warn', 'ocr_image failed: ' + String(error))
-    await ctx.sendToChat(chatId, `❌ OCR 失败：${error instanceof Error ? error.message : String(error)}`)
+    await ctx.sendToChat(chatId, `❌ OCR 失败：${describeError(error)}`)
     return
   }
   if (lines.trim() === '') {
@@ -494,7 +495,7 @@ async function handlePlanCommand(ctx: CommandContext, chatId: ChatId, arg: strin
     ctx.log('info', 'host plan command for ' + chatId + ': ' + line)
   } catch (error) {
     ctx.log('warn', 'host plan command failed: ' + String(error))
-    await ctx.sendToChat(chatId, '❌ 计划模式切换失败：' + (error instanceof Error ? error.message : String(error)))
+    await ctx.sendToChat(chatId, '❌ 计划模式切换失败：' + describeError(error))
   }
 }
 

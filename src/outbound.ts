@@ -15,6 +15,7 @@ import { splitChatId } from './chat.js'
 import { OneBotActionError, OneBotNotConnectedError } from './connection.js'
 import { extractForwardBlocks, scanSensitive, splitLongText, stripMarkdown } from './split.js'
 import { renderTextImage } from './t2i/index.js'
+import { describeError } from './errors.js'
 
 /** One OneBot message segment for outbound sends. */
 export interface OutboundSegment {
@@ -131,7 +132,7 @@ export class OutboundPipeline {
             this.ctx.log('warn', 't2i card PNG exceeds maxImageBytes; falling back to text')
           }
         } catch (error) {
-          this.ctx.log('warn', 't2i render failed, falling back to text: ' + (error instanceof Error ? error.message : String(error)))
+          this.ctx.log('warn', 't2i render failed, falling back to text: ' + describeError(error))
         }
       }
       if (!sentCard) {
@@ -177,7 +178,7 @@ export class OutboundPipeline {
     }
     for (const { chatId, text } of batch) {
       void this.sendToChat(chatId, text, { queuable: true }).catch((error: unknown) => {
-        this.ctx.log('warn', 'queued resend failed: ' + (error instanceof Error ? error.message : String(error)))
+        this.ctx.log('warn', 'queued resend failed: ' + describeError(error))
       })
     }
   }

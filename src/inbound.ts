@@ -27,6 +27,7 @@ import {
 } from './chat.js'
 import type { BridgeConfig } from './bridge.js'
 import type { ChatSettings } from './registry.js'
+import { describeError } from './errors.js'
 
 /**
  * The neutral shape normalizeOneBot11 extracts from one OneBot 11 message
@@ -350,7 +351,7 @@ export class InboundPipeline {
       if (transcriptLabel(text) === '') return
       this.ctx.steerTranscript(chatId, text)
     } catch (error) {
-      this.ctx.log('warn', 'STT failed: ' + (error instanceof Error ? error.message : String(error)))
+      this.ctx.log('warn', 'STT failed: ' + describeError(error))
     }
   }
 
@@ -369,7 +370,7 @@ export class InboundPipeline {
       const name = data.sender?.nickname ?? ''
       return '[引用]' + (name !== '' ? name + ': ' : '') + text
     } catch (error) {
-      this.ctx.log('debug', 'quote expansion failed: ' + (error instanceof Error ? error.message : String(error)))
+      this.ctx.log('debug', 'quote expansion failed: ' + describeError(error))
       return ''
     }
   }
@@ -403,11 +404,11 @@ export class InboundPipeline {
           this.ctx.log('info', 'qq file fetched via direct link: ' + localPath)
           return '[文件:' + localPath + ']'
         } catch (error) {
-          this.ctx.log('warn', 'qq file direct download failed: ' + (error instanceof Error ? error.message : String(error)))
+          this.ctx.log('warn', 'qq file direct download failed: ' + describeError(error))
         }
       }
     } catch (error) {
-      this.ctx.log('debug', 'get_private_file_url failed (falling back to get_file): ' + (error instanceof Error ? error.message : String(error)))
+      this.ctx.log('debug', 'get_private_file_url failed (falling back to get_file): ' + describeError(error))
     }
     // 2. get_file: with NapCat's file server enabled it returns a `base64`
     //    payload or an http(s) `url`; otherwise a container path we cannot reach.
@@ -436,11 +437,11 @@ export class InboundPipeline {
           this.ctx.log('info', 'qq file fetched via get_file url: ' + localPath)
           return '[文件:' + localPath + ']'
         } catch (error) {
-          this.ctx.log('warn', 'qq file direct download failed: ' + (error instanceof Error ? error.message : String(error)))
+          this.ctx.log('warn', 'qq file direct download failed: ' + describeError(error))
         }
       }
     } catch (error) {
-      this.ctx.log('debug', 'get_file base64/url path failed: ' + (error instanceof Error ? error.message : String(error)))
+      this.ctx.log('debug', 'get_file base64/url path failed: ' + describeError(error))
     }
     this.ctx.log('warn', 'qq file fetch failed: no direct link / base64 / http url available for ' + fid)
     return ''
@@ -457,7 +458,7 @@ export class InboundPipeline {
       await writeFile(localPath, buffer)
       return localPath
     } catch (error) {
-      this.ctx.log('warn', 'media write failed: ' + (error instanceof Error ? error.message : String(error)))
+      this.ctx.log('warn', 'media write failed: ' + describeError(error))
       return ''
     }
   }
@@ -477,7 +478,7 @@ export class InboundPipeline {
       if (lines.length === 0) return ''
       return '[合并转发]\n' + lines.join('\n')
     } catch (error) {
-      this.ctx.log('debug', 'forward expansion failed: ' + (error instanceof Error ? error.message : String(error)))
+      this.ctx.log('debug', 'forward expansion failed: ' + describeError(error))
       return '[合并转发]'
     }
   }

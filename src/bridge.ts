@@ -35,6 +35,7 @@ import type { ChatAgent } from './registry.js'
 import { InboundPipeline, normalizeOneBot11 } from './inbound.js'
 import type { NormalizedInbound } from './inbound.js'
 import { InterimTracker } from './interim.js'
+import { describeError, errorStack } from './errors.js'
 /** Resolved runtime configuration for the bridge. */
 export interface BridgeConfig {
   botQQ: string
@@ -376,7 +377,7 @@ export class ChatBridge {
       if (inbound === null) return
       await this.processInbound(inbound)
     } catch (error) {
-      this.deps.log('error', 'inbound handling failed: ' + (error instanceof Error ? error.message : String(error)))
+      this.deps.log('error', 'inbound handling failed: ' + describeError(error) + errorStack(error))
     }
   }
 

@@ -25,6 +25,7 @@ import type { BridgeDeps, WorkspaceRegistryLike } from './bridge.js'
 import { MediaStore, IMAGE_MAX_BYTES, VOICE_MAX_BYTES, MEDIA_MAX_BYTES } from './media.js'
 import { Transcriber } from './stt.js'
 import type { AccessPolicyConfig } from './chat.js'
+import { describeError } from './errors.js'
 
 type Context = CordisContext & {
   tools: ToolRuntime
@@ -330,7 +331,7 @@ export function apply(ctx: Context, config: Config): void {
         const loader = ctx.get('loader') as { await(): Promise<void> } | undefined
         await loader?.await()
       } catch (error) {
-        log('debug', 'loader.await failed: ' + (error instanceof Error ? error.message : String(error)))
+        log('debug', 'loader.await failed: ' + describeError(error))
       }
     },
     // Live llm lookup per call — same semantics as the pre-port live getter.
