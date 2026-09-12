@@ -22,6 +22,10 @@ export interface BridgeConfig {
     ignoreSelf: boolean;
     splitLength: number;
     requireMention: boolean;
+    /** Unknown slash-command handling (R1): 'intercept' (default) consumes the
+     * message with a closest-match suggestion or a hint; 'passthrough' restores
+     * the old fall-through to the model. */
+    unknownCommand?: 'intercept' | 'passthrough';
     interimMessages: boolean;
     /** Per-interim auto-recall delay (ms) from each interim's send completion
      * while the turn is still running (QQ recall window ~2 min); absent → 90s.

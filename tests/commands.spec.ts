@@ -6,7 +6,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, realpathSync } from 'node:fs'
-import { writeFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -34,7 +34,7 @@ describe('commands', () => {
   }, 60_000)
 
   it('routes slash commands before the model: /stop cancels, unknown goes to the model', async () => {
-    const h = await makeCmdHarness()
+    const h = await makeCmdHarness({ unknownCommand: 'passthrough' })
     h.sendText('启动任务')
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
     // Mark the agent running, then /stop must cancel it.
@@ -47,7 +47,7 @@ describe('commands', () => {
     })
     expect(agent!.status).toBe('idle')
     expect(h.captured.followups).toHaveLength(1)
-    // Unknown commands fall through to the model.
+    // unknownCommand: 'passthrough' restores the pre-R1 fall-through to the model.
     h.sendText('/unknowncmd 参数')
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
     expect(h.captured.followups[1].text).toContain('/unknowncmd')
@@ -501,9 +501,338 @@ describe('commands', () => {
     }
     // Byte-identity gate: the table-rendered /help body equals the pre-split
     // hardcoded text verbatim (the harness-level /help test above exercises
-    // the real outbound path).
-    const rendered = '可用命令：\n' + COMMANDS.map(c => '/' + c.name + ' ' + c.help).join('\n') + '\n\n其他 / 开头的文本会直接交给模型。'
-    const preSplit = '可用命令：\n/new 开启新会话（清空上下文）\n/stop 停止当前生成\n/model [--default] <provider> <model> 查看或切换模型（--default 改部署默认）\n/workspace [路径|list] 查看或切换工作区\n/preset [id] 查看或切换 agent 预设\n/status 会话全景状态\n/retry 重跑上一条\n/id 查看 session/chat id\n/ver 插件版本\n/ocr 识别最近一张图片\n/mode [interim|instant] 切换出站模式\n/plan [off|内容] 宿主计划模式（/plan off 退出）\n/goal [目标|clear] 查看/设置目标\n/help 本帮助\n\n其他 / 开头的文本会直接交给模型。'
+    // the real outbound path); the R1 tail line (unknown-command intercept) is the one intentional change from the pre-split text.
+    const rendered = '可用命令：\n' + COMMANDS.map(c => '/' + c.name + ' ' + c.help).join('\n') + '\n\n未知命令默认拦截并提示相近命令；配置 unknownCommand: passthrough 可改为透传给模型。'
+    const preSplit = '可用命令：\n/new 开启新会话（清空上下文）\n/stop 停止当前生成\n/model [--default] <provider> <model> 查看或切换模型（--default 改部署默认）\n/workspace [路径|list] 查看或切换工作区\n/preset [id] 查看或切换 agent 预设\n/status 会话全景状态\n/retry 重跑上一条\n/id 查看 session/chat id\n/ver 插件版本\n/ocr 识别最近一张图片\n/mode [interim|instant] 切换出站模式\n/plan [off|内容] 宿主计划模式（/plan off 退出）\n/goal [目标|clear] 查看/设置目标\n/help 本帮助\n\n未知命令默认拦截并提示相近命令；配置 unknownCommand: passthrough 可改为透传给模型。'
     expect(rendered).toBe(preSplit)
   })
+
+  it('unknown command with a close match suggests candidates and is consumed (R1)', async () => {
+    const h = await makeCmdHarness()
+    // Prefix match: /he is a prefix of /help.
+    h.sendText('/he')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('未知命令 /he，你是想用 /help吗？'))).toBe(true)
+    })
+    // Prefix match with several candidates, table order, max shown as /model（/mode）.
+    h.sendText('/mo')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('你是想用 /model（/mode）吗？'))).toBe(true)
+    })
+    // Edit-distance fallback (input length ≥4): /vers ≈ /ver.
+    h.sendText('/vers')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('你是想用 /ver吗？'))).toBe(true)
+    })
+    // All three were consumed: none reached the model.
+    expect(h.captured.followups).toHaveLength(0)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('unknown command without a close match is intercepted by default (unknownCommand: intercept)', async () => {
+    const h = await makeCmdHarness()
+    h.sendText('/xyzw')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('未知命令 /xyzw。发 /help 查看命令列表'))).toBe(true)
+    })
+    // Inputs shorter than 4 never use the edit-distance fallback (/xy would be
+    // distance 2 from /id), so they stay suggestion-less and just get the hint.
+    h.sendText('/xy')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('未知命令 /xy。发 /help 查看命令列表'))).toBe(true)
+    })
+    expect(h.captured.followups).toHaveLength(0)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('unknownCommand: passthrough restores the fall-through to the model (R1)', async () => {
+    const h = await makeCmdHarness({ unknownCommand: 'passthrough' })
+    h.sendText('/xyzw 参数')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    expect(h.captured.followups[0].text).toContain('/xyzw')
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('a path-like first token (/tmp/x) is not a command and still falls through under default intercept (R1)', async () => {
+    const h = await makeCmdHarness()
+    h.sendText('/tmp/x 不是命令')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    expect(h.captured.followups[0].text).toContain('/tmp/x')
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('non-admin unknown slash commands still hit the admin gate, not the suggestion path (R1 regression)', async () => {
+    const h = await makeCmdHarness()
+    // /hellp would suggest /help — but the admin gate runs first.
+    h.sendGroupTextAs('/hellp', 20002)
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('仅管理员可用'))).toBe(true)
+    })
+    expect(h.outbound.some(f => JSON.stringify(f.params).includes('你是想用'))).toBe(false)
+    expect(h.captured.followups).toHaveLength(0)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+})
+
+describe('commands · serial selection (R2)', () => {
+  const registryOf = (h: Awaited<ReturnType<typeof makeCmdHarness>>) =>
+    (h.bridge as unknown as { registry: { getSettings(id: string): { pendingSelection?: { kind: string; phase?: string; provider?: string; items: Array<{ payload: string }>; createdAt: number } } } }).registry
+  const pendingOf = (h: Awaited<ReturnType<typeof makeCmdHarness>>) => registryOf(h).getSettings('private:10001').pendingSelection
+
+  const wsRegistry = (mediaDir: string, otherDir: string) => ({
+    resolveByPath: vi.fn(async () => undefined),
+    create: vi.fn(),
+    list: vi.fn(() => [
+      { id: 'w-cur', path: mediaDir, sessionIds: ['s1'], attachSession: vi.fn() },
+      { id: 'w-other', path: otherDir, sessionIds: [], attachSession: vi.fn() },
+    ]),
+  })
+
+  it('/workspace bare form renders a numbered snapshot with the current marker; /workspace <序号> runs the original switch path', async () => {
+    const otherDir = mkdtempSync(join(tmpdir(), 'onebot-ws2-'))
+    const h = await makeCmdHarness()
+    ;(h.bridge as unknown as { deps: { workspaceRegistry?: unknown } }).deps.workspaceRegistry = wsRegistry(h.mediaDir, otherDir)
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+
+    h.sendText('/workspace')
+    await vi.waitFor(() => {
+      const text = h.outbound.map(f => JSON.stringify(f.params)).join('\n')
+      expect(text).toContain('当前工作目录：')
+      expect(text).toContain('1. ' + h.mediaDir + '（1 会话） ← 当前')
+      expect(text).toContain('2. ' + otherDir + '（0 会话）')
+      expect(text).toContain('回复 /workspace <序号> 切换')
+    })
+    expect(pendingOf(h)?.kind).toBe('workspace')
+    expect(pendingOf(h)?.items.map(i => i.payload)).toEqual([h.mediaDir, otherDir])
+
+    // A non-selection command must not disturb the pending snapshot.
+    h.sendText('/status')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('chat    : private:10001'))).toBe(true)
+    })
+    expect(pendingOf(h)?.kind).toBe('workspace')
+
+    // /workspace 2 → the picked path re-enters the ORIGINAL switch path.
+    h.sendText('/workspace 2')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('工作区已切换'))).toBe(true)
+    })
+    expect(pendingOf(h)).toBeUndefined()
+    h.sendText('新工作区的第一条')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    const chats = (h.bridge as unknown as { chats: Map<string, { agent: { session: { header: { cwd: string } } } }> }).chats
+    expect(chats.get('private:10001')!.agent.session.header.cwd).toBe(realpathSync(otherDir))
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 60_000)
+
+  it('/workspace <序号> out of range keeps the snapshot so the user can retry without re-listing', async () => {
+    const otherDir = mkdtempSync(join(tmpdir(), 'onebot-ws3-'))
+    const h = await makeCmdHarness()
+    ;(h.bridge as unknown as { deps: { workspaceRegistry?: unknown } }).deps.workspaceRegistry = wsRegistry(h.mediaDir, otherDir)
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    h.sendText('/workspace')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('工作区列表'))).toBe(true)
+    })
+
+    h.sendText('/workspace 9')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('序号越界，请回复 /workspace 重新查看列表'))).toBe(true)
+    })
+    // Deliberately retained for a retry.
+    expect(pendingOf(h)?.items).toHaveLength(2)
+
+    h.sendText('/workspace 1')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('工作区已切换'))).toBe(true)
+    })
+    expect(pendingOf(h)).toBeUndefined()
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 60_000)
+
+  it('expired pending selection: numeric replies get the lazy-TTL hint and the snapshot clears', async () => {
+    const otherDir = mkdtempSync(join(tmpdir(), 'onebot-ws4-'))
+    const h = await makeCmdHarness()
+    ;(h.bridge as unknown as { deps: { workspaceRegistry?: unknown } }).deps.workspaceRegistry = wsRegistry(h.mediaDir, otherDir)
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    h.sendText('/workspace')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('工作区列表'))).toBe(true)
+    })
+
+    // Lazy TTL (no timer): age the snapshot past the 5-minute window by hand.
+    const settings = registryOf(h).getSettings('private:10001')
+    settings.pendingSelection!.createdAt = Date.now() - 6 * 60_000
+    h.sendText('/workspace 1')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('序号选择已过期，请重新执行 /workspace 查看'))).toBe(true)
+    })
+    expect(settings.pendingSelection).toBeUndefined()
+
+    // Cleared → the next numeric input is back to the original path semantics.
+    h.sendText('/workspace 123')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('❌ 目录无效或不可访问：123'))).toBe(true)
+    })
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 60_000)
+
+  it('pure-numeric args keep the original semantics when no live snapshot exists', async () => {
+    const resolve = vi.fn(async (id?: string) => {
+      throw new Error('unknown preset ' + id)
+    })
+    const h = await makeCmdHarness({
+      agentPresets: { defaultId: 'standard', resolve, mount: vi.fn() },
+    })
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+
+    h.sendText('/workspace 123')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('❌ 目录无效或不可访问：123'))).toBe(true)
+    })
+    h.sendText('/model 123')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('用法：/model <provider> <model>'))).toBe(true)
+    })
+    h.sendText('/preset 123')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('❌ 预设不存在：123'))).toBe(true)
+    })
+    expect(pendingOf(h)).toBeUndefined()
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 60_000)
+
+  it('/model two-level serial selection: providers → models → session-only switch; --default unaffected', async () => {
+    const saveSelection = vi.fn(async () => undefined)
+    const h = await makeCmdHarness({
+      agentDefaultModel: {
+        currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+        saveSelection,
+      },
+    })
+    ;(h.bridge as unknown as { deps: { llmCatalog?: unknown } }).deps.llmCatalog = {
+      listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }, { id: 'openai', name: 'OpenAI' }],
+      listModels: async (provider: string) => provider === 'openai'
+        ? [{ provider, id: 'gpt-4o' }, { provider, id: 'gpt-4o-mini' }]
+        : [{ provider, id: 'deepseek-chat' }, { provider, id: 'deepseek-reasoner' }],
+    }
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const chat = (h.bridge as unknown as { chats: Map<string, { selectionRef: { current: { provider: string; model: string } } | undefined }> }).chats.get('private:10001')!
+
+    // Level 0 → 1: the bare form numbers the providers and snapshots them.
+    h.sendText('/model')
+    await vi.waitFor(() => {
+      const text = h.outbound.map(f => JSON.stringify(f.params)).join('\n')
+      expect(text).toContain('当前模型：deepseek/deepseek-chat')
+      expect(text).toContain('1. deepseek')
+      expect(text).toContain('2. openai')
+      expect(text).toContain('回复 /model <序号> 查看该来源的模型')
+    })
+    expect(pendingOf(h)).toMatchObject({ kind: 'model', phase: 'providers' })
+    expect(pendingOf(h)?.items.map(i => i.payload)).toEqual(['deepseek', 'openai'])
+
+    // Level 1 → 2: /model 2 lists that provider's models.
+    h.sendText('/model 2')
+    await vi.waitFor(() => {
+      const text = h.outbound.map(f => JSON.stringify(f.params)).join('\n')
+      expect(text).toContain('模型列表（openai）')
+      expect(text).toContain('1. gpt-4o')
+      expect(text).toContain('2. gpt-4o-mini')
+    })
+    expect(pendingOf(h)).toMatchObject({ kind: 'model', phase: 'models', provider: 'openai' })
+
+    // Level-2 hit: /model 1 switches ONLY the session selection (original path).
+    h.sendText('/model 1')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('已切换当前会话模型：openai/gpt-4o'))).toBe(true)
+    })
+    expect(chat.selectionRef?.current).toMatchObject({ provider: 'openai', model: 'gpt-4o' })
+    expect(saveSelection).not.toHaveBeenCalled()
+    expect(pendingOf(h)).toBeUndefined()
+
+    // --default regression with the selection machinery present (not numeric).
+    h.sendText('/model --default deepseek deepseek-reasoner')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('已修改部署默认模型：deepseek/deepseek-reasoner'))).toBe(true)
+    })
+    expect(saveSelection).toHaveBeenCalledWith({ provider: 'deepseek', model: 'deepseek-reasoner' })
+    expect(chat.selectionRef?.current).toMatchObject({ provider: 'openai', model: 'gpt-4o' })
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 60_000)
+
+  it('/preset bare form numbers the presets; /preset <序号> runs the original switch path; out of range retains', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'onebot-home2-'))
+    await mkdir(join(home, '.agent-presets', 'alpha'), { recursive: true })
+    await mkdir(join(home, '.agent-presets', 'beta'), { recursive: true })
+    await writeFile(join(home, '.agent-presets', 'alpha', 'preset.yml'), 'name: 阿尔法\n')
+    const resolve = vi.fn(async (id?: string) => {
+      if (id === 'alpha' || id === 'beta') return { id }
+      throw new Error('unknown preset ' + id)
+    })
+    const h = await makeCmdHarness({
+      dshHome: home,
+      agentPresets: { defaultId: 'standard', resolve, mount: vi.fn(async () => ({ id: 'beta' })) },
+    })
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+
+    h.sendText('/preset')
+    await vi.waitFor(() => {
+      const text = h.outbound.map(f => JSON.stringify(f.params)).join('\n')
+      expect(text).toContain('当前预设：standard')
+      expect(text).toContain('1. alpha（阿尔法）')
+      expect(text).toContain('2. beta')
+      expect(text).toContain('回复 /preset <序号> 切换')
+    })
+    expect(pendingOf(h)?.items.map(i => i.payload)).toEqual(['alpha', 'beta'])
+
+    h.sendText('/preset 9')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('序号越界，请回复 /preset 重新查看列表'))).toBe(true)
+    })
+    expect(pendingOf(h)?.items).toHaveLength(2)
+
+    h.sendText('/preset 2')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('预设已切换：beta'))).toBe(true)
+    })
+    expect(pendingOf(h)).toBeUndefined()
+    h.sendText('下一条')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    expect(h.capturedMeta[1].agentPreset).toBe('beta')
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 60_000)
 })

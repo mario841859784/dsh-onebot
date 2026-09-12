@@ -88,6 +88,8 @@ export interface Config {
     botQQ: string;
     splitLength: number;
     requireMention: boolean;
+    /** Unknown slash-command handling: intercept（默认）=拦截并给建议；passthrough=透传给模型。 */
+    unknownCommand: 'intercept' | 'passthrough';
     dmPolicy: 'open' | 'allowlist' | 'disabled';
     groupPolicy: 'open' | 'allowlist' | 'disabled';
     allowFrom: string[];

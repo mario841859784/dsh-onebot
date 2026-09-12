@@ -165,3 +165,237 @@ describe('mapping-file settings persistence (M3-D4b)', () => {
     await registry2.stop()
   })
 })
+
+describe('T3: workspacePath persistence + default directory (方案 B)', () => {
+  it('round-trips the /workspace override through the mapping (write → restart → restore)', async () => {
+    const sessionIds: string[] = []
+    const deps1 = makeRegistryDeps({ agents: makeFakeAgents(sessionIds, { followups: [] }, { resumeOk: true }) })
+    const registry1 = new ChatRegistry(deps1)
+    registry1.getSettings('private:10001').workspacePath = '/tmp/onebot-ws-a'
+    await registry1.ensureChat('private:10001', '小明')
+    await registry1.saveMapping()
+    await registry1.stop()
+    const mapping = JSON.parse(await readFile(join(deps1.config.mediaDir, 'chat-sessions.json'), 'utf8')) as Record<string, { session: string; workspacePath?: string }>
+    expect(mapping['private:10001']).toEqual({ session: sessionIds[0], workspacePath: '/tmp/onebot-ws-a' })
+
+    const deps2 = makeRegistryDeps({ agents: makeFakeAgents([], { followups: [] }, { resumeOk: true }), config: { mediaDir: deps1.config.mediaDir } })
+    const registry2 = new ChatRegistry(deps2)
+    await registry2.loadMapping()
+    expect(registry2.chats.get('private:10001')?.sessionId).toBe(sessionIds[0])
+    expect(registry2.getSettings('private:10001').workspacePath).toBe('/tmp/onebot-ws-a')
+    await registry2.stop()
+  })
+
+  it('loads a mixed legacy file: bare strings keep working, workspacePath entries restore', async () => {
+    const deps = makeRegistryDeps({ agents: makeFakeAgents([], { followups: [] }, { resumeOk: true }) })
+    await writeFile(join(deps.config.mediaDir, 'chat-sessions.json'), JSON.stringify({
+      'private:10001': 'onebot-private-10001',
+      'private:10002': { session: 'onebot-private-10002', workspacePath: '/tmp/onebot-ws-b' },
+    }), 'utf8')
+    const registry = new ChatRegistry(deps)
+    await registry.loadMapping()
+    expect(registry.chats.get('private:10001')?.sessionId).toBe('onebot-private-10001')
+    expect(registry.getSettings('private:10001').workspacePath).toBeUndefined()
+    expect(registry.chats.get('private:10002')?.sessionId).toBe('onebot-private-10002')
+    expect(registry.getSettings('private:10002').workspacePath).toBe('/tmp/onebot-ws-b')
+    await registry.stop()
+  })
+
+  it('keeps the bare-string entry byte-identical when no settings are persisted', async () => {
+    const sessionIds: string[] = []
+    const deps = makeRegistryDeps({ agents: makeFakeAgents(sessionIds, { followups: [] }, { resumeOk: true }) })
+    const registry = new ChatRegistry(deps)
+    await registry.ensureChat('private:10001', '小明')
+    await registry.saveMapping()
+    const text = await readFile(join(deps.config.mediaDir, 'chat-sessions.json'), 'utf8')
+    expect(text).toBe('{\n  "private:10001": "' + sessionIds[0] + '"\n}')
+    await registry.stop()
+  })
+
+  it('falls back to the host process cwd when unconfigured (方案 B default dir)', () => {
+    const deps = makeRegistryDeps()
+    const registry = new ChatRegistry(deps)
+    expect(registry.effectiveCwd('private:10001')).toBe(process.cwd())
+    expect(registry.effectiveCwd()).toBe(process.cwd())
+  })
+
+  it('closes the resume-failure hole: after retire the fresh session still uses the persisted override', async () => {
+    const sessionIds: string[] = []
+    const captured = { followups: [] as Array<{ text: string; sessionId: string }>, createdMeta: [] as Array<{ cwd?: string; agentPreset?: string }> }
+    const deps = makeRegistryDeps({ agents: makeFakeAgents(sessionIds, captured, { resumeOk: false }) })
+    await writeFile(join(deps.config.mediaDir, 'chat-sessions.json'), JSON.stringify({
+      'private:10001': { session: 'onebot-private-10001', workspacePath: '/tmp/onebot-ws-c' },
+    }), 'utf8')
+    const registry = new ChatRegistry(deps)
+    await registry.loadMapping()
+    // The override is restored BEFORE the resume attempt, so the failed resume
+    // (session retired) cannot lose it.
+    expect(registry.getSettings('private:10001').workspacePath).toBe('/tmp/onebot-ws-c')
+    const chat = await registry.ensureChat('private:10001', '小明')
+    expect(chat.sessionId).not.toBe('onebot-private-10001')
+    expect(captured.createdMeta[0]?.cwd).toBe('/tmp/onebot-ws-c')
+    await registry.stop()
+  })
+
+  it('keeps the override across an idle eviction cycle and its in-run resume', async () => {
+    const sessionIds: string[] = []
+    const deps1 = makeRegistryDeps({ agents: makeFakeAgents(sessionIds, { followups: [] }, { resumeOk: true }), config: { chatIdleEvictDays: 7 } })
+    const registry1 = new ChatRegistry(deps1)
+    registry1.getSettings('private:10001').workspacePath = '/tmp/onebot-ws-d'
+    await registry1.ensureChat('private:10001', '小明')
+    const chat = registry1.chats.get('private:10001')!
+    chat.lastActivityAt = Date.now() - 8 * 24 * 60 * 60 * 1000
+    await registry1.sweepIdleChats()
+    expect(registry1.chats.has('private:10001')).toBe(false)
+    await registry1.saveMapping()
+    const mapping = JSON.parse(await readFile(join(deps1.config.mediaDir, 'chat-sessions.json'), 'utf8')) as Record<string, { session: string; workspacePath?: string }>
+    expect(mapping['private:10001']).toEqual({ session: sessionIds[0], workspacePath: '/tmp/onebot-ws-d' })
+
+    // In-run: the evicted chat resumes and the snapshot restores the override.
+    const resumed = await registry1.ensureChat('private:10001', '小明')
+    expect(resumed.sessionId).toBe(sessionIds[0])
+    expect(registry1.getSettings('private:10001').workspacePath).toBe('/tmp/onebot-ws-d')
+    await registry1.stop()
+  })
+
+  it('resetChat keeps a settings-carrying entry and never resumes the retired session', async () => {
+    const sessionIds: string[] = []
+    const agents1 = makeFakeAgents(sessionIds, { followups: [] }, { resumeOk: true })
+    const deps1 = makeRegistryDeps({ agents: agents1 })
+    const registry1 = new ChatRegistry(deps1)
+    registry1.getSettings('private:10001').workspacePath = '/tmp/onebot-ws-e'
+    await registry1.ensureChat('private:10001', '小明')
+    await registry1.resetChat('private:10001')
+    await registry1.saveMapping()
+    // The entry survives the reset's mapping rewrite (it carries the override).
+    const mapping = JSON.parse(await readFile(join(deps1.config.mediaDir, 'chat-sessions.json'), 'utf8')) as Record<string, { session: string; workspacePath?: string }>
+    expect(mapping['private:10001']).toEqual({ session: sessionIds[0], workspacePath: '/tmp/onebot-ws-e' })
+
+    // Next message: the retired session is never resumed — a fresh suffixed
+    // session is created under the persisted override.
+    const next = await registry1.ensureChat('private:10001', '小明')
+    expect(next.sessionId).not.toBe(sessionIds[0])
+    expect(next.sessionId).not.toBe('onebot-private-10001')
+    expect(registry1.getSettings('private:10001').workspacePath).toBe('/tmp/onebot-ws-e')
+    await registry1.stop()
+
+    // After a restart, an entry still pointing at the RETIRED session id is a
+    // settings carrier only: loadRetired + loadMapping must not resume it.
+    await writeFile(join(deps1.config.mediaDir, 'chat-sessions.json'), JSON.stringify({
+      'private:10001': { session: sessionIds[0], workspacePath: '/tmp/onebot-ws-e' },
+    }), 'utf8')
+    const agents2 = makeFakeAgents([], { followups: [] }, { resumeOk: true })
+    const registry2 = new ChatRegistry(makeRegistryDeps({ agents: agents2, config: { mediaDir: deps1.config.mediaDir } }))
+    await registry2.loadRetired()
+    await registry2.loadMapping()
+    expect(registry2.getSettings('private:10001').workspacePath).toBe('/tmp/onebot-ws-e')
+    await registry2.stop()
+  })
+
+  it('persists a /workspace override set before the chat ever goes live (non-live flush)', async () => {
+    const deps1 = makeRegistryDeps()
+    const registry1 = new ChatRegistry(deps1)
+    registry1.noteWorkspaceOverride('private:10001')
+    expect(registry1.noteWorkspaceOverride('private:10001')).toBeUndefined()
+    registry1.getSettings('private:10001').workspacePath = '/tmp/onebot-ws-f'
+    registry1.noteWorkspaceOverride('private:10001')
+    await registry1.saveMapping()
+    const mapping = JSON.parse(await readFile(join(deps1.config.mediaDir, 'chat-sessions.json'), 'utf8')) as Record<string, { session: string; workspacePath?: string }>
+    // Never-lived chat: the entry carries the derived bare session id.
+    expect(mapping['private:10001']).toEqual({ session: 'onebot-private-10001', workspacePath: '/tmp/onebot-ws-f' })
+    await registry1.stop()
+
+    // Restart: the bare-id resume fails harmlessly; the override still keys the
+    // fresh session created by the next message.
+    const captured = { followups: [] as Array<{ text: string; sessionId: string }>, createdMeta: [] as Array<{ cwd?: string; agentPreset?: string }> }
+    const registry2 = new ChatRegistry(makeRegistryDeps({ agents: makeFakeAgents([], captured, { resumeOk: false }), config: { mediaDir: deps1.config.mediaDir } }))
+    await registry2.loadMapping()
+    expect(registry2.getSettings('private:10001').workspacePath).toBe('/tmp/onebot-ws-f')
+    const chat = await registry2.ensureChat('private:10001', '小明')
+    expect(captured.createdMeta[0]?.cwd).toBe('/tmp/onebot-ws-f')
+    await registry2.stop()
+  })
+})
+
+describe('T3-R1 review closure: retired-entry and collision-heal settings carriers', () => {
+  it('loadMapping keeps a retired object entry through a mid-flight saveMapping (settings survive the next restart)', async () => {
+    const sessionIds: string[] = []
+    const deps1 = makeRegistryDeps({ agents: makeFakeAgents(sessionIds, { followups: [] }, { resumeOk: true }) })
+    const registry1 = new ChatRegistry(deps1)
+    registry1.getSettings('private:10001').workspacePath = '/tmp/onebot-ws-g'
+    registry1.getSettings('private:10001').goal = '跨重启别丢'
+    await registry1.ensureChat('private:10001', '小明')
+    await registry1.resetChat('private:10001')
+    await registry1.saveMapping()
+    await registry1.stop()
+    // The reset leaves the entry in the file as a settings carrier under the
+    // now-retired session id.
+    await vi.waitFor(async () => {
+      const retired = JSON.parse(await readFile(join(deps1.config.mediaDir, 'retired-sessions.json'), 'utf8')) as string[]
+      expect(retired).toContain(sessionIds[0])
+    })
+
+    // Restart: loadMapping restores the settings and (T3-R1) re-registers the
+    // entry so ANY later saveMapping keeps writing it.
+    const deps2 = makeRegistryDeps({ agents: makeFakeAgents([], { followups: [] }, { resumeOk: true }), config: { mediaDir: deps1.config.mediaDir } })
+    const registry2 = new ChatRegistry(deps2)
+    await registry2.loadRetired()
+    await registry2.loadMapping()
+    expect(registry2.getSettings('private:10001').workspacePath).toBe('/tmp/onebot-ws-g')
+    expect(registry2.getSettings('private:10001').goal).toBe('跨重启别丢')
+    // Mid-flight save triggered by another chat's createChat: the settings
+    // carrier must not be wiped from the file (it sits in neither chats nor
+    // evictedChats without the re-registration).
+    await registry2.ensureChat('private:10002', '小红')
+    await registry2.saveMapping()
+    const mapping = JSON.parse(await readFile(join(deps2.config.mediaDir, 'chat-sessions.json'), 'utf8')) as Record<string, { session: string; goal?: string; workspacePath?: string }>
+    expect(mapping['private:10001']).toEqual({ session: sessionIds[0], goal: '跨重启别丢', workspacePath: '/tmp/onebot-ws-g' })
+    await registry2.stop()
+
+    // Second restart: the settings are still in the file.
+    const registry3 = new ChatRegistry(makeRegistryDeps({ agents: makeFakeAgents([], { followups: [] }, { resumeOk: true }), config: { mediaDir: deps1.config.mediaDir } }))
+    await registry3.loadRetired()
+    await registry3.loadMapping()
+    expect(registry3.chats.get('private:10001')).toBeUndefined()
+    expect(registry3.getSettings('private:10001').workspacePath).toBe('/tmp/onebot-ws-g')
+    expect(registry3.getSettings('private:10001').goal).toBe('跨重启别丢')
+    await registry3.stop()
+  }, 20_000)
+
+  it('healSessionCollision keeps a settings-carrying entry (workspace override survives the restart)', async () => {
+    const sessionIds: string[] = []
+    const deps1 = makeRegistryDeps({ agents: makeFakeAgents(sessionIds, { followups: [] }, { resumeOk: true }) })
+    const registry1 = new ChatRegistry(deps1)
+    registry1.getSettings('private:10001').workspacePath = '/tmp/onebot-ws-h'
+    await registry1.ensureChat('private:10001', '小明')
+    await registry1.healSessionCollision('private:10001')
+    await registry1.saveMapping()
+    // The heal's mapping rewrite keeps the entry (settings carrier under the
+    // retired id) instead of dropping the chat entirely.
+    const mapping = JSON.parse(await readFile(join(deps1.config.mediaDir, 'chat-sessions.json'), 'utf8')) as Record<string, { session: string; workspacePath?: string }>
+    expect(mapping['private:10001']).toEqual({ session: sessionIds[0], workspacePath: '/tmp/onebot-ws-h' })
+    await vi.waitFor(async () => {
+      const retired = JSON.parse(await readFile(join(deps1.config.mediaDir, 'retired-sessions.json'), 'utf8')) as string[]
+      expect(retired).toContain(sessionIds[0])
+    })
+    await registry1.stop()
+
+    const registry2 = new ChatRegistry(makeRegistryDeps({ agents: makeFakeAgents([], { followups: [] }, { resumeOk: true }), config: { mediaDir: deps1.config.mediaDir } }))
+    await registry2.loadRetired()
+    await registry2.loadMapping()
+    expect(registry2.chats.get('private:10001')).toBeUndefined()
+    expect(registry2.getSettings('private:10001').workspacePath).toBe('/tmp/onebot-ws-h')
+    await registry2.stop()
+  }, 20_000)
+
+  it('healSessionCollision without persisted settings keeps the pre-T3 drop behavior (helper parity with resetChat)', async () => {
+    const deps = makeRegistryDeps({ agents: makeFakeAgents([], { followups: [] }, { resumeOk: true }) })
+    const registry = new ChatRegistry(deps)
+    await registry.ensureChat('private:10001', '小明')
+    await registry.healSessionCollision('private:10001')
+    await registry.saveMapping()
+    const mapping = JSON.parse(await readFile(join(deps.config.mediaDir, 'chat-sessions.json'), 'utf8')) as Record<string, unknown>
+    expect(mapping['private:10001']).toBeUndefined()
+    await registry.stop()
+  })
+})

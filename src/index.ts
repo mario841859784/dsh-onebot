@@ -69,6 +69,8 @@ export interface Config {
   botQQ: string
   splitLength: number
   requireMention: boolean
+  /** Unknown slash-command handling: intercept（默认）=拦截并给建议；passthrough=透传给模型。 */
+  unknownCommand: 'intercept' | 'passthrough'
   dmPolicy: 'open' | 'allowlist' | 'disabled'
   groupPolicy: 'open' | 'allowlist' | 'disabled'
   allowFrom: string[]
@@ -154,6 +156,8 @@ export const Config: z<Config> = z.object({
     .description('长回复分段长度（按句号等标点切分）'),
   requireMention: z.boolean().default(true)
     .description('群聊是否仅在 @机器人（或回复其消息）时响应'),
+  unknownCommand: z.union([z.const('intercept'), z.const('passthrough')]).default('intercept')
+    .description('未知斜杠命令处理：intercept（默认）=拦截并提示相近命令或 /help；passthrough=透传给模型（旧行为）'),
   dmPolicy: z.union([z.const('open'), z.const('allowlist'), z.const('disabled')]).default('open')
     .description('私聊策略：open=仅管理员；allowlist=仅 allowFrom；disabled=拒绝所有私聊'),
   groupPolicy: z.union([z.const('open'), z.const('allowlist'), z.const('disabled')]).default('open')
@@ -221,7 +225,7 @@ export const Config: z<Config> = z.object({
   agentPreset: z.string().default('')
     .description('QQ 会话加入的 agent 预设 id；留空用部署默认（settings 的 agent-presets.default，当前为 router-flash）。创建时总是解析有效预设并写入会话 header，Web 界面可见；resume 优先恢复会话自己记录的预设'),
   workspacePath: z.string().default('')
-    .description('QQ 会话的工作区目录（写入会话 cwd，并自动归入该工作区，不存在则创建）；留空用宿主进程 cwd'),
+    .description('QQ 会话的工作区目录（写入会话 cwd，并自动归入该工作区，不存在则创建）；留空时使用宿主进程工作目录并在启动时告警提醒（宿主未提供可编程查询的默认工作区），单聊 /workspace 覆盖优先且已持久化到会话映射文件，重启/恢复失败均不丢失'),
   inboundFileMaxBytes: z.number().default(INBOUND_FILE_MAX_BYTES)
     .description('QQ 入站文件最大字节数（直链/base64 拉取，0 = 不限制）'),
   maxInboundFileBytes: z.number().deprecated()
@@ -295,6 +299,13 @@ export function apply(ctx: Context, config: Config): void {
     else if (level === 'warn') console.warn(prefix + message)
     else console.log(prefix + message)
   }
+  // T3 方案 B: the host exposes no queryable default workspace —
+  // WorkspaceRegistry has no default getter and the session controller's
+  // defaultCwd is assembly-internal — so the unconfigured fallback stays the
+  // host process cwd. Say so once at mount so a /root surprise is explainable.
+  if (config.workspacePath === '') {
+    log('warn', '未配置 workspacePath：QQ 会话默认目录将使用宿主进程工作目录 ' + process.cwd() + '，建议在配置中设置 workspacePath，避免会话工作区落在宿主启动目录')
+  }
   const connection = new OneBotConnection(
     {
       mode: config.mode,
@@ -363,6 +374,7 @@ export function apply(ctx: Context, config: Config): void {
       ignoreSelf: config.ignoreSelf,
       splitLength: config.splitLength,
       requireMention: config.requireMention,
+      unknownCommand: config.unknownCommand,
       interimMessages: config.interimMessages,
       interimRecallMs: config.interimRecallMs,
       interimRecall: config.interimRecall,

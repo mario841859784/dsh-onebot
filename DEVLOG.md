@@ -214,8 +214,20 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 全天 | **已知边界（后续清理候选）**：①正文可打出字面闭标签依赖平台声明（D5）；②t2i/fonts.ts 豁免（字体探测 fs 直读不在注入边界内）；③steer 跨回合污染有标注（转写补递可能落进下一回合）；④llmCatalog 缺省目录为空 |
 | 全天 | **发布 v0.4.0**：测试 200→283 全程（vitest 283/283、tsc 0 错误），v0.3.0→v0.4.0；lib 产物完整性校验（v0.3.0 缺六模块事故教训：commit 前 git ls-files 数量与 src 模块数核对、六拆模块 js+d.ts 齐全，commit 后 ls-tree 复核） |
 
----
+### 2026-09-12（M4 交互与持久化：未知命令拦截 / 序号选择 / workspace 持久化）
 
+| 时间 | 工作 |
+|---|---|
+| 全天 | **M4 启动与基线**：基于 v0.4.0（HEAD fac751a，工作树未提交改动），测试基线 283；三个工作包 T1（R1 未知命令拦截）、T2（R2 序号选择）、T3（R3 workspace 持久化+默认目录）串行实施，T4 独立评审门禁收口，T5 文档回写（本条目+双语 README） |
+| 全天 | **R1 未知命令拦截（新配置 `unknownCommand`，`intercept`（默认）/`passthrough`）**：动机——斜杠命令手滑打错（如 /hel）会整条透传给模型，模型不了解命令语义、回复易误导。行为——未知 /纯单词 命令先模糊匹配已知命令：前缀匹配优先，编辑距离 ≤2 兜底（仅输入长度 ≥4 时启用，防 /id /ver 等短命令被误匹配），至多列 3 个候选，命中回复「未知命令 /xxx，你是想用 /yyy 吗？」并拦截（不进模型）；无候选时 intercept（默认）回复「未知命令 /xxx。发 /help 查看命令列表；要让模型处理请去掉开头的 / 重发。」并拦截，passthrough 维持旧行为透传给模型；/help 尾行同步改为「未知命令默认拦截并提示相近命令；配置 unknownCommand: passthrough 可改为透传给模型。」；非 /纯单词 开头的文本（如 /tmp/x）不受影响仍交模型，非管理员斜杠消息仍被管理员门禁拦截（不进建议路径）。接线三段：index.ts schema（默认 intercept）、bridge→commands config 注入、commands.ts 路由 suggestCommands+editDistanceWithin2；commands.spec +5 |
+| 全天 | **R2 序号选择（/workspace /model /preset）**：动机——QQ 端手打长路径/provider/model 全名易错且费事。行为——三命令无参时输出编号列表（/workspace 标「← 当前」），回复 `/workspace 2` 这类序号即可选择；选择基于命令输出时的列表快照（PendingSelection：per-chat 单槽、内存态、不持久化），TTL 5 分钟 lazy 判定（无定时器，下次序号回复时判定，过期提示重新查看；越界保留快照可原地重试）；纯数字参数仅在有同 kind 有效快照时按序号解释，否则维持原语义（/workspace <路径>、/model <provider> <model>、/preset <id>）；/model 为两级——先列 provider 序号，选中后列该 provider 模型序号，选中走原切换路径改当前会话模型（`--default` 直用形式不变，非纯数字不受影响）。registry.ts 新增 PendingSelection 类型与 ChatSettings.pendingSelection 字段，bridge 注入 pendingSelection/setPendingSelection 访问器 |
+| 全天 | **R3 workspace 持久化 + 默认目录（T3，方案 C→B）**：workspacePath 加入 PersistedChatSettings（加法格式：旧文件裸 session id 照常解析；无持久化设置时条目逐字节不变）；loadMapping 在 resume 尝试之前恢复覆盖（洞 B：resume 失败 retire→fresh 也不丢）；/workspace 切换路径 flush 映射（洞 C：设置即时落盘）；对 /new 同样保持（settings 载体，T4 回炉固化）。**默认目录方案 C→B 决策**：方案 C（主选）=向宿主可编程查询默认工作区——证据链：WorkspaceRegistry 无 default getter（仅 resolveByPath/list 已有工作区），session controller 的 defaultCwd 属组装内部态不外露（index.ts T3 注释存证）→ 宿主拿不到，降级方案 B = 未配置 workspacePath 时默认仍为宿主进程 cwd + 插件启动 warn 一次（index.ts：workspacePath === '' 时 warn，建议显式配置、避免会话工作区落在宿主启动目录）；README 配置表 workspacePath 行同步。映射往返/旧格式兼容/洞 B 闭合/淘汰周期保持均有用例 |
+| 全天 | **T3 超任务书追加 4 项**（任务书仅要求 workspacePath 入映射 + loadMapping 恢复 + C/B 决策；实现中为闭合持久化链路追加，已标记待 T4 重点核查）：①洞 C noteWorkspaceOverride——非活跃 chat（未建会话/resume 失败）执行 /workspace 切换时快照进 evictedChats，否则 settings-only chat 会被任一次 saveMapping 从文件抹掉；②createChat 已退役快照跳过——evicted 快照记录 retired session（/new、/workspace 后的设置载体）时跳过 resume 直接重建，防复活已退役历史；③restoreEvictedSettings 抽取共用——in-run 淘汰→再激活路径把 workspacePath 连同 mode/goal 一并回填（原 D4b 只回 mode/goal）；④loadMapping retired-session 快速路径——retired id 的对象条目不 resume、只取设置 |
+| 全天 | **T4 独立评审门禁：同意、无阻塞项；2 条建议改进回炉闭环（+3 用例）**：①loadMapping 将 retired 对象条目重登记进 evictedChats——settings-only chat 不在 chats/evictedChats，一次 mid-flight saveMapping（stop() 或他 chat createChat）就会把 workspacePath/goal/mode 从文件抹掉、下个重启全丢；②snapshotRetainedSettings 共用载体——resetChat 与 healSessionCollision 在有持久化设置时把条目快照进 evictedChats（retired id 之下，永不 resume），无持久化设置保持 pre-T3 丢弃行为（正反两分支均钉用例）。PM 检查点放行 T5 |
+| 全天 | **测试 283→306 全绿**（T1 +5→288、T2 +6→294、T3 +9→303、T4 回炉 +3→306），npm test 全绿、build 退出 0；T5 文档回写：DEVLOG 本条目 + 双语 README（命令行为段/unknownCommand 配置行/workspacePath 说明/透传说明改写/最后验证与测试数更新） |
+| 全天 | **遗留清单（M4 评审记录，M5 候选）**：①**saveMapping 的 `??` 字段并集**——触发：chat 被空闲淘汰后执行 /goal clear，之后任一次 saveMapping；影响：live.goal 为 undefined 时 `??` 回退 evictedChats 快照旧值，已清除的 goal 复活并每轮重新提醒；建议方向：哨兵值区分「未设/已清」（或 clear 时同步清快照）。②**PendingSelection 单槽跨 kind**——触发：/model 列表在场时误回其他命令旧列表的序号（如 /workspace 1）；影响：无同 kind 快照 → 走原参数路径报错（如「目录无效：1」），提示略费解；建议方向：跨 kind 的序号回复给明确提示（当前不消费、行为安全但反直觉）。③**pendingSelection 随 ChatSettings 在 /new 后保留**——触发：列列表后执行 /new、TTL（5 分钟）内回序号；影响：序号仍可用（不持久化、到期自然失效，无害但语义略怪）；建议方向：/new 时顺手清 pendingSelection。④**幻影 bare id 累积（优先级最高）**——触发：每次重启 resume 失败的 session id 都会 retireSession 永久追加进 retired-sessions.json（append-only、无清理路径）；影响：文件只增不减、缓慢膨胀，有累积效应；建议方向：「同 id 已 retired 不重复追加」+ 定期清理，M5 候选首项 |
+
+---
 ## 3. 关键决策与坑（按价值排序）
 
 ### 3.1 emoji 代理对拆分（t2i 渲染黑字形）

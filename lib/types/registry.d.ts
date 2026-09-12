@@ -16,6 +16,27 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { MediaRef } from './cq.js';
 import type { ChatId, UserRole } from './chat.js';
 import type { AgentPresetsLike, BridgeConfig, SessionPersistenceLike, WorkspaceRegistryLike } from './bridge.js';
+/** R2: one pending serial-number selection snapshot — the numbered list a
+ * bare /workspace|/model|/preset rendered, kept per chat so a following
+ * `/cmd <序号>` picks an entry without re-listing. `payload` stores the exact
+ * resolved value (workspace path / provider id / preset id; the model level-2
+ * list stores the model id under `provider`). Single shared slot: a fresh
+ * bare call of any kind overwrites it, other commands never touch it; expiry
+ * is judged lazily at the next numeric reply (commands.ts
+ * PENDING_SELECTION_TTL_MS) — no timer, and the field is never persisted. */
+export interface PendingSelection {
+    kind: 'workspace' | 'model' | 'preset';
+    /** /model only: 'providers' (level 1) or 'models' (level 2). */
+    phase?: 'providers' | 'models';
+    /** /model level 2: the provider the listed models belong to. */
+    provider?: string;
+    /** The numbered entries as displayed; payload is what a hit applies. */
+    items: Array<{
+        label: string;
+        payload: string;
+    }>;
+    createdAt: number;
+}
 /** Per-chat settings that survive /new and collision heals (M2-D1-PR3):
  * resetChat and healSessionCollision never clear the entry, so every field
  * below keeps its value across session resets — exactly the pre-PR3 map
@@ -36,6 +57,10 @@ export interface ChatSettings {
     /** C6a: most recent inbound image ref, registered before command routing
      * so /ocr can resolve it lazily when the message carried a command. */
     pendingImageRef?: MediaRef;
+    /** R2: pending serial-number selection snapshot (see PendingSelection);
+     * ephemeral UI state — survives /new like every field here but never
+     * persisted, and bounded by the lazy 5-minute TTL instead. */
+    pendingSelection?: PendingSelection;
 }
 /** One live per-chat agent. */
 export interface ChatAgent {
@@ -179,12 +204,25 @@ export declare class ChatRegistry {
     /** Get (or create) the agent for a chat. */
     ensureChat(chatId: ChatId, nickname: string): Promise<ChatAgent>;
     private createChat;
+    /** T3: apply the persisted-settings snapshot (mode/goal/workspace override)
+     * of an evicted or reset chat onto its settings entry — shared by the
+     * evicted-resume path and its retired-session fast path. */
+    private restoreEvictedSettings;
     /** Resume persisted chats from the mapping file (best-effort). */
     loadMapping(): Promise<void>;
     /** Resume one persisted chat from its recorded session id (shared by
      * loadMapping and the B8c evicted-chat resume). */
     private resumeChat;
     private mappingPath;
+    /** T3 (hole C): make a just-set /workspace override durable even when the
+     * chat is not live (before its first message, or after a failed resume).
+     * saveMapping only writes chats/evictedChats, so a settings-only chat would
+     * otherwise be dropped from the mapping on every save. Snapshots the chat
+     * into evictedChats under its mapping session id — or the derived bare id
+     * when the chat never went live (the resume then fails harmlessly and a
+     * fresh session is created with the settings intact). No-op for a live
+     * chat: the normal save path covers it. */
+    noteWorkspaceOverride(chatId: ChatId): void;
     saveMapping(): Promise<void>;
     saveMappingDebounced(): void;
     /** B8c: dispose chats whose last activity is older than chatIdleEvictDays
@@ -209,6 +247,16 @@ export declare class ChatRegistry {
     private retiredPath;
     loadRetired(): Promise<void>;
     private saveRetired;
+    /** T3-R1 (review closure): carry the chat's persisted settings across a
+     * reset or a collision heal — snapshot them into evictedChats under the
+     * (about-to-be-retired) session id, so the trailing saveMapping keeps the
+     * entry instead of dropping the chat's workspace/goal/mode on a restart.
+     * Only persisted fields trigger the snapshot (a plain /new or heal keeps
+     * the exact pre-T3 on-disk behavior: entry dropped); the recorded session
+     * id is retired by the caller, so the carrier is never resumed. Shared by
+     * resetChat and healSessionCollision — logic frozen to the original
+     * resetChat inline snapshot. */
+    private snapshotRetainedSettings;
     /**
      * Recover from a session-log collision: the live session cannot append to
      * the mismatched on-disk log, so dispose the agent and rebuild the chat on

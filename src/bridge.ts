@@ -42,6 +42,10 @@ export interface BridgeConfig {
   ignoreSelf: boolean
   splitLength: number
   requireMention: boolean
+  /** Unknown slash-command handling (R1): 'intercept' (default) consumes the
+   * message with a closest-match suggestion or a hint; 'passthrough' restores
+   * the old fall-through to the model. */
+  unknownCommand?: 'intercept' | 'passthrough'
   interimMessages: boolean
   /** Per-interim auto-recall delay (ms) from each interim's send completion
    * while the turn is still running (QQ recall window ~2 min); absent → 90s.
@@ -478,7 +482,15 @@ export class ChatBridge {
       effectiveCwd: chatId => bridge.effectiveCwd(chatId),
       sessionIdFromMapping: chatId => bridge.sessionIdFromMapping(chatId),
       resolvePresetId: chatId => bridge.resolvePresetId(chatId),
-      setChatWorkspacePath: (chatId, path) => { bridge.registry.getSettings(chatId).workspacePath = path },
+      // T3: /workspace persists with the chat mapping (debounced). When the
+      // chat is not live, noteWorkspaceOverride snapshots it into the registry
+      // so the flush actually reaches the mapping file instead of being
+      // dropped by the chats/evictedChats-only rewrite.
+      setChatWorkspacePath: (chatId, path) => {
+        bridge.registry.getSettings(chatId).workspacePath = path
+        bridge.registry.noteWorkspaceOverride(chatId)
+        bridge.registry.saveMappingDebounced()
+      },
       presetOverride: chatId => bridge.registry.getSettings(chatId).presetOverride,
       setPresetOverride: (chatId, id) => { bridge.registry.getSettings(chatId).presetOverride = id },
       hasPresetOverride: chatId => bridge.registry.getSettings(chatId).presetOverride !== undefined,
@@ -489,6 +501,9 @@ export class ChatBridge {
       setGoal: (chatId, value) => { bridge.registry.getSettings(chatId).goal = value; bridge.registry.saveMappingDebounced() },
       deleteGoal: chatId => { bridge.registry.getSettings(chatId).goal = undefined; bridge.registry.saveMappingDebounced() },
       lastImagePath: chatId => bridge.registry.getSettings(chatId).lastImagePath,
+      // R2: pending serial-number selection snapshot (lazy TTL lives in commands).
+      pendingSelection: chatId => bridge.registry.getSettings(chatId).pendingSelection,
+      setPendingSelection: (chatId, value) => { bridge.registry.getSettings(chatId).pendingSelection = value },
       takePendingImageRef: chatId => {
         const settings = bridge.registry.getSettings(chatId)
         const ref = settings.pendingImageRef
@@ -503,7 +518,7 @@ export class ChatBridge {
       commands: bridge.deps.commands,
       connection: bridge.deps.connection,
       dshHome: bridge.deps.dshHome,
-      config: { interimMessages: bridge.deps.config.interimMessages, maxImageBytes: bridge.deps.config.maxImageBytes },
+      config: { interimMessages: bridge.deps.config.interimMessages, maxImageBytes: bridge.deps.config.maxImageBytes, unknownCommand: bridge.deps.config.unknownCommand },
     }
   }
 

@@ -30,7 +30,7 @@
 | 语音 | ffmpeg 转 16kHz WAV + whisper 转写（openai-whisper / whisper.cpp / 自定义命令）；**非阻塞**：语音消息先以 [语音] 占位进入回合（不阻塞回复），转写完成后以「（语音转写：…）」补递（默认超时 60s）；转写失败/超时保留 [语音] 占位 |
 | 文字图 | t2i 卡片渲染器（@napi-rs/canvas）：标题/粗斜体/删除线/引用/列表/代码块/表格/行内 code 胶囊/彩色 emoji/中文标点禁则；与 Hermes 原版同款数值（800px/26px/禁则集合/右缘 790） |
 | 出站 | 长消息按句号分段（默认 ≤100 字/条）、**>150 字渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji，渲染失败自动回退分段）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、**实时中间消息**（interimMessages：每条中间文本立即发出、实时可见；各自在 `interimRecallMs`（默认 90s）后自动单独撤回；回合结束时先把整轮中间消息渲染成一张 **t2i 小结卡**、立即撤回仍在屏幕上的原文、再发送最终回复——不用回合末合并转发，避免长回合「原文超 2 分钟撤不回+转发卡重复」；`interimRecall: false` 时降级为只发不撤（无小结卡、不撤回））、**宿主「计划书/提问卡」自动中继**（模型调用 exit_plan_mode / ask_user_question 时把计划全文/问题选项发到 QQ）、正在输入提示（set_input_status，仅私聊） |
-| 命令 | 斜杠命令（仅管理员）：`/new` 开新会话、`/stop` 停止生成、`/model` 查看或切换当前会话模型（`--default` 修改部署默认）、`/workspace` 查看或切换工作区、`/preset` 查看或切换 agent 预设、`/status` 会话全景、`/retry` 重跑上一条、`/id` 会话标识、`/ver` 版本、`/ocr` 识别最近图片、`/mode` 切换出站模式（跨重启持久化）、`/plan` 计划模式、`/goal` 目标记录（跨重启持久化）、`/help` 帮助 |
+| 命令 | 斜杠命令（仅管理员）：`/new` 开新会话、`/stop` 停止生成、`/model` 查看或切换当前会话模型（`--default` 修改部署默认；无参输出两级序号列表，回复序号选 provider → 再回复序号选模型）、`/workspace` 查看或切换工作区（无参编号列表，回复序号即选）、`/preset` 查看或切换 agent 预设（无参编号列表，回复序号即选）、`/status` 会话全景、`/retry` 重跑上一条、`/id` 会话标识、`/ver` 版本、`/ocr` 识别最近图片、`/mode` 切换出站模式（跨重启持久化）、`/plan` 计划模式、`/goal` 目标记录（跨重启持久化）、`/help` 帮助；未知斜杠命令默认拦截并提示相近命令（`unknownCommand: passthrough` 改为透传给模型） |
 | 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_napcat_api`（14 个白名单 action）、`qq_group_history`（文件编辑工具 `code_safe_edit` 等已拆至独立插件 dsh-safe-edit，见下文「安全编辑」） |
 | 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计 |
 | 会话 | 每个 QQ 会话一个持久 Agent（session id 稳定派生），重启后自动 resume；按 `agentPreset`/`workspacePath` 挂载到 preset 与工作区；每轮结束 flush 落盘 |
@@ -46,7 +46,7 @@
 | OneBot 11 实现 | NapCat / Lagrange / LLOneBot / go-cqhttp（reverse 或 forward WebSocket） |
 | 可选依赖 | 语音转写需 ffmpeg + whisper CLI；t2i 文字图在 Linux 需 Noto CJK 字体 |
 
-最后验证：2026-09-10（M0 安全加固 + 适配 dsh 0.1.5-rc.1：vitest 130 用例全绿、对 0.1.5-rc.1 宿主实链 tsc 0 错误；reverse 空 token 拒绝启动、默认仅监听 127.0.0.1 为 BREAKING 变更，见下方配置表说明）。
+最后验证：2026-09-12（M4 交互与持久化：未知命令拦截 / 序号选择 / workspace 持久化——vitest 306 用例全绿、构建通过；M0 安全语义保持：reverse 空 token 拒绝启动、默认仅监听 127.0.0.1 为 BREAKING 变更，见下方配置表说明）。
 
 ## 安装
 
@@ -110,6 +110,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `botQQ` | 空 | 机器人 QQ（空=自动学习） |
 | `requireMention` | `true` | 群聊需 @ 或回复机器人的消息才响应（回复他人消息不触发；被回复消息无法判定时回落视为提及，fail-open） |
 | `rateLimitPerMinute` | `30` | 每会话每分钟普通消息上限（60s 滑动窗口）：超限跳过处理并限流提示（每窗口至多一条），命令不受限；`0` = 禁用 |
+| `unknownCommand` | `intercept` | 未知斜杠命令处置：`intercept`（默认）拦截并提示相近命令（前缀匹配优先，编辑距离 ≤2 兜底且仅输入长度 ≥4 时启用，至多 3 个候选；无候选提示发 `/help` 或去掉开头 `/` 重发）；`passthrough` 维持旧行为透传给模型。非 `/纯单词` 开头的文本（如路径 `/tmp/x`）不受影响 |
 | `dmPolicy` | `open` | 私聊策略：`open`(仅管理员)/`allowlist`(白名单)/`disabled` |
 | `groupPolicy` | `open` | 群聊策略：`open`(所有人)/`allowlist`/`disabled` |
 | `adminUsers` | `[]` | 管理员 QQ；也可用 `ONEBOT_ALLOWED_USERS` 环境变量。**必须至少设置一个**，否则私聊（dmPolicy=open）与斜杠命令无人可用 |
@@ -129,7 +130,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `inboundFileMaxBytes` | `20971520` | QQ 入站文件大小上限（字节）：超限文件拒收并提示（旧名 `maxInboundFileBytes` deprecated，本版兼容读取） |
 | `allowPrivateHosts` | `false` | 下载媒体 URL 时允许私网/环回地址（仅跳过私网检查，协议白名单与限长仍生效）；仅本机反代等可信场景开启，公网部署保持 `false` |
 | `agentPreset` | 空 | 会话挂载的 agent preset（留空=默认） |
-| `workspacePath` | 空 | 会话挂载的工作区（留空=宿主 cwd） |
+| `workspacePath` | 空 | 会话挂载的工作区（留空=宿主进程 cwd；未配置时插件启动会 warn 一次建议显式配置——宿主未提供可编程查询的默认工作区）。`/workspace` 的 per-chat 覆盖已持久化进映射文件，重启不丢 |
 | `chatIdleEvictDays` | `7` | 会话空闲淘汰天数：chat 超过该天数无任何活动时，在下一条入站消息处理前清理其内存态 agent（会话先 flush 落盘、映射保留，同一 chat 之后再发消息可 resume 恢复原会话）；`0` = 禁用 |
 
 > ⚠️ **BREAKING（M0 安全加固）**：reverse 模式下 `accessToken` 留空会拒绝启动（fail-closed）；`host` 默认从 `0.0.0.0` 改为 `127.0.0.1`（仅本机监听），跨机部署需显式配置 `host: 0.0.0.0`。
@@ -145,12 +146,12 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 3. 宿主进程 cwd（`process.cwd()`）
 
 `/workspace <目录>` 切换（realpath + 目录校验）：记录覆盖后会 retire 当前 agent，
-下一条消息以新目录重建会话，旧会话保留在磁盘。`/workspace` 无参数查看当前目录，
-`/workspace list` 列出全部 workspace 记录。
+下一条消息以新目录重建会话，旧会话保留在磁盘。`/workspace` 无参数输出编号列表
+（当前目录标「← 当前」），回复 `/workspace <序号>` 即可切换；`/workspace list` 列出全部 workspace 记录。
 
-`/workspace` 的 per-chat 覆盖是进程内记录，但重启后会自动从 resume 会话的
-header cwd 回填（会话 cwd 创建时冻结）：只要该 chat 用的是非默认目录，重启后
-`/workspace` 与新会话都会继续使用原目录；cwd 等于配置默认的 chat 不受影响。
+`/workspace` 的 per-chat 覆盖已持久化进映射文件（chat-sessions.json，加法格式、兼容旧文件）：
+重启、会话恢复失败均不丢失，对 `/new` 同样保持——只要该 chat 用的是非默认目录，
+重启后 `/workspace` 与新会话都会继续使用原目录。
 
 会话自动挂载到 GUI 工作区：仅当会话 cwd 等于配置的 `workspacePath`（未配置时为宿主 cwd）
 才自动创建 workspace；沿用旧 cwd 的遗留会话只在已有 workspace 拥有该路径时挂载，不会自动新建。
@@ -161,9 +162,9 @@ header cwd 回填（会话 cwd 创建时冻结）：只要该 chat 用的是非�
 |---|---|
 | `/new` | 开启新会话（清空上下文，旧会话保留在磁盘） |
 | `/stop` | 停止当前生成 |
-| `/model [provider/model]` | 查看或切换当前会话模型；`--default` 修改部署默认 |
-| `/workspace [路径\|list]` | 查看或切换工作区 |
-| `/preset [id]` | 查看当前/可用预设，或切换 preset（重建会话，新会话 header 记录） |
+| `/model [provider/model]` | 查看或切换当前会话模型；`--default` 修改部署默认。无参输出两级序号列表：回复序号选 provider → 再回复序号选模型并切换当前会话 |
+| `/workspace [路径\|list]` | 查看或切换工作区；无参输出编号列表（标「← 当前」），回复 `/workspace <序号>` 即切换 |
+| `/preset [id]` | 查看当前/可用预设（无参编号列表，回复序号即选），或切换 preset（重建会话，新会话 header 记录） |
 | `/status` | 会话全景：chat/session/preset/model/cwd/出站模式/agent 状态 |
 | `/retry` | 重跑上一条用户消息（上一轮出错后重试） |
 | `/id` | 只看 chat/session/cwd（排查用） |
@@ -175,7 +176,10 @@ header cwd 回填（会话 cwd 创建时冻结）：只要该 chat 用的是非�
 
 `/preset` 切换为进程内 per-chat 覆盖（跨 `/new` 保留）：下一条消息重建会话并以新 preset
 写入 header，重启后 resume 按记录恢复；`/mode`、`/goal` 的 per-chat 状态已持久化进映射文件（v0.4.0 起，跨重启
-保留）；`/plan` 仍为进程内覆盖，重启回退到默认。
+保留），`/workspace` 的覆盖同样持久化；`/plan` 仍为进程内覆盖，重启回退到默认。
+序号选择基于命令输出列表的快照，5 分钟内有效（过期提示重新查看）；纯数字参数仅在有对应有效列表时
+按序号解释，否则维持原参数语义。未知斜杠命令默认拦截并提示相近命令，配置 `unknownCommand: passthrough`
+可改为透传给模型。
 
 ## 安全编辑（code_safe_edit）
 
@@ -241,7 +245,7 @@ header cwd 回填（会话 cwd 创建时冻结）：只要该 chat 用的是非�
 - 用户发来的图片/语音/视频在文本中标注为 `[图片]`/`[语音]`/`[视频]` 占位（路径不进入文本）；无可用看图工具时如实告知用户。
 - 群聊消息带 `[HH:MM 昵称(QQ)]` 前缀；受限用户消息带 `[受限用户:仅问答]` 前缀（仅回答，禁止文件/终端/配置操作）。
 - 本通道为 QQ，宿主无 Web 交互卡：禁止调用 `ask_user_question` / `exit_plan_mode`（确认卡仅 Web 可用，会阻塞对话），提问/确认走纯文本；宿主计划模式下输出纯文本计划并提示「/plan off 退出」。
-- 斜杠命令由插件拦截（14 个，仅管理员，`/help` 查看）；其他 `/` 开头文本交模型正常处理。
+- 斜杠命令由插件拦截（14 个，仅管理员，`/help` 查看）；未知斜杠命令默认拦截并提示相近命令，配置 `unknownCommand: passthrough` 时透传给模型；非 `/纯单词` 开头的文本（如路径）仍正常交给模型。
 - 修改宿主文件走内置 read/edit（行级 hash 锚点、dsh-better-edit 自动 undo），勿用 write 整文件覆盖（清空 undo 历史）。
 
 ## 卸载
@@ -254,7 +258,7 @@ header cwd 回填（会话 cwd 创建时冻结）：只要该 chat 用的是非�
 
 ```sh
 ./scripts/build.sh                 # 编译 src/ → lib/
-./node_modules/.bin/vitest run     # 283 个测试：单元 + 真实 WS 对端 + 全管线
+./node_modules/.bin/vitest run     # 306 个测试：单元 + 真实 WS 对端 + 全管线
 ```
 
 要点（来自移植源 DEVLOG 的教训）：

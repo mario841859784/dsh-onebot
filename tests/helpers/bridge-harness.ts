@@ -161,6 +161,7 @@ export async function makeCmdHarness(opts?: {
   dshHome?: string
   ocrResult?: unknown
   interimMessages?: boolean
+  unknownCommand?: 'intercept' | 'passthrough'
   interimRecallMs?: number
   interimRecall?: boolean
   rateLimitPerMinute?: number
@@ -202,6 +203,7 @@ export async function makeCmdHarness(opts?: {
     config: {
       botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
       interimMessages: opts?.interimMessages ?? true,
+      ...(opts?.unknownCommand !== undefined ? { unknownCommand: opts.unknownCommand } : {}),
       ...(opts?.interimRecallMs !== undefined ? { interimRecallMs: opts.interimRecallMs } : {}),
       ...(opts?.interimRecall !== undefined ? { interimRecall: opts.interimRecall } : {}),
       ...(opts?.rateLimitPerMinute !== undefined ? { rateLimitPerMinute: opts.rateLimitPerMinute } : {}),

@@ -11,6 +11,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session';
 import type { OneBotConnection } from './connection.js';
 import type { MediaRef } from './cq.js';
 import type { ChatId, UserRole } from './chat.js';
+import type { PendingSelection } from './registry.js';
 import type { AgentDefaultModelLike, AgentPresetsLike, BridgeConfig, BridgeDeps, LlmCatalogPort, WorkspaceRegistryLike } from './bridge.js';
 /** Narrow view of a live chat the command handlers may read or mutate —
  * the structural subset of the bridge's internal ChatAgent that the
@@ -62,6 +63,10 @@ export interface CommandContext {
     deleteGoal(chatId: ChatId): void;
     lastImagePath(chatId: ChatId): string | undefined;
     lastImagePath(chatId: ChatId): string | undefined;
+    /** R2: per-chat pending serial-number selection snapshot (the numbered list
+     * a bare /workspace|/model|/preset rendered; lazy 5-min TTL, see below). */
+    pendingSelection(chatId: ChatId): PendingSelection | undefined;
+    setPendingSelection(chatId: ChatId, value: PendingSelection | undefined): void;
     /** Lazy media resolution for the /ocr pending image ref (C6a). */
     resolveMediaRef(ref: MediaRef, chatId: ChatId): Promise<string>;
     /** Consume the pending pre-routing image ref (get + delete, /ocr only). */
@@ -77,7 +82,7 @@ export interface CommandContext {
     connection: OneBotConnection;
     dshHome: string | undefined;
     /** The only config fields the commands read. */
-    config: Pick<BridgeConfig, 'interimMessages' | 'maxImageBytes'>;
+    config: Pick<BridgeConfig, 'interimMessages' | 'maxImageBytes' | 'unknownCommand'>;
 }
 /** One routed slash command: the table row IS the registration (D1-PR1) —
  * adding a command is exactly one row here and /help picks it up for free. */
@@ -98,8 +103,11 @@ export declare const COMMANDS: CommandDefinition[];
  * slash-command block) and are matched on the first word; a leading
  * @mention glued to the command (QQ group at + text) is stripped first.
  * A path like /tmp/x is never a command (command words are
- * /[A-Za-z][A-Za-z0-9_-]* only). Unknown commands return false so the
- * message reaches the model, matching the Hermes "fall through" behavior.
+ * /[A-Za-z][A-Za-z0-9_-]* only). Unknown commands get closest-match
+ * suggestions (prefix first, edit distance ≤2 for length ≥4 inputs only)
+ * and are consumed; with no suggestion, config.unknownCommand decides —
+ * 'intercept' (default) consumes with a hint, 'passthrough' returns false
+ * so the message reaches the model (the old Hermes fall-through).
  * @param ctx - bridge capabilities (built by ChatBridge).
  * @param chatId - the chat the command arrived in.
  * @param text - parsed inbound text.

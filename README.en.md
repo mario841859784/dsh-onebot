@@ -30,12 +30,12 @@ User(QQ) ←→ NapCat ←→ dsh-onebot plugin ←→ dsh Agent (one per chat)
 | Voice | ffmpeg to 16 kHz WAV + whisper transcription (openai-whisper / whisper.cpp / custom command); **non-blocking**: the voice message enters the turn as a `[语音]` placeholder right away, and the transcript follows as a `（语音转写：…）` supplement when done (default timeout 60s); failure keeps the `[语音]` placeholder |
 | Text image | t2i card renderer (@napi-rs/canvas): headings/bold/italic/strikethrough/quotes/lists/code blocks/tables/inline code pills/color emoji/CJK punctuation rules; same numbers as the Hermes original (800px/26px/rules/right edge 790) |
 | Outbound | Long messages split on sentence boundaries (default ≤100 chars/message); **>150 chars rendered as a t2i text-image card** (AstrBot style: headings/quotes/lists/tables/code blocks/color emoji, auto-fallback to split text on render failure); Markdown stripped to plain QQ text; `[[qq_forward]]` merged-forward cards (group/private); **live interim messages** (`interimMessages`: each interim text is sent immediately; each is auto-recalled alone after `interimRecallMs` (default 90s); at turn end the whole turn's interims render into one **t2i summary card**, the still-on-screen originals are recalled, then the final reply is sent — no turn-end merged forwarding, avoiding unrecallable >2min originals and duplicate cards on long turns; `interimRecall: false` degrades to send-only: no summary card, no recall); **host plan-book/question-card auto-relay** (when the model calls exit_plan_mode / ask_user_question, the full plan text / question options are sent to QQ), typing indicator (`set_input_status`, private chats only) |
-| Commands | Slash commands (admin only): `/new` fresh session (context cleared, old session kept on disk), `/stop` stop the current generation, `/model` view/switch the current session's model (`--default` changes the deployment default), `/workspace` view/switch workspace, `/preset` view/switch agent presets (session rebuilt, recorded in the new session's header), `/status` session panorama: chat/session/preset/model/cwd/outbound mode/agent status, `/retry` rerun the last user message (retry after a failed turn; refused while a generation is in progress), `/id` chat/session/cwd only (for troubleshooting), `/ver` plugin version + git commit, `/ocr` OCR the latest inbound image of this session (NapCat ocr_image), `/mode` switch this session's outbound mode (per-chat override, persisted across restarts), `/plan` host plan mode (`/plan off` exits directly with no Web approval card), `/goal` record/update the session goal (auto-attached as a reminder each turn, persisted across restarts), `/help` help |
+| Commands | Slash commands (admin only): `/new` fresh session (context cleared, old session kept on disk), `/stop` stop the current generation, `/model` view/switch the current session's model (`--default` changes the deployment default; the bare form renders a two-level numbered list — reply with a number to pick a provider, then a number to pick the model), `/workspace` view/switch workspace (bare form renders a numbered list; reply with a number to switch), `/preset` view/switch agent presets (session rebuilt, recorded in the new session's header; bare form numbered), `/status` session panorama: chat/session/preset/model/cwd/outbound mode/agent status, `/retry` rerun the last user message (retry after a failed turn; refused while a generation is in progress), `/id` chat/session/cwd only (for troubleshooting), `/ver` plugin version + git commit, `/ocr` OCR the latest inbound image of this session (NapCat ocr_image), `/mode` switch this session's outbound mode (per-chat override, persisted across restarts), `/plan` host plan mode (`/plan off` exits directly with no Web approval card), `/goal` record/update the session goal (auto-attached as a reminder each turn, persisted across restarts), `/help` help; unknown slash commands are intercepted by default with close-match suggestions (`unknownCommand: passthrough` restores the fall-through to the model) |
 | Tools | `qq_send_image` (≤9 images, path or URL), `qq_send_voice`, `qq_send_video`, `qq_send_file`, `qq_send_forward`, `qq_napcat_api` (14 allowlisted actions), `qq_group_history` (guarded file editing `code_safe_edit`/`code_safe_rollback`/`code_list_backups` moved to the standalone plugin **dsh-safe-edit** — see README.md → 安全编辑) |
 | Permissions | Admin allowlist (`ONEBOT_ALLOWED_USERS`), dm/group policies (open/allowlist/disabled), group @-mention gating, restricted users soft limit (`[受限用户:仅问答]`), outbound sensitive-content auditing |
 | Sessions | One persistent Agent per QQ chat (stable derived session id), auto-resumed after restart; mounted into presets/workspaces via `agentPreset`/`workspacePath`; mapping flushed to disk at the end of every turn |
 | Ops | Hot reload (edit patch config/touch → takes effect, no dsh restart); temp media TTL cleanup |
-| Prompt | Injects QQ platform notes automatically (plain-text output, images via view_image, tool guidance) |
+| Prompt | Injects QQ platform notes automatically (plain-text output, `[图片]`/`[语音]` placeholders for incoming images/voice, tool & command guidance, host interaction cards banned); injected into **each QQ chat agent's own scope**, invisible to Web sessions |
 
 ## Compatibility
 
@@ -46,7 +46,7 @@ User(QQ) ←→ NapCat ←→ dsh-onebot plugin ←→ dsh Agent (one per chat)
 | OneBot 11 impl | NapCat / Lagrange / LLOneBot / go-cqhttp (reverse or forward WebSocket) |
 | Optional deps | Voice transcription needs ffmpeg + whisper CLI; t2i text images need Noto CJK fonts on Linux |
 
-Last verified: 2026-09-10 (M0 security hardening + dsh 0.1.5-rc.1 adaptation: 130/130 vitest green, tsc clean against a live 0.1.5-rc.1 host; BREAKING: reverse mode refuses an empty accessToken and defaults to 127.0.0.1).
+Last verified: 2026-09-12 (M4 interaction & persistence: unknown-command interception / serial selection / workspace persistence — 306/306 vitest green, build clean; M0 security semantics unchanged: reverse mode refuses an empty accessToken and defaults to 127.0.0.1, see the BREAKING note under the config table).
 
 ## Installation
 
@@ -114,6 +114,7 @@ default). Common options:
 | `botQQ` | empty | bot QQ (empty = auto-learned) |
 | `requireMention` | `true` | groups only respond when @-mentioned or replying to the bot's own messages (replies to other members don't trigger; when the replied-to message can't be determined, it falls back to counting as mentioned, fail-open) |
 | `rateLimitPerMinute` | `30` | per-chat cap on ordinary messages per minute (60s sliding window): over-limit messages are skipped with a rate-limit notice (at most one per window); commands are exempt; `0` disables |
+| `unknownCommand` | `intercept` | unknown slash-command handling: `intercept` (default) consumes the message and suggests close matches (prefix matches first, edit-distance ≤2 fallback only for inputs of length ≥4, at most 3 candidates; with no match it points to `/help` or re-sending without the leading `/`); `passthrough` restores the old fall-through to the model. Text not starting with a `/word` token (e.g. a path like `/tmp/x`) is unaffected |
 | `dmPolicy` | `open` | DM policy: `open`(admins only)/`allowlist`/`disabled` |
 | `groupPolicy` | `open` | group policy: `open`(everyone)/`allowlist`/`disabled` |
 | `adminUsers` | `[]` | admin QQ numbers; or the `ONEBOT_ALLOWED_USERS` env var. **At least one is required**, otherwise DMs (`dmPolicy=open`) and slash commands are unavailable to everyone |
@@ -133,7 +134,7 @@ default). Common options:
 | `inboundFileMaxBytes` | `20971520` | inbound QQ file size cap (bytes): oversized file segments are rejected with a notice (old name `maxInboundFileBytes` deprecated, still honored this release) |
 | `allowPrivateHosts` | `false` | allow downloads from private/loopback addresses (skips only the private-network check; the protocol allowlist and size limits still apply); enable only in trusted setups such as a local reverse proxy |
 | `agentPreset` | empty | agent preset for sessions (empty = default) |
-| `workspacePath` | empty | workspace for sessions (empty = host cwd) |
+| `workspacePath` | empty | workspace for sessions (empty = host process cwd; when unconfigured the plugin warns once at startup recommending an explicit value — the host exposes no programmable default-workspace query). The per-chat `/workspace` override is persisted to the mapping file and survives restarts |
 | `chatIdleEvictDays` | `7` | idle-session eviction (days): when a chat has had no activity for longer than this, its in-memory agent is cleaned up before the next inbound message is processed (the session is flushed to disk first and the mapping is kept, so a later message from the same chat resumes the original session); `0` = disabled |
 
 > ⚠️ **BREAKING (M0 security hardening)**: in reverse mode an empty `accessToken` refuses to start (fail-closed); the `host` default changed from `0.0.0.0` to `127.0.0.1` (loopback only) — cross-machine deployments must explicitly configure `host: 0.0.0.0`.
@@ -151,8 +152,18 @@ frozen for the session's lifetime):
 
 `/workspace <dir>` switches directories (realpath + directory check): it records the override and retires the
 current agent, so the next message rebuilds the session under the new directory. The old session stays on disk.
-`/workspace` with no argument shows the current directory; `/workspace list` lists all workspace records.
+The bare `/workspace` form renders a numbered list (the current directory is marked); reply with
+`/workspace <number>` to switch without retyping the path; `/workspace list` lists all workspace records.
 
+The per-chat `/workspace` override is persisted to the mapping file (chat-sessions.json, additive format that
+stays compatible with older files): it survives restarts and failed session resumes, and a `/new` keeps it too —
+as long as the chat uses a non-default directory, `/workspace` and new sessions keep using it after a restart.
+
+Serial-number replies (`/workspace 2`, `/model 3`, `/preset 1`) resolve against a snapshot of the list the command
+just printed and stay valid for 5 minutes (an expired snapshot asks you to list again); a purely numeric argument is
+read as an index only while such a list is live, otherwise the original parameter semantics apply. Unknown slash
+commands are intercepted by default with close-match suggestions — `unknownCommand: passthrough` passes them to
+the model instead.
 Sessions attach to GUI workspaces as follows: a new workspace is auto-created only when the session cwd equals
 the configured `workspacePath` (or the host cwd when unset); legacy sessions carrying a foreign cwd are attached
 only when a workspace already owns that path, never auto-created.
@@ -213,9 +224,12 @@ automatically from the system and fixed paths at startup; missing glyphs render 
 
 - QQ does not render Markdown → output plain text (numbered/dashed lists, inline backticks).
 - Send images/files/voice/video with the `qq_send_*` tools; merged forwards with `qq_send_forward`.
-- User-sent images are annotated with their local path; inspect them with `view_image` (dsh-vision).
+- Incoming images/voice/video are annotated in the text as `[图片]`/`[语音]`/`[视频]` placeholders (paths never enter the text); when no vision tool is available, say so honestly.
 - Group messages carry a `[HH:MM nickname(QQ)]` prefix; restricted-user messages carry a `[受限用户:仅问答]`
   prefix (answer only, no file/terminal/config operations).
+- This channel is QQ and the host has no Web interaction cards: do not call `ask_user_question` / `exit_plan_mode` (confirmation cards are Web-only and would stall the conversation); ask and confirm in plain text; in host plan mode, output the plan as plain text and point to `/plan off` to exit.
+- Slash commands are intercepted by the plugin (14 of them, admin only, see `/help`); unknown slash commands are intercepted by default with close-match suggestions, and `unknownCommand: passthrough` passes them to the model; text that does not start with a `/word` token (e.g. a path) still goes to the model normally.
+- Edit host files with the built-in read/edit (line-level hash anchors, dsh-better-edit auto-undo); never overwrite whole files with write (it clears the undo history).
 
 ## Uninstall
 
@@ -227,7 +241,7 @@ automatically from the system and fixed paths at startup; missing glyphs render 
 
 ```sh
 ./scripts/build.sh                 # compile src/ → lib/
-./node_modules/.bin/vitest run     # 283 tests: unit + real WS peer + full pipeline
+./node_modules/.bin/vitest run     # 306 tests: unit + real WS peer + full pipeline
 ```
 
 Lessons ported from the source DEVLOG:
