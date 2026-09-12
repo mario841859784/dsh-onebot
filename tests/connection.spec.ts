@@ -582,3 +582,47 @@ describe('frame cap and reverse churn guard (M1-A8)', () => {
     await connection.stop()
   })
 })
+
+describe('injected log port (M3-E3b)', () => {
+  it('routes transport diagnostics through the injected log sink', async () => {
+    const logs: Array<{ level: string; message: string }> = []
+    const connection = new OneBotConnection({
+      ...CONFIG, accessToken: 'secret',
+      log: (level, message) => logs.push({ level, message }),
+    })
+    connection.start()
+    await vi.waitFor(() => expect(connection.address()).toBeDefined())
+    const address = connection.address()!
+    // The listening info line arrives through the port, not the console.
+    expect(logs.some(l => l.level === 'info' && l.message.includes('listening on ws://'))).toBe(true)
+    const warnSpy = vi.spyOn(console, 'warn')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws')
+    await new Promise(resolve => {
+      client.on('close', code => { expect(code).toBe(4401); resolve(undefined) })
+      client.on('open', () => undefined)
+    })
+    // The rejection warning flows through the sink and never touches console.
+    expect(logs.some(l => l.level === 'warn' && l.message.includes('bad access token'))).toBe(true)
+    expect(warnSpy).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
+    client.close()
+    await connection.stop()
+  })
+
+  it('falls back to the console when no log is injected (standalone usability)', async () => {
+    const connection = new OneBotConnection({ ...CONFIG, accessToken: 'secret' })
+    connection.start()
+    await vi.waitFor(() => expect(connection.address()).toBeDefined())
+    const address = connection.address()!
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer secret' } })
+    await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
+    const warnSpy = vi.spyOn(console, 'warn')
+    client.send('not-json')
+    await vi.waitFor(() => {
+      expect(warnSpy.mock.calls.some(call => String(call[0]).includes('dropping non-JSON WS frame'))).toBe(true)
+    })
+    warnSpy.mockRestore()
+    client.close()
+    await connection.stop()
+  })
+})

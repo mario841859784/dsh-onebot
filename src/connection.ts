@@ -9,6 +9,7 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import WebSocket, { WebSocketServer } from 'ws'
 
+import { describeError, errorStack } from './errors.js'
 /** OneBot 11 event payload (loose: implementations vary). */
 export interface OneBotEvent {
   post_type?: string
@@ -51,6 +52,12 @@ export interface ConnectionConfig {
    * backoff ladder still caps the delay at its last value).
    */
   reconnectMaxAttempts?: number
+  /**
+   * M3-E3b: injected log sink (level, message). Absent → a console fallback
+   * keeps the transport independently usable; index.ts wires the same
+   * deps.log the bridge uses.
+   */
+  log?: (level: 'info' | 'warn' | 'error' | 'debug', message: string) => void
 }
 
 /** Reconnect backoff ladder (seconds); the last value repeats. */
@@ -143,6 +150,22 @@ export class OneBotConnection {
     return undefined
   }
 
+  /**
+   * M3-E3b: the transport's single log exit. The injected config.log is the
+   * production sink (index.ts wires the same deps.log the bridge uses); the
+   * console fallback keeps the class independently usable. Messages carry no
+   * '[dsh-onebot] ' prefix — the sink owns prefixing.
+   */
+  private log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void {
+    if (this.config.log !== undefined) {
+      this.config.log(level, message)
+      return
+    }
+    const line = '[dsh-onebot] ' + message
+    if (level === 'error') console.error(line)
+    else if (level === 'warn') console.warn(line)
+    else console.log(line)
+  }
   /** Start the transport (server or client) without blocking. */
   start(): void {
     // Reentrancy guard: a live socket/server or a pending reconnect means the
@@ -241,16 +264,16 @@ export class OneBotConnection {
     server.on('error', error => {
       const code = (error as NodeJS.ErrnoException).code
       if (code === 'EADDRINUSE') {
-        console.error('[dsh-onebot] reverse WS server cannot listen on ' + this.config.host + ':' + this.config.port + ': port already in use (EADDRINUSE); stop the process occupying this port, or change config.port')
+        this.log('error', 'reverse WS server cannot listen on ' + this.config.host + ':' + this.config.port + ': port already in use (EADDRINUSE); stop the process occupying this port, or change config.port' + errorStack(error))
         return
       }
-      console.error('[dsh-onebot] reverse WS server error:', error)
+      this.log('error', 'reverse WS server error: ' + describeError(error) + errorStack(error))
     })
     server.on('connection', (socket, request) => {
       const expected = Buffer.from('Bearer ' + this.config.accessToken, 'utf8')
       const provided = Buffer.from(request.headers.authorization ?? '', 'utf8')
       if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) {
-        console.warn('[dsh-onebot] rejecting reverse WS client: bad access token')
+        this.log('warn', 'rejecting reverse WS client: bad access token')
         socket.close(4401, 'unauthorized')
         return
       }
@@ -262,7 +285,7 @@ export class OneBotConnection {
         const now = Date.now()
         this.reverseReplaces = this.reverseReplaces.filter(at => now - at < CHURN_WINDOW_MS)
         if (this.reverseReplaces.length >= CHURN_MAX_REPLACES) {
-          console.warn('[dsh-onebot] rejecting reverse WS client: too many connection replacements within ' + CHURN_WINDOW_MS / 1000 + 's')
+          this.log('warn', 'rejecting reverse WS client: too many connection replacements within ' + CHURN_WINDOW_MS / 1000 + 's')
           socket.close(4000, 'too many connections')
           return
         }
@@ -279,7 +302,7 @@ export class OneBotConnection {
     server.on('listening', () => {
       const address = server.address()
       const shown = typeof address === 'object' && address !== null ? address.address + ':' + address.port : String(address)
-      console.log('[dsh-onebot] reverse WS server listening on ws://' + shown + ' (path /ws or /)')
+      this.log('info', 'reverse WS server listening on ws://' + shown + ' (path /ws or /)')
     })
     server.on('close', () => {
       this.server = undefined
@@ -297,7 +320,7 @@ export class OneBotConnection {
     try {
       socket = new WebSocket(url, { headers, handshakeTimeout: 10_000, maxPayload: MAX_FRAME_BYTES })
     } catch (error) {
-      console.error('[dsh-onebot] forward WS connect failed:', error)
+      this.log('error', 'forward WS connect failed: ' + describeError(error) + errorStack(error))
       this.scheduleReconnect()
       return
     }
@@ -314,7 +337,7 @@ export class OneBotConnection {
       this.lastPongAt = Date.now()
     })
     socket.on('error', error => {
-      console.warn('[dsh-onebot] forward WS error:', error instanceof Error ? error.message : String(error))
+      this.log('warn', 'forward WS error: ' + describeError(error))
     })
     socket.on('close', (code, reason) => {
       if (this.socket !== socket) return // stale socket: a newer dial has replaced it
@@ -334,7 +357,7 @@ export class OneBotConnection {
     // delay at its last value).
     const max = this.config.reconnectMaxAttempts ?? MAX_RECONNECT_ATTEMPTS
     if (max > 0 && this.reconnectAttempts > max) {
-      console.error('[dsh-onebot] giving up forward WS reconnect after ' + max + ' retries (reconnectMaxAttempts=' + max + '); check the NapCat ws address and network, then restart the plugin or reload the dsh-onebot channel to reconnect')
+      this.log('error', 'giving up forward WS reconnect after ' + max + ' retries (reconnectMaxAttempts=' + max + '); check the NapCat ws address and network, then restart the plugin or reload the dsh-onebot channel to reconnect')
       return
     }
     const index = Math.min(this.reconnectAttempts - 1, RECONNECT_BACKOFF.length - 1)
@@ -367,11 +390,11 @@ export class OneBotConnection {
       this.setConnected(false)
       this.failAllPending(new OneBotNotConnectedError('OneBot WS closed (code ' + code + ')'))
       if (!this.stopping) {
-        console.warn('[dsh-onebot] reverse WS client disconnected: ' + code + ' ' + reason.toString())
+        this.log('warn', 'reverse WS client disconnected: ' + code + ' ' + reason.toString())
       }
     })
     socket.on('error', error => {
-      console.warn('[dsh-onebot] reverse WS client error:', error instanceof Error ? error.message : String(error))
+      this.log('warn', 'reverse WS client error: ' + describeError(error))
     })
     this.setConnected(true)
     if (previous !== undefined && previous !== socket && previous.readyState < WebSocket.CLOSING) {
@@ -391,7 +414,7 @@ export class OneBotConnection {
       if (socket.readyState !== WebSocket.OPEN) return
       const now = Date.now()
       if (now - this.lastPongAt >= 2 * HEARTBEAT_MS) {
-        console.warn('[dsh-onebot] heartbeat timeout: no pong for ' + (now - this.lastPongAt) + 'ms (mode=' + this.config.mode + '); terminating socket')
+        this.log('warn', 'heartbeat timeout: no pong for ' + (now - this.lastPongAt) + 'ms (mode=' + this.config.mode + '); terminating socket')
         socket.terminate()
         return
       }
@@ -416,7 +439,7 @@ export class OneBotConnection {
     try {
       this.onStatus(connected)
     } catch (error) {
-      console.error('[dsh-onebot] onStatus handler failed:', error)
+      this.log('error', 'onStatus handler failed: ' + describeError(error) + errorStack(error))
     }
   }
 
@@ -434,7 +457,7 @@ export class OneBotConnection {
     try {
       payload = JSON.parse(data.toString())
     } catch {
-      console.warn('[dsh-onebot] dropping non-JSON WS frame')
+      this.log('warn', 'dropping non-JSON WS frame')
       return
     }
     if (typeof payload !== 'object' || payload === null) return
@@ -464,7 +487,7 @@ export class OneBotConnection {
         try {
           this.onMessage(event)
         } catch (error) {
-          console.error('[dsh-onebot] onMessage handler failed:', error)
+          this.log('error', 'onMessage handler failed: ' + describeError(error) + errorStack(error))
         }
         return
       }
@@ -472,7 +495,7 @@ export class OneBotConnection {
         try {
           this.onMeta(event)
         } catch (error) {
-          console.error('[dsh-onebot] onMeta handler failed:', error)
+          this.log('error', 'onMeta handler failed: ' + describeError(error) + errorStack(error))
         }
         return
       }

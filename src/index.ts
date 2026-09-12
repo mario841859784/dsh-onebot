@@ -287,6 +287,14 @@ export function apply(ctx: Context, config: Config): void {
   config = resolveDeprecatedConfig(config)
   const mediaDir = config.mediaDir !== '' ? config.mediaDir : defaultMediaDir()
   const policy = resolvePolicy(config)
+  /** Console log line callback (level, message) — shared by the bridge deps,
+   * the connection log port and the host-ready boot gate below (M2-C5b). */
+  const log = (level: 'info' | 'warn' | 'error' | 'debug', message: string): void => {
+    const prefix = '[dsh-onebot] '
+    if (level === 'error') console.error(prefix + message)
+    else if (level === 'warn') console.warn(prefix + message)
+    else console.log(prefix + message)
+  }
   const connection = new OneBotConnection(
     {
       mode: config.mode,
@@ -296,6 +304,7 @@ export function apply(ctx: Context, config: Config): void {
       accessToken: config.accessToken,
       reconnectMaxAttempts: config.reconnectMaxAttempts,
       callTimeoutMs: 30_000,
+      log,
     },
   )
   const media = new MediaStore(mediaDir, config.tempTtlHours, config.inboundImageMaxPx, { maxBytes: config.inboundFileMaxBytes, allowPrivateHosts: config.allowPrivateHosts })
@@ -312,14 +321,6 @@ export function apply(ctx: Context, config: Config): void {
   }
   connection.onMeta = (event: OneBotEvent) => {
     logMetaEvent(connection.selfId, event)
-  }
-  /** Console log line callback (level, message) — shared by the bridge deps
-   * and the host-ready boot gate below (M2-C5b). */
-  const log = (level: 'info' | 'warn' | 'error' | 'debug', message: string): void => {
-    const prefix = '[dsh-onebot] '
-    if (level === 'error') console.error(prefix + message)
-    else if (level === 'warn') console.warn(prefix + message)
-    else console.log(prefix + message)
   }
   const bridge = new ChatBridge({
     ctx,
