@@ -58,10 +58,9 @@ export interface ChatAgent {
   /** B8c: last activity timestamp (creation, dispatchFollowup, turn events);
    * the idle sweep evicts chats idle longer than chatIdleEvictDays. */
   lastActivityAt: number
-  /** Buffered last-step text when interimMessages is off. */
-  pendingFinal: string
-  /** Loop merge (interimMessages on): text deferred one step, awaiting the
-   * next assistant/message to prove it interim — the last one is the final. */
+  /** Text deferred one step in either outbound mode — proven interim by the
+   * next assistant/message (flushed live), else the final at turn/end.
+   * M3-D2a: the former instant-mode-only pendingFinal folded in. */
   loopPending: string | null
   /** Sent interim messages awaiting turn/end summary (text kept for the recap
    * t2i card). `sentAt` drives the per-message auto-recall scheduled after
@@ -224,7 +223,6 @@ export class ChatRegistry {
       agent: handle.agent,
       dispose: () => handle.dispose(),
       lastActivityAt: Date.now(),
-      pendingFinal: '',
       loopPending: null,
       loopBuffer: [],
       recallTimers: new Map(),

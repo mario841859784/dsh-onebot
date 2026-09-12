@@ -227,7 +227,6 @@ describe('ChatBridge', () => {
     // message effects excluded by driving ensureChat directly — the registry
     // internal-path direct call is this file's convention).
     const snapshot = (c: Record<string, unknown>) => ({
-      pendingFinal: c.pendingFinal,
       loopPending: c.loopPending,
       loopBuffer: c.loopBuffer,
       recallTimers: c.recallTimers,

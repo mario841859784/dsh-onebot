@@ -388,6 +388,9 @@ export class ChatBridge {
     if (nickname !== undefined && nickname !== '') chat.lastNickname = nickname
     chat.lastFollowup = text
     chat.lastActivityAt = Date.now()
+    // M3-D2a: a dispatched user turn starts a fresh interim cycle (the
+    // inbound residue reset already cleared the loop fields directly).
+    this.interim.onNewUserTurn(chat)
     // Queue this turn's initiator role; the host's turn/start freezes it as
     // the running turn's role (M1-A2). Push and followup happen synchronously,
     // so the role cannot interleave with another dispatch.
