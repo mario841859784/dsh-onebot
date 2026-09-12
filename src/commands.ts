@@ -103,7 +103,7 @@ export const COMMANDS: CommandDefinition[] = [
     await ctx.resetChat(chatId)
   } },
   { name: 'stop', adminOnly: true, help: '停止当前生成', handler: (ctx, chatId) => handleStopCommand(ctx, chatId) },
-  { name: 'model', adminOnly: true, help: '[provider/model] 查看或切换模型', handler: (ctx, chatId, arg) => handleModelCommand(ctx, chatId, arg) },
+  { name: 'model', adminOnly: true, help: '[--default] <provider> <model> 查看或切换模型（--default 改部署默认）', handler: (ctx, chatId, arg) => handleModelCommand(ctx, chatId, arg) },
   { name: 'workspace', adminOnly: true, help: '[路径|list] 查看或切换工作区', handler: (ctx, chatId, arg) => handleWorkspaceCommand(ctx, chatId, arg) },
   { name: 'preset', adminOnly: true, help: '[id] 查看或切换 agent 预设', handler: (ctx, chatId, arg) => handlePresetCommand(ctx, chatId, arg) },
   { name: 'status', adminOnly: true, help: '会话全景状态', handler: (ctx, chatId) => handleStatusCommand(ctx, chatId) },
@@ -171,7 +171,10 @@ async function handleStopCommand(ctx: CommandContext, chatId: ChatId): Promise<v
   }
 }
 
-/** /model: show the current model (+ discoverable providers), or switch. */
+/** /model: show the current model (+ discoverable providers), or switch.
+ * A bare switch retargets ONLY this chat's selection ref (M2-C5a: it no
+ * longer rewrites the deployment default — that is the explicit --default
+ * form's job). */
 async function handleModelCommand(ctx: CommandContext, chatId: ChatId, arg: string): Promise<void> {
   const chat = ctx.getChat(chatId)
   const current = chat?.selectionRef?.current
@@ -197,9 +200,12 @@ async function handleModelCommand(ctx: CommandContext, chatId: ChatId, arg: stri
     await ctx.sendToChat(chatId, out)
     return
   }
-  const m = /^(\S+)[\s/]+(\S+)$/.exec(arg)
+  const first = arg.split(/\s+/, 1)[0] ?? ''
+  const toDefault = first === '--default'
+  const rest = toDefault ? arg.slice(first.length).trim() : arg
+  const m = /^(\S+)[\s/]+(\S+)$/.exec(rest)
   if (m === null) {
-    await ctx.sendToChat(chatId, '用法：/model <provider> <model> 或 /model <provider>/<model>')
+    await ctx.sendToChat(chatId, '用法：/model <provider> <model> 切换当前会话；/model --default <provider> <model> 修改部署默认')
     return
   }
   const provider = m[1]
@@ -214,17 +220,24 @@ async function handleModelCommand(ctx: CommandContext, chatId: ChatId, arg: stri
     ctx.log('debug', 'model switch precheck failed for ' + provider + ': ' + String(error))
   }
   const next = { provider, model }
+  if (toDefault) {
+    // Explicit --default: rewrite the deployment-wide default only (M2-C5a).
+    if (ctx.agentDefaultModel !== undefined) {
+      try {
+        await ctx.agentDefaultModel.saveSelection(next)
+      } catch (error) {
+        ctx.log('warn', 'saveSelection failed: ' + String(error))
+      }
+    }
+    await ctx.sendToChat(chatId, `✅ 已修改部署默认模型：${provider}/${model}（下一步生效）`)
+    return
+  }
+  // Bare switch: retarget only this chat's selection ref — never the global
+  // default (M2-C5a; the old silent saveSelection here was a scope leak).
   if (chat?.selectionRef !== undefined) {
     chat.selectionRef.current = next
   }
-  if (ctx.agentDefaultModel !== undefined) {
-    try {
-      await ctx.agentDefaultModel.saveSelection(next)
-    } catch (error) {
-      ctx.log('warn', 'saveSelection failed: ' + String(error))
-    }
-  }
-  await ctx.sendToChat(chatId, `✅ 已切换模型：${provider}/${model}（下一步生效）`)
+  await ctx.sendToChat(chatId, `✅ 已切换当前会话模型：${provider}/${model}（下一步生效）`)
 }
 
 /** /workspace: show current cwd, list workspaces, or switch directory. */

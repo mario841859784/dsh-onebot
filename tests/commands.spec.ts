@@ -124,19 +124,69 @@ describe('commands', () => {
       expect(h.outbound.some(f => JSON.stringify(f.params).includes('当前模型：deepseek/deepseek-chat'))).toBe(true)
     })
 
-    // 2. /model provider model switches the live selection and persists it.
+    // 2. /model provider model switches the session selection ONLY — the
+    //    deployment default (saveSelection) must stay untouched (M2-C5a).
     h.sendText('/model deepseek deepseek-reasoner')
     await vi.waitFor(() => {
-      expect(h.outbound.some(f => JSON.stringify(f.params).includes('已切换模型：deepseek/deepseek-reasoner'))).toBe(true)
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('已切换当前会话模型：deepseek/deepseek-reasoner'))).toBe(true)
     })
     expect(chat.selectionRef?.current).toMatchObject({ provider: 'deepseek', model: 'deepseek-reasoner' })
-    expect(saveSelection).toHaveBeenCalledWith({ provider: 'deepseek', model: 'deepseek-reasoner' })
-
+    expect(saveSelection).not.toHaveBeenCalled()
     // 3. Unknown model for a provider is rejected with the catalog.
     h.sendText('/model deepseek no-such-model')
     await vi.waitFor(() => {
       expect(h.outbound.some(f => JSON.stringify(f.params).includes('没有模型 no-such-model'))).toBe(true)
     })
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('slash /model --default rewrites the deployment default without touching the session selection (M2-C5a)', async () => {
+    const saveSelection = vi.fn(async () => undefined)
+    const h = await makeCmdHarness({
+      agentDefaultModel: {
+        currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+        saveSelection,
+      },
+    })
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const chat = (h.bridge as unknown as { chats: Map<string, { selectionRef: { current: { provider: string; model: string } } | undefined }> }).chats.get('private:10001')!
+
+    h.sendText('/model --default deepseek deepseek-reasoner')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('已修改部署默认模型：deepseek/deepseek-reasoner'))).toBe(true)
+    })
+    expect(saveSelection).toHaveBeenCalledWith({ provider: 'deepseek', model: 'deepseek-reasoner' })
+    expect(chat.selectionRef?.current).toMatchObject({ provider: 'deepseek', model: 'deepseek-chat' })
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('slash /model rejects unknown argument combinations with the usage line (M2-C5a)', async () => {
+    const saveSelection = vi.fn(async () => undefined)
+    const h = await makeCmdHarness({
+      agentDefaultModel: {
+        currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+        saveSelection,
+      },
+    })
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+
+    h.sendText('/model --default')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('用法：/model'))).toBe(true)
+    })
+    h.sendText('/model a b c')
+    await vi.waitFor(() => {
+      expect(h.outbound.filter(f => JSON.stringify(f.params).includes('用法：/model'))).toHaveLength(2)
+    })
+    expect(saveSelection).not.toHaveBeenCalled()
 
     h.client.close()
     await h.bridge.stop()
@@ -453,7 +503,7 @@ describe('commands', () => {
     // hardcoded text verbatim (the harness-level /help test above exercises
     // the real outbound path).
     const rendered = '可用命令：\n' + COMMANDS.map(c => '/' + c.name + ' ' + c.help).join('\n') + '\n\n其他 / 开头的文本会直接交给模型。'
-    const preSplit = '可用命令：\n/new 开启新会话（清空上下文）\n/stop 停止当前生成\n/model [provider/model] 查看或切换模型\n/workspace [路径|list] 查看或切换工作区\n/preset [id] 查看或切换 agent 预设\n/status 会话全景状态\n/retry 重跑上一条\n/id 查看 session/chat id\n/ver 插件版本\n/ocr 识别最近一张图片\n/mode [interim|instant] 切换出站模式\n/plan [off|内容] 宿主计划模式（/plan off 退出）\n/goal [目标|clear] 查看/设置目标\n/help 本帮助\n\n其他 / 开头的文本会直接交给模型。'
+    const preSplit = '可用命令：\n/new 开启新会话（清空上下文）\n/stop 停止当前生成\n/model [--default] <provider> <model> 查看或切换模型（--default 改部署默认）\n/workspace [路径|list] 查看或切换工作区\n/preset [id] 查看或切换 agent 预设\n/status 会话全景状态\n/retry 重跑上一条\n/id 查看 session/chat id\n/ver 插件版本\n/ocr 识别最近一张图片\n/mode [interim|instant] 切换出站模式\n/plan [off|内容] 宿主计划模式（/plan off 退出）\n/goal [目标|clear] 查看/设置目标\n/help 本帮助\n\n其他 / 开头的文本会直接交给模型。'
     expect(rendered).toBe(preSplit)
   })
 })
