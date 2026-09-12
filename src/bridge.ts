@@ -480,10 +480,11 @@ export class ChatBridge {
       setPresetOverride: (chatId, id) => { bridge.registry.getSettings(chatId).presetOverride = id },
       hasPresetOverride: chatId => bridge.registry.getSettings(chatId).presetOverride !== undefined,
       interimOverride: chatId => bridge.registry.getSettings(chatId).interimOverride,
-      setInterimOverride: (chatId, value) => { bridge.registry.getSettings(chatId).interimOverride = value },
+      // D4b: /mode and /goal persist with the chat mapping (debounced).
+      setInterimOverride: (chatId, value) => { bridge.registry.getSettings(chatId).interimOverride = value; bridge.registry.saveMappingDebounced() },
       goal: chatId => bridge.registry.getSettings(chatId).goal,
-      setGoal: (chatId, value) => { bridge.registry.getSettings(chatId).goal = value },
-      deleteGoal: chatId => { bridge.registry.getSettings(chatId).goal = undefined },
+      setGoal: (chatId, value) => { bridge.registry.getSettings(chatId).goal = value; bridge.registry.saveMappingDebounced() },
+      deleteGoal: chatId => { bridge.registry.getSettings(chatId).goal = undefined; bridge.registry.saveMappingDebounced() },
       lastImagePath: chatId => bridge.registry.getSettings(chatId).lastImagePath,
       takePendingImageRef: chatId => {
         const settings = bridge.registry.getSettings(chatId)

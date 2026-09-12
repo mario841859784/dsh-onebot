@@ -49,6 +49,25 @@ export interface ChatSettings {
   pendingImageRef?: MediaRef
 }
 
+/** D4b: the persisted per-chat settings carried in one chat-sessions.json
+ * entry (additive format: a legacy file holds a bare session-id string). */
+interface PersistedChatSettings {
+  session: string
+  interimOverride?: boolean
+  goal?: string
+}
+
+/** D4b: build one mapping entry — a bare session id when the chat carries no
+ * persisted settings (byte-identical to the legacy format), else an object
+ * with the optional mode/goal fields. */
+function persistEntry(sessionId: string, interimOverride: boolean | undefined, goal: string | undefined): string | PersistedChatSettings {
+  if (interimOverride === undefined && goal === undefined) return sessionId
+  const entry: PersistedChatSettings = { session: sessionId }
+  if (interimOverride !== undefined) entry.interimOverride = interimOverride
+  if (goal !== undefined) entry.goal = goal
+  return entry
+}
+
 /** One live per-chat agent. */
 export interface ChatAgent {
   chatId: ChatId
@@ -248,9 +267,10 @@ export class ChatRegistry {
   private readonly pendingCreates = new Map<ChatId, Promise<ChatAgent>>()
 
   /** B8c: chats evicted for idleness, kept resumable (chat id → last session
-   * id). NOT retired: saveMapping keeps writing them, so the mapping file
-   * never drops an evicted chat and a later message resumes its session. */
-  private readonly evictedChats = new Map<ChatId, string>()
+   * id plus the D4b persisted-settings snapshot, since chatSettings is cleared
+   * on eviction). NOT retired: saveMapping keeps writing them, so the mapping
+   * file never drops an evicted chat and a later message resumes its session. */
+  private readonly evictedChats = new Map<ChatId, PersistedChatSettings>()
 
   /** Get (or create) the agent for a chat. */
   async ensureChat(chatId: ChatId, nickname: string): Promise<ChatAgent> {
@@ -270,14 +290,18 @@ export class ChatRegistry {
     await this.mappingLoaded
     // B8c: a chat evicted for idleness resumes its recorded session instead
     // of forking a fresh one — the mapping entry was kept for exactly this.
-    const evictedId = this.evictedChats.get(chatId)
-    if (evictedId !== undefined) {
+    const evicted = this.evictedChats.get(chatId)
+    if (evicted !== undefined) {
       try {
-        const resumed = await this.resumeChat(chatId, evictedId)
+        const resumed = await this.resumeChat(chatId, evicted.session)
+        // D4b: the evicted chat's persisted mode/goal come back with it.
+        const settings = this.getSettings(chatId)
+        if (evicted.interimOverride !== undefined) settings.interimOverride = evicted.interimOverride
+        if (evicted.goal !== undefined) settings.goal = evicted.goal
         this.evictedChats.delete(chatId)
         return resumed
       } catch (error) {
-        this.retireSession(evictedId)
+        this.retireSession(evicted.session)
         this.evictedChats.delete(chatId)
         this.deps.log('warn', 'resume of evicted session failed for ' + chatId + '; falling back to a fresh session: ' + (error instanceof Error ? error.message : String(error)))
       }
@@ -350,9 +374,20 @@ export class ChatRegistry {
   async loadMapping(): Promise<void> {
     try {
       const content = await readFile(this.mappingPath(), 'utf8')
-      const mapping = JSON.parse(content) as Record<string, string>
+      // D4b: additive format — a legacy entry is a bare session-id string; a
+      // new entry is { session, interimOverride?, goal? }.
+      const mapping = JSON.parse(content) as Record<string, string | PersistedChatSettings>
       this.deps.log('debug', 'mapping file has ' + Object.keys(mapping).length + ' chat(s)')
-      for (const [chatId, sessionId] of Object.entries(mapping)) {
+      for (const [chatId, entry] of Object.entries(mapping)) {
+        const sessionId = typeof entry === 'string' ? entry : entry?.session
+        if (typeof sessionId !== 'string' || sessionId === '') continue
+        // Restore the persisted mode/goal before the resume (old files carry
+        // neither — the settings then fall back to their current defaults).
+        if (typeof entry === 'object' && entry !== null) {
+          const settings = this.getSettings(chatId)
+          if (typeof entry.interimOverride === 'boolean') settings.interimOverride = entry.interimOverride
+          if (typeof entry.goal === 'string' && entry.goal !== '') settings.goal = entry.goal
+        }
         this.deps.log('debug', 'attempting resume of ' + chatId + ' @ ' + sessionId)
         if (this.deps.isStopping()) return
         try {
@@ -414,10 +449,11 @@ export class ChatRegistry {
   async saveMapping(): Promise<void> {
     try {
       await mkdir(this.deps.config.mediaDir, { recursive: true })
-      const mapping: Record<string, string> = {}
-      for (const [chatId, sessionId] of this.evictedChats) mapping[chatId] = sessionId
+      const mapping: Record<string, string | PersistedChatSettings> = {}
+      for (const [chatId, evicted] of this.evictedChats) mapping[chatId] = persistEntry(evicted.session, evicted.interimOverride, evicted.goal)
       for (const chat of this.chats.values()) {
-        mapping[chat.chatId] = chat.sessionId
+        const settings = this.chatSettings.get(chat.chatId)
+        mapping[chat.chatId] = persistEntry(chat.sessionId, settings?.interimOverride, settings?.goal)
       }
       await writeFile(this.mappingPath(), JSON.stringify(mapping, null, 2), 'utf8')
     } catch (error) {
@@ -461,7 +497,14 @@ export class ChatRegistry {
     this.clearInterimTimers(chat)
     this.chats.delete(chatId)
     this.bySession.delete(chat.sessionId)
-    this.evictedChats.set(chatId, chat.sessionId)
+    // D4b: snapshot the persisted settings before the eviction clears them,
+    // so saveMapping keeps writing the chat's mode/goal while it is idle.
+    const evictedSettings = this.chatSettings.get(chatId)
+    this.evictedChats.set(chatId, {
+      session: chat.sessionId,
+      interimOverride: evictedSettings?.interimOverride,
+      goal: evictedSettings?.goal,
+    })
     this.chatSettings.delete(chatId)
     try {
       await chat.dispose()
@@ -740,8 +783,9 @@ export class ChatRegistry {
     const file = joinMappingPath(this.deps.config.mediaDir)
     try {
       const text = await readFile(file, 'utf8')
-      const map = JSON.parse(text) as Record<string, string>
-      const id = map[chatId]
+      const map = JSON.parse(text) as Record<string, string | PersistedChatSettings>
+      const entry = map[chatId]
+      const id = typeof entry === 'string' ? entry : entry?.session
       return typeof id === 'string' && id !== '' ? id : undefined
     } catch {
       return undefined
