@@ -30,7 +30,6 @@ export interface ParsedMessage {
     replyId?: string;
     /** OneBot forward id embedded in the message, if any. */
     forwardId?: string;
-    mentioned: boolean;
 }
 /**
  * Reverse the CQ escaping NapCat applies inside attribute values
@@ -40,21 +39,22 @@ export interface ParsedMessage {
  * @returns unescaped value.
  */
 export declare function cqUnescape(value: string): string;
-/** Escape the other way (used when embedding user text into CQ attributes). */
-export declare function cqEscape(value: string): string;
 /** Map a QQ face id to an emoji, with a fallback for unknown ids. */
 export declare function faceToEmoji(id: string): string;
 /**
  * Detect whether the message mentions the bot. Prefers the segment array;
- * falls back to CQ-string scanning. Fail-closed: with an unknown bot id and
- * no configured botQQ, group messages are never treated as mentioning us.
+ * falls back to CQ-string scanning. @-detection stays fail-closed: with an
+ * unknown bot id and no configured botQQ, group messages are never treated
+ * as mentioning us. Reply segments count only when the replied-to user is
+ * determinably the bot itself (M1-A8); an undeterminable target (segment
+ * carries no qq) falls back to the previous always-mention behavior — a
+ * deliberate fail-open so tightening the gate never breaks existing setups.
  * @param segments - segment array (may be undefined for CQ-only payloads).
  * @param raw - raw CQ string.
  * @param selfId - learned bot QQ id ('' when unknown).
  * @param botQQ - configured bot QQ id ('' when unset).
- * @param replyId - reply segment already extracted.
  */
-export declare function detectMention(segments: OneBotSegment[] | undefined, raw: string, selfId: string, botQQ: string, replyId?: string): boolean;
+export declare function detectMention(segments: OneBotSegment[] | undefined, raw: string, selfId: string, botQQ: string): boolean;
 /** Split a raw CQ string into segments; used only when no segment array exists. */
 export declare function parseCqString(raw: string): OneBotSegment[];
 /**

@@ -201,6 +201,7 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 时间 | 工作 |
 |---|---|
 | 全天 | **M2 收官核对 + 发布 v0.3.0**：五拆完成——bridge.ts 2249→681（-70%），七模块 bridge/registry/commands/inbound/outbound/interim/card-relay 合计 3168 行；测试 200→234（vitest 234/234、tsc 0 错误）；行为零变化（唯一有意变更 = C5a /model 会话级语义）；全程 tools.ts diff=0；基线 tag pre-refactor-baseline →五个 PR 逐个独立 commit 可 revert。B8 收尾核对五项全部测试落位：B8a ensureChat in-flight 缓存（tests/registry.spec.ts:967，并发首条 create 恰 1 次）；B8b 孤儿 agent dispose（tests/registry.spec.ts:978，whenIdle 抛错路径 dispose×1+零残留）；B8c 空闲淘汰 chatIdleEvictDays（tests/registry.spec.ts:1001，dispose+映射保留+resume 同会话恢复）；B8d 发送链解耦（tests/bridge.spec.ts:533，未注册 chat 亦串行）；recalledInterimIds turn/start 修剪（tests/interim.spec.ts:490，同 id 复用不复发）。**已知边界承前**：file:// 分支、DNS rebinding TOCTOU、URL 出站（NapCat 侧抓取）、正文伪前缀属 D5；B8c 淘汰即重置 per-chat override 待产品决策；commands 直写 ChatAgent interim 字段待 D2 收口 |
+| 全天 | **发布完整性修复（v0.3.0 重打 tag）**：v0.3.0 tag 的 lib/ 缺五拆六模块产物（用户核查发现）——card-relay/commands/inbound/interim/outbound/registry 六模块 JS 及 lib/types 对应 .d.ts 从未 git add，直接 checkout v0.3.0 不构建的环境会因缺模块挂掉；build.sh resolve_dsh_root 自 link-host.sh 原样移植 npm/nvm 全局布局分支（bin 祖先内探测 `lib/node_modules/@deepseek-ai/dsh/node_modules`），重建产物后 v0.3.0 tag 重打为 4d90469 之后的修复提交。提醒：v0.2.x tag 的 lib 为 M0 时代内容（功能完整但滞后，不回补） |
 
 ---
 

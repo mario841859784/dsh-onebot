@@ -77,6 +77,15 @@ export declare function dmAllowed(userId: string, policy: AccessPolicyConfig): b
  */
 export declare function groupAllowed(groupId: string, policy: AccessPolicyConfig): boolean;
 /**
+ * Sanitize an attacker-controlled nickname for use in the single-line message
+ * prefix: strip C0 controls (incl. CR/LF) and DEL, collapse whitespace runs to
+ * one space, and cap the result at 32 code points (astral-safe). Returns ''
+ * for blank input; callers keep their own fallback logic.
+ * @param nickname - raw sender display name.
+ * @returns the sanitized single-line nickname (possibly empty).
+ */
+export declare function sanitizeNickname(nickname: string): string;
+/**
  * Build the group-message metadata prefix the agent sees:
  * "[HH:MM 昵称(QQ)]" plus "[@我]" when the bot was mentioned.
  * @param nickname - sender display name.

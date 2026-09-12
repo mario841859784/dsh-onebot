@@ -43,6 +43,12 @@ export interface ConnectionConfig {
     accessToken: string;
     /** Per-action call timeout in ms. */
     callTimeoutMs: number;
+    /**
+     * Forward-mode reconnect attempt limit before giving up with a recovery
+     * hint. Undefined keeps the built-in default (100); 0 retries forever (the
+     * backoff ladder still caps the delay at its last value).
+     */
+    reconnectMaxAttempts?: number;
 }
 /** Error thrown for action calls that fail or time out. */
 export declare class OneBotActionError extends Error {
@@ -67,12 +73,16 @@ export declare class OneBotConnection {
     onStatus: (connected: boolean) => void;
     private server;
     private socket;
+    private lastPongAt;
     private heartbeatTimer;
     private pending;
     private stopping;
     private reconnectPromise;
+    private reconnectTimer;
     private reconnectAttempts;
     private connectedFlag;
+    /** Reverse churn guard: timestamps (ms) of recent healthy-socket replacements. */
+    private reverseReplaces;
     /** The bot's own QQ id, learned from meta events (or config botQQ). */
     selfId: string;
     constructor(config: ConnectionConfig);

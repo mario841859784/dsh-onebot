@@ -15,6 +15,7 @@ import type { AgentRegistry } from '@deepseek-ai/dsh-agent';
 import type { SessionStore } from '@deepseek-ai/dsh-session';
 import type { ModelSelection } from '@deepseek-ai/dsh-agent';
 import z from '@deepseek-ai/schemastery';
+import type { OneBotEvent } from './connection.js';
 type Context = CordisContext & {
     tools: ToolRuntime;
     systemPrompt: SystemPrompt;
@@ -82,6 +83,8 @@ export interface Config {
     port: number;
     url: string;
     accessToken: string;
+    /** Forward-mode reconnect attempt limit; 0 = retry forever. */
+    reconnectMaxAttempts: number;
     botQQ: string;
     splitLength: number;
     requireMention: boolean;
@@ -96,6 +99,8 @@ export interface Config {
     /** Per-interim auto-recall delay (ms) from each interim's send completion. */
     interimRecallMs: number;
     sendErrorNotice: boolean;
+    /** Per-chat per-minute sliding-window cap for normal (non-command) messages; 0 disables. */
+    rateLimitPerMinute: number;
     restrictedMemberPrefix: boolean;
     sensitivePatterns: string[];
     mediaDir: string;
@@ -117,12 +122,18 @@ export interface Config {
     agentPreset: string;
     workspacePath: string;
     maxInboundFileBytes: number;
+    /** B8c: chats idle longer than this many days are evicted (0 disables). */
+    chatIdleEvictDays: number;
+    /** Escape hatch: skip the download private-address check (local reverse proxy). */
+    allowPrivateHosts: boolean;
 }
 /** Default media dir: <dsh-home>/media/onebot (dsh-home = $DSH_HOME or ~/.dsh). */
 export declare function defaultMediaDir(): string;
 /** The dsh data home ($DSH_HOME or ~/.dsh); source of the .agent-presets dir. */
 export declare function dshHome(): string;
 export declare const Config: z<Config>;
+/** Log a meta event; periodic heartbeat events are silenced to keep the log readable. */
+export declare function logMetaEvent(selfId: string, event: OneBotEvent): void;
 /** Mount the plugin. */
 export declare function apply(ctx: Context, config: Config): void;
 export {};

@@ -20,6 +20,12 @@ export interface SttConfig {
     timeoutMs: number;
 }
 /**
+ * Detect a command on PATH by scanning each dir for an executable match
+ * (A8: no shell involved, so the configured name is never shell-interpreted;
+ * builtins/aliases stop being visible — callers only need real binaries).
+ */
+export declare function findCommand(name: string): Promise<string | undefined>;
+/**
  * Voice transcription service. One instance per plugin; calls are serialized
  * through a queue so concurrent voice messages cannot stack CPU-bound
  * whisper processes.

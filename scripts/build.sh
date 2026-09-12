@@ -28,6 +28,16 @@ resolve_dsh_root() {
         echo "$dir/node_modules"
         return 0
       fi
+      # npm/nvm global: the bin sits in <node>/bin and the packages live
+      # INSIDE @deepseek-ai/dsh/node_modules — the location the host process
+      # actually loads its services from. The plain lib/node_modules/@deepseek-ai
+      # ancestor holds only the dsh package itself, so descend into the dsh
+      # install's own dependency tree (the caller appends /@deepseek-ai/<pkg>).
+      local global_dsh="$dir/lib/node_modules/@deepseek-ai/dsh/node_modules"
+      if [ -d "$global_dsh/@deepseek-ai" ]; then
+        echo "$global_dsh"
+        return 0
+      fi
       dir=$(dirname "$dir")
     done
   fi
