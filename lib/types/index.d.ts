@@ -98,6 +98,8 @@ export interface Config {
     interimMessages: boolean;
     /** Per-interim auto-recall delay (ms) from each interim's send completion. */
     interimRecallMs: number;
+    /** M3-D2b: interim recall degrade switch (false = send-only interims). */
+    interimRecall: boolean;
     sendErrorNotice: boolean;
     /** Per-chat per-minute sliding-window cap for normal (non-command) messages; 0 disables. */
     rateLimitPerMinute: number;
@@ -105,10 +107,14 @@ export interface Config {
     sensitivePatterns: string[];
     mediaDir: string;
     tempTtlHours: number;
-    maxImageBytes: number;
+    outboundImageMaxBytes: number;
     maxVoiceBytes: number;
     maxFileBytes: number;
-    imageMaxSize: number;
+    inboundImageMaxPx: number;
+    /** @deprecated D4a alias of inboundImageMaxPx; honored for one release. */
+    imageMaxSize?: number;
+    /** @deprecated D4a alias of outboundImageMaxBytes; honored for one release. */
+    maxImageBytes?: number;
     sttEnabled: boolean;
     sttEngine: 'auto' | 'openai' | 'whisper-cpp' | 'custom';
     sttCommand: string;
@@ -121,7 +127,9 @@ export interface Config {
     fontFamilies: string[];
     agentPreset: string;
     workspacePath: string;
-    maxInboundFileBytes: number;
+    inboundFileMaxBytes: number;
+    /** @deprecated D4a alias of inboundFileMaxBytes; honored for one release. */
+    maxInboundFileBytes?: number;
     /** B8c: chats idle longer than this many days are evicted (0 disables). */
     chatIdleEvictDays: number;
     /** Escape hatch: skip the download private-address check (local reverse proxy). */
@@ -132,6 +140,11 @@ export declare function defaultMediaDir(): string;
 /** The dsh data home ($DSH_HOME or ~/.dsh); source of the .agent-presets dir. */
 export declare function dshHome(): string;
 export declare const Config: z<Config>;
+/** Map deprecated config names onto their renamed fields: a legacy value is
+ * honored only while the new name still sits at its schema default (the new
+ * name wins when both are configured), each legacy use warns once, and the
+ * legacy keys never leak into the effective config. */
+export declare function resolveDeprecatedConfig(config: Config): Config;
 /** Log a meta event; periodic heartbeat events are silenced to keep the log readable. */
 export declare function logMetaEvent(selfId: string, event: OneBotEvent): void;
 /** Mount the plugin. */

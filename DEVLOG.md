@@ -203,6 +203,17 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 全天 | **M2 收官核对 + 发布 v0.3.0**：五拆完成——bridge.ts 2249→681（-70%），七模块 bridge/registry/commands/inbound/outbound/interim/card-relay 合计 3168 行；测试 200→234（vitest 234/234、tsc 0 错误）；行为零变化（唯一有意变更 = C5a /model 会话级语义）；全程 tools.ts diff=0；基线 tag pre-refactor-baseline →五个 PR 逐个独立 commit 可 revert。B8 收尾核对五项全部测试落位：B8a ensureChat in-flight 缓存（tests/registry.spec.ts:967，并发首条 create 恰 1 次）；B8b 孤儿 agent dispose（tests/registry.spec.ts:978，whenIdle 抛错路径 dispose×1+零残留）；B8c 空闲淘汰 chatIdleEvictDays（tests/registry.spec.ts:1001，dispose+映射保留+resume 同会话恢复）；B8d 发送链解耦（tests/bridge.spec.ts:533，未注册 chat 亦串行）；recalledInterimIds turn/start 修剪（tests/interim.spec.ts:490，同 id 复用不复发）。**已知边界承前**：file:// 分支、DNS rebinding TOCTOU、URL 出站（NapCat 侧抓取）、正文伪前缀属 D5；B8c 淘汰即重置 per-chat override 待产品决策；commands 直写 ChatAgent interim 字段待 D2 收口 |
 | 全天 | **发布完整性修复（v0.3.0 重打 tag）**：v0.3.0 tag 的 lib/ 缺五拆六模块产物（用户核查发现）——card-relay/commands/inbound/interim/outbound/registry 六模块 JS 及 lib/types 对应 .d.ts 从未 git add，直接 checkout v0.3.0 不构建的环境会因缺模块挂掉；build.sh resolve_dsh_root 自 link-host.sh 原样移植 npm/nvm 全局布局分支（bin 祖先内探测 `lib/node_modules/@deepseek-ai/dsh/node_modules`），重建产物后 v0.3.0 tag 重打为 4d90469 之后的修复提交。提醒：v0.2.x tag 的 lib 为 M0 时代内容（功能完整但滞后，不回补） |
 
+### 2026-09-12（M3 收官：D2/D4/D5/E3，v0.4.0）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **M3-D2 interim 显式状态机**（8ba1c77/be53abe）：InterimTracker 显式转移表 idle/accumulating/settling（stateOf 诊断缝；双 turn/end 跳过、迟到 assistant 宽容语义保留）；sendInterim 同步记账——placeholder 入队即占位、发送完成按 id 回填、失败丢占位，消除 push 回调微任务顺序依赖；结算 drain 以 inFlight 集合等待在途发送全部落定；`interimRecall` 降级开关（false=只发不撤：无撤回无小结卡）；tests/interim-machine.spec.ts 全转移表覆盖，settle 用例固定 120ms 预算与 60ms 撤回间隔的时序竞态改为 vi.waitFor 终态谓词（idle 在排水最后置位），连续 10 次全绿 |
+| 全天 | **M3-D4 配置与持久化**：D4a（5a7f26b）配置改名三件——`imageMaxSize`→`inboundImageMaxPx`、`maxImageBytes`→`outboundImageMaxBytes`、`maxInboundFileBytes`→`inboundFileMaxBytes`（旧名 deprecated 别名等价兼容一版，config-alias 测试钉住）；D4b（529a49c）`/mode` `/goal` per-chat 状态持久化进 chat-sessions.json（加法格式：旧文件裸 session id 照常解析；淘汰快照携带持久化设置，修复空闲淘汰丢 per-chat override）；D4c（ff7eafb）STT 非阻塞——[语音] 占位先行不阻塞回合，转写完成后以（语音转写：…）steer 进当前回合（agent 空闲则开新回合，失败保留占位），默认超时 300s→60s |
+| 全天 | **M3-D5 提示注入隔离**（82c10ed）：QQ 消息正文进 user_message 边界；群成员昵称白名单化；平台声明替换 M1-A7 临时方案（正文可打出字面闭标签依赖平台声明向 agent 说明真边界） |
+| 全天 | **M3-E3 日志统一**（b79994c/43ac50c）：E3a errors.ts describeError 替换全仓错误样板（error 日志带堆栈）；E3b connection 日志端口化——裸 console 退出，统一注入式日志 |
+| 全天 | **已知边界（后续清理候选）**：①正文可打出字面闭标签依赖平台声明（D5）；②t2i/fonts.ts 豁免（字体探测 fs 直读不在注入边界内）；③steer 跨回合污染有标注（转写补递可能落进下一回合）；④llmCatalog 缺省目录为空 |
+| 全天 | **发布 v0.4.0**：测试 200→283 全程（vitest 283/283、tsc 0 错误），v0.3.0→v0.4.0；lib 产物完整性校验（v0.3.0 缺六模块事故教训：commit 前 git ls-files 数量与 src 模块数核对、六拆模块 js+d.ts 齐全，commit 后 ls-tree 复核） |
+
 ---
 
 ## 3. 关键决策与坑（按价值排序）

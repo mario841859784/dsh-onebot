@@ -27,6 +27,10 @@ export interface BridgeConfig {
      * while the turn is still running (QQ recall window ~2 min); absent → 90s.
      * At turn/end the remaining originals are recalled immediately regardless. */
     interimRecallMs?: number;
+    /** M3-D2b degrade switch: false = send-only interims — no auto-recall
+     * timers, no turn/end immediate recall and no summary card (the turn ends
+     * with the final text only). Absent/true = the full recall behavior. */
+    interimRecall?: boolean;
     sendErrorNotice: boolean;
     /** B7: per-chat per-minute sliding-window cap for normal (non-command)
      * messages; absent → 30, 0 disables. */
@@ -281,6 +285,10 @@ export declare class ChatBridge {
     private buildBody;
     /** Resolve one media ref to a text annotation with a local path. */
     private resolveMediaRef;
+    /** M3-D4c: steer a completed voice transcript into the chat's agent — the
+     * running turn consumes it at its nearest step boundary; an idle agent
+     * opens a turn. No live chat (dispatch dropped/never happened) drops it. */
+    private steerTranscript;
     /** Expand a quoted (reply) message into [引用] text via get_msg. */
     private expandQuote;
     /** Send one message to a chat and return its message id. */

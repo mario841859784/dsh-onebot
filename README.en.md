@@ -26,11 +26,11 @@ User(QQ) ←→ NapCat ←→ dsh-onebot plugin ←→ dsh Agent (one per chat)
 | Category | Capability |
 |---|---|
 | Connection | Reverse WS (NapCat ws-reverse dials in, default port 8643) or forward WS (plugin dials out, default `ws://127.0.0.1:3001`); auto-reconnect with backoff (2s → 60s) |
-| Inbound | Private/group chats; segment-array-first parsing (CQ string fallback), CQ unescaping, @/reply trigger detection (fail-closed; replies count only when replying to the bot itself); images resolved from 4 sources (url/base64/file/hash) with auto-shrink (long edge ≤ `imageMaxSize`, GIFs untouched); files received via dual channel (CDN direct link `get_private_file_url` + `get_file` base64/url fallback); face id→emoji/card/poke segment types; quoted messages auto-fetched via `get_msg`; merged forwards auto-expanded via `get_forward_msg` |
-| Voice | ffmpeg to 16 kHz WAV + whisper transcription (openai-whisper / whisper.cpp / custom command), falls back to a `[语音]` placeholder on failure |
+| Inbound | Private/group chats; segment-array-first parsing (CQ string fallback), CQ unescaping, @/reply trigger detection (fail-closed; replies count only when replying to the bot itself); images resolved from 4 sources (url/base64/file/hash) with auto-shrink (long edge ≤ `inboundImageMaxPx`, GIFs untouched); files received via dual channel (CDN direct link `get_private_file_url` + `get_file` base64/url fallback); face id→emoji/card/poke segment types; quoted messages auto-fetched via `get_msg`; merged forwards auto-expanded via `get_forward_msg` |
+| Voice | ffmpeg to 16 kHz WAV + whisper transcription (openai-whisper / whisper.cpp / custom command); **non-blocking**: the voice message enters the turn as a `[语音]` placeholder right away, and the transcript follows as a `（语音转写：…）` supplement when done (default timeout 60s); failure keeps the `[语音]` placeholder |
 | Text image | t2i card renderer (@napi-rs/canvas): headings/bold/italic/strikethrough/quotes/lists/code blocks/tables/inline code pills/color emoji/CJK punctuation rules; same numbers as the Hermes original (800px/26px/rules/right edge 790) |
-| Outbound | Long messages split on sentence boundaries (default ≤100 chars/message); **>150 chars rendered as a t2i text-image card** (AstrBot style: headings/quotes/lists/tables/code blocks/color emoji, auto-fallback to split text on render failure); Markdown stripped to plain QQ text; `[[qq_forward]]` merged-forward cards (group/private); loop interim messages auto-collapsed into a merged-forward card with recall (≥2 buffered → forward + delete_msg, single messages sent as-is); typing indicator (`set_input_status`, private chats only) |
-| Commands | Slash commands (admin only): `/new` fresh session, `/model` view/switch the current session's model (`--default` changes the deployment default), `/workspace` view/switch workspace, `/stop` stop generation and clear leftovers, `/help` help |
+| Outbound | Long messages split on sentence boundaries (default ≤100 chars/message); **>150 chars rendered as a t2i text-image card** (AstrBot style: headings/quotes/lists/tables/code blocks/color emoji, auto-fallback to split text on render failure); Markdown stripped to plain QQ text; `[[qq_forward]]` merged-forward cards (group/private); **live interim messages** (`interimMessages`: each interim text is sent immediately; each is auto-recalled alone after `interimRecallMs` (default 90s); at turn end the whole turn's interims render into one **t2i summary card**, the still-on-screen originals are recalled, then the final reply is sent — no turn-end merged forwarding, avoiding unrecallable >2min originals and duplicate cards on long turns; `interimRecall: false` degrades to send-only: no summary card, no recall); typing indicator (`set_input_status`, private chats only) |
+| Commands | Slash commands (admin only): `/new` fresh session, `/model` view/switch the current session's model (`--default` changes the deployment default), `/workspace` view/switch workspace, `/stop` stop generation and clear leftovers, `/mode` outbound-mode switch (persisted across restarts), `/goal` session goal (persisted across restarts), `/help` help |
 | Tools | `qq_send_image` (≤9 images, path or URL), `qq_send_voice`, `qq_send_video`, `qq_send_file`, `qq_send_forward`, `qq_napcat_api` (14 allowlisted actions), `qq_group_history` (guarded file editing `code_safe_edit`/`code_safe_rollback`/`code_list_backups` moved to the standalone plugin **dsh-safe-edit** — see README.md → 安全编辑) |
 | Permissions | Admin allowlist (`ONEBOT_ALLOWED_USERS`), dm/group policies (open/allowlist/disabled), group @-mention gating, restricted users soft limit (`[受限用户:仅问答]`), outbound sensitive-content auditing |
 | Sessions | One persistent Agent per QQ chat (stable derived session id), auto-resumed after restart; mounted into presets/workspaces via `agentPreset`/`workspacePath`; mapping flushed to disk at the end of every turn |
@@ -119,14 +119,18 @@ default). Common options:
 | `adminUsers` | `[]` | admin QQ numbers; or the `ONEBOT_ALLOWED_USERS` env var. **At least one is required**, otherwise DMs (`dmPolicy=open`) and slash commands are unavailable to everyone |
 | `allowFrom` / `groupAllowFrom` | `[]` | allowlisted users/groups |
 | `interimMessages` | `true` | send interim text between tool calls immediately; `false` sends only the final reply |
+| `interimRecall` | `true` | interim recall + turn-end summary card switch; `false` = send-only (degraded: no summary card, no recall) |
 | `splitLength` | `100` | text-path split length: ≤ this value sent as one message, beyond it split on punctuation/spaces (customizable) |
 | `sttEnabled` | `true` | voice transcription (needs ffmpeg + whisper CLI) |
 | `sttModel` | `small` | whisper model |
+| `sttTimeoutMs` | `60000` | voice transcription timeout in ms (60s default since v0.4.0, previously 300s): on timeout the `[语音]` placeholder is kept; `<=0` falls back to the built-in 60s |
 | `textImageThreshold` | `150` | t2i card threshold: body length > this renders a text-image card; `<=0` disables the card path. Three tiers (defaults 100/150, both customizable): ≤`splitLength` single message → `splitLength`~`textImageThreshold` split by punctuation → >`textImageThreshold` text-image card |
 | `cardFooter` | `dsh` | card footer brand ("Powered by <brand>") |
 | `fontFiles` / `fontFamilies` | `[]` | t2i font file/family overrides (Linux deployments: install Noto CJK, see below) |
 | `mediaDir` | `<dsh-home>/media/onebot` | inbound media / mapping file directory |
-| `imageMaxSize` | `2048` | inbound image long-edge limit (px): larger images are proportionally shrunk before reaching the vision model (transparent PNGs preserved, GIFs untouched); `<=0` disables |
+| `inboundImageMaxPx` | `2048` | inbound image long-edge limit (px): larger images are proportionally shrunk before reaching the vision model (transparent PNGs preserved, GIFs untouched); `<=0` disables (old name `imageMaxSize` deprecated, still honored this release) |
+| `outboundImageMaxBytes` | `8388608` | outbound image size cap (bytes): an oversized t2i summary card falls back to plain text (old name `maxImageBytes` deprecated, still honored this release) |
+| `inboundFileMaxBytes` | `20971520` | inbound QQ file size cap (bytes): oversized file segments are rejected with a notice (old name `maxInboundFileBytes` deprecated, still honored this release) |
 | `allowPrivateHosts` | `false` | allow downloads from private/loopback addresses (skips only the private-network check; the protocol allowlist and size limits still apply); enable only in trusted setups such as a local reverse proxy |
 | `agentPreset` | empty | agent preset for sessions (empty = default) |
 | `workspacePath` | empty | workspace for sessions (empty = host cwd) |
@@ -223,7 +227,7 @@ automatically from the system and fixed paths at startup; missing glyphs render 
 
 ```sh
 ./scripts/build.sh                 # compile src/ → lib/
-./node_modules/.bin/vitest run     # 234 tests: unit + real WS peer + full pipeline
+./node_modules/.bin/vitest run     # 283 tests: unit + real WS peer + full pipeline
 ```
 
 Lessons ported from the source DEVLOG:
@@ -250,7 +254,7 @@ Lessons ported from the source DEVLOG:
 | File receive fails | NapCat on a different machine needs the "file-to-URL" switch on, otherwise `get_file` returns an unreachable container path; confirm dsh ↔ NapCat network connectivity |
 | Tofu CJK in text images | Linux without CJK fonts: `apt install fonts-noto-cjk`, and point `fontFiles` at an SC font file |
 | Crash loop / tool registration conflict | The same plugin file inserted twice (double instance); check the patch has no duplicate entries |
-| Voice shows `[语音]` placeholder | ffmpeg or whisper unavailable; install and restart, or set `sttEnabled: false` |
+| Voice never gets a transcript (stays `[语音]`) | ffmpeg or whisper unavailable, or transcription timed out: install and restart, raise `sttTimeoutMs`, or set `sttEnabled: false` |
 | Where are the logs | dsh host logs; historical root causes & fixes in [DEVLOG.md](DEVLOG.md) |
 
 ## Development record

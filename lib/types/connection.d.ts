@@ -49,6 +49,12 @@ export interface ConnectionConfig {
      * backoff ladder still caps the delay at its last value).
      */
     reconnectMaxAttempts?: number;
+    /**
+     * M3-E3b: injected log sink (level, message). Absent → a console fallback
+     * keeps the transport independently usable; index.ts wires the same
+     * deps.log the bridge uses.
+     */
+    log?: (level: 'info' | 'warn' | 'error' | 'debug', message: string) => void;
 }
 /** Error thrown for action calls that fail or time out. */
 export declare class OneBotActionError extends Error {
@@ -93,6 +99,13 @@ export declare class OneBotConnection {
         host: string;
         port: number;
     } | undefined;
+    /**
+     * M3-E3b: the transport's single log exit. The injected config.log is the
+     * production sink (index.ts wires the same deps.log the bridge uses); the
+     * console fallback keeps the class independently usable. Messages carry no
+     * '[dsh-onebot] ' prefix — the sink owns prefixing.
+     */
+    private log;
     /** Start the transport (server or client) without blocking. */
     start(): void;
     /** Stop the transport: close sockets, cancel reconnects, fail pending calls. */

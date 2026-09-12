@@ -77,10 +77,17 @@ export declare function dmAllowed(userId: string, policy: AccessPolicyConfig): b
  */
 export declare function groupAllowed(groupId: string, policy: AccessPolicyConfig): boolean;
 /**
- * Sanitize an attacker-controlled nickname for use in the single-line message
- * prefix: strip C0 controls (incl. CR/LF) and DEL, collapse whitespace runs to
- * one space, and cap the result at 32 code points (astral-safe). Returns ''
- * for blank input; callers keep their own fallback logic.
+ * M3-D5 nickname whitelist: sanitize an attacker-controlled display name for
+ * every identity surface it reaches — the single-line message prefix and the
+ * <user_message> boundary attribute (see wrapUserMessage). The whitelist
+ * guarantees neither surface can be forged:
+ *   1. C0/C1 control characters and DEL (incl. CR/LF/NEL) are stripped — no
+ *      forged prefix lines or tag boundaries via line breaks;
+ *   2. the five XML markup characters < > & " ' are stripped — the boundary
+ *      attribute cannot be closed, split or escaped out of;
+ *   3. whitespace runs collapse to one space and the ends are trimmed;
+ *   4. the result is capped at 32 code points (astral-safe).
+ * Returns '' for blank input; callers keep their own fallback logic.
  * @param nickname - raw sender display name.
  * @returns the sanitized single-line nickname (possibly empty).
  */
@@ -96,3 +103,19 @@ export declare function sanitizeNickname(nickname: string): string;
 export declare function buildGroupMessagePrefix(nickname: string, userId: string, mentioned: boolean): string;
 /** Soft-cap prefix for restricted (member-role) group users. */
 export declare const RESTRICTED_PREFIX = "[\u53D7\u9650\u7528\u6237:\u4EC5\u95EE\u7B54] ";
+/**
+ * M3-D5: wrap untrusted user content (message body + quote/merged-forward
+ * expansions) in the explicit prompt-injection boundary. Everything between
+ * the tags is data by platform declaration (src/prompt.ts): forged prefix
+ * lines, restricted-member tags or system-prompt-like text inside it can
+ * never leave the boundary. The opening tag is the trusted provenance marker;
+ * the nickname attribute is re-sanitized here so the boundary stays unclosable
+ * even for a caller that forgot the whitelist (sanitizeNickname is
+ * idempotent). The qq attribute carries the protocol-typed numeric sender id —
+ * the same trust level as the prefix line — not sender-controlled text.
+ * @param content - the assembled untrusted message content.
+ * @param userId - sender QQ number (OneBot user_id, digits).
+ * @param nickname - the sender display name (sanitized again defensively).
+ * @returns the boundary-wrapped content.
+ */
+export declare function wrapUserMessage(content: string, userId: string, nickname: string): string;

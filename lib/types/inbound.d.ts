@@ -34,7 +34,8 @@ export interface NormalizedInbound {
     /** OneBot forward id embedded in the message, if any. */
     forwardId?: string;
     /** Raw sender-controlled nickname (card ?? nickname ?? userId) — NOT yet
-     * sanitized; the M1-A7 sanitize choke point stays in the pipeline. */
+     * sanitized; the pipeline's M3-D5 identity whitelist sanitizes it before it
+     * reaches the prefix, the boundary attribute or lastNickname. */
     nickname: string;
 }
 /**
@@ -86,6 +87,9 @@ export interface InboundContext {
     media: MediaStore;
     /** Voice transcriber. */
     transcriber: Transcriber;
+    /** M3-D4c: deliver a completed voice transcript into the chat's agent
+     * (bridge-owned: steers the running turn, or opens one when idle). */
+    steerTranscript(chatId: ChatId, text: string): void;
     /** Slash-command router (bridge facade: the command table's ctx lives there). */
     tryHandleCommand(chatId: ChatId, text: string, userId: string): Promise<boolean>;
     /** Message body assembly (bridge facade: overridable, see the pipeline-order test). */
@@ -121,6 +125,10 @@ export declare class InboundPipeline {
     buildBody(text: string, media: MediaRef[], chatId: ChatId): Promise<string>;
     /** Resolve one media ref to a text annotation with a local path. */
     resolveMediaRef(ref: MediaRef, chatId: ChatId): Promise<string>;
+    /** M3-D4c: transcribe in the background and deliver the labeled transcript
+     * into the chat's turn (steer at the running turn's nearest step boundary,
+     * or a new turn when the agent is idle). Failure keeps [语音] as final. */
+    private transcribeLater;
     /** Expand a quoted (reply) message into [引用] text via get_msg. */
     expandQuote(messageId: string): Promise<string>;
     /**
