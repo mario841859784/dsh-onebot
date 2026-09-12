@@ -265,8 +265,32 @@ export function apply(ctx: Context, config: Config): void {
   connection.onMeta = (event: OneBotEvent) => {
     logMetaEvent(connection.selfId, event)
   }
+  /** Console log line callback (level, message) — shared by the bridge deps
+   * and the host-ready boot gate below (M2-C5b). */
+  const log = (level: 'info' | 'warn' | 'error' | 'debug', message: string): void => {
+    const prefix = '[dsh-onebot] '
+    if (level === 'error') console.error(prefix + message)
+    else if (level === 'warn') console.warn(prefix + message)
+    else console.log(prefix + message)
+  }
   const bridge = new ChatBridge({
     ctx,
+    // M2-C5b: the bridge sees only explicit ports — the session-event feed
+    // (this context's own `on`) and the two injectables below; the 'loader'
+    // service lookup lives here, not in the bridge.
+    hostReady: async () => {
+      try {
+        const loader = ctx.get('loader') as { await(): Promise<void> } | undefined
+        await loader?.await()
+      } catch (error) {
+        log('debug', 'loader.await failed: ' + (error instanceof Error ? error.message : String(error)))
+      }
+    },
+    // Live llm lookup per call — same semantics as the pre-port live getter.
+    llmCatalog: {
+      listProviders: () => ctx.llm.listProviders(),
+      listModels: provider => ctx.llm.listModels(provider),
+    },
     connection,
     dshHome: dshHome(),
     media,
@@ -310,12 +334,7 @@ export function apply(ctx: Context, config: Config): void {
       chatIdleEvictDays: config.chatIdleEvictDays,
     },
     policy,
-    log: (level, message) => {
-      const prefix = '[dsh-onebot] '
-      if (level === 'error') console.error(prefix + message)
-      else if (level === 'warn') console.warn(prefix + message)
-      else console.log(prefix + message)
-    },
+    log,
   })
 
   // Lifecycle: start the bridge and transport; unwind everything on unload.

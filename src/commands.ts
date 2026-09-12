@@ -7,7 +7,6 @@
  * @module dsh-onebot/commands
  */
 import type { Agent, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
-import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
@@ -18,7 +17,7 @@ import type { OneBotConnection } from './connection.js'
 import type { MediaRef } from './cq.js'
 import type { ChatId, UserRole } from './chat.js'
 import { fileToBase64 } from './media.js'
-import type { AgentDefaultModelLike, AgentPresetsLike, BridgeConfig, BridgeDeps, WorkspaceRegistryLike } from './bridge.js'
+import type { AgentDefaultModelLike, AgentPresetsLike, BridgeConfig, BridgeDeps, LlmCatalogPort, WorkspaceRegistryLike } from './bridge.js'
 
 /** Narrow view of a live chat the command handlers may read or mutate —
  * the structural subset of the bridge's internal ChatAgent that the
@@ -72,8 +71,10 @@ export interface CommandContext {
   /** Consume the pending pre-routing image ref (get + delete, /ocr only). */
   takePendingImageRef(chatId: ChatId): MediaRef | undefined
   /** Services (narrow slices of the bridge deps). */
-  llm: Context['llm']
-  workspaceRegistry: WorkspaceRegistryLike
+  /** Live model catalog for /model (M2-C5b port; index.ts wires it over the
+   * live llm service — commands never touch Context). */
+  llmCatalog: LlmCatalogPort | undefined
+  workspaceRegistry: WorkspaceRegistryLike | undefined
   agentDefaultModel: AgentDefaultModelLike | undefined
   agentPresets: AgentPresetsLike | undefined
   commands: BridgeDeps['commands']
@@ -183,10 +184,10 @@ async function handleModelCommand(ctx: CommandContext, chatId: ChatId, arg: stri
     const cur = current !== undefined ? current.provider + '/' + current.model : '（未设置）'
     let out = '当前模型：' + cur
     try {
-      const providers = ctx.llm.listProviders()
+      const providers = ctx.llmCatalog?.listProviders() ?? []
       for (const p of providers.slice(0, 6)) {
         try {
-          const models = await ctx.llm.listModels(p.id)
+          const models = (await ctx.llmCatalog?.listModels(p.id)) ?? []
           out += '\n' + p.id + ': ' + models.slice(0, 10).map(m => m.id).join(', ')
         } catch (error) {
           out += '\n' + p.id + ': （列表不可用）'
@@ -211,7 +212,7 @@ async function handleModelCommand(ctx: CommandContext, chatId: ChatId, arg: stri
   const provider = m[1]
   const model = m[2]
   try {
-    const models = await ctx.llm.listModels(provider)
+    const models = (await ctx.llmCatalog?.listModels(provider)) ?? []
     if (models.length > 0 && !models.some(x => x.id === model)) {
       await ctx.sendToChat(chatId, `❌ ${provider} 下没有模型 ${model}。可用：` + models.slice(0, 10).map(x => x.id).join(', '))
       return
@@ -246,7 +247,7 @@ async function handleWorkspaceCommand(ctx: CommandContext, chatId: ChatId, arg: 
     const cwd = ctx.effectiveCwd(chatId)
     let suffix = ''
     try {
-      const ws = await ctx.workspaceRegistry.resolveByPath(cwd)
+      const ws = await ctx.workspaceRegistry?.resolveByPath(cwd)
       suffix = ws !== undefined ? `（工作区 ${ws.id}，${ws.sessionIds.length} 个会话）` : '（无 workspace 记录）'
     } catch (error) {
       ctx.log('debug', 'resolveByPath failed: ' + String(error))
@@ -256,7 +257,7 @@ async function handleWorkspaceCommand(ctx: CommandContext, chatId: ChatId, arg: 
   }
   if (arg === 'list') {
     try {
-      const list = ctx.workspaceRegistry.list()
+      const list = ctx.workspaceRegistry?.list() ?? []
       if (list.length === 0) {
         await ctx.sendToChat(chatId, '（没有任何 workspace 记录）')
         return

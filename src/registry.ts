@@ -122,8 +122,8 @@ export interface RegistryDeps {
   /** Durable session store: B8c flushes a session before its chat is evicted. */
   sessions: SessionStore
   sessionPersistence: SessionPersistenceLike | undefined
-  workspaceRegistry: WorkspaceRegistryLike
-  agentPresets: AgentPresetsLike
+  workspaceRegistry: WorkspaceRegistryLike | undefined
+  agentPresets: AgentPresetsLike | undefined
   defaultModel: (() => ModelSelection | undefined) | undefined
   /** The only config fields the registry reads. */
   config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>

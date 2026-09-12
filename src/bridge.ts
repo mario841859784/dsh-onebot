@@ -10,6 +10,7 @@
 
 import type { AgentRegistry, ModelSelection } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { LlmModelInfo, LlmProviderInfo } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionId, SessionStore } from '@deepseek-ai/dsh-session'
 import type { Context } from '@deepseek-ai/cordis'
 import { realpath } from 'node:fs/promises'
@@ -106,9 +107,36 @@ export interface AgentDefaultModelLike {
   saveSelection(next: ModelSelection): Promise<void>
 }
 
-/** Services the bridge needs (subset of the plugin Context). */
+/** Live model-catalog port (M2-C5b): the only llm surface the command domain
+ * reads (/model). index.ts implements it over a live llm-service lookup so
+ * late-registered providers stay visible; commands never touch Context. */
+export interface LlmCatalogPort {
+  listProviders(): LlmProviderInfo[]
+  listModels(provider: string): Promise<LlmModelInfo[]>
+}
+
+/** Session-event feed port (M2-C5b): the narrowed event-bus surface the bridge
+ * subscribes to, replacing the whole-plugin Context. index.ts satisfies it
+ * with the host context itself (its event-bus `on` IS the implementation); the
+ * BridgeDeps field keeps the historical name `ctx` because existing test
+ * assemblies pass the host context directly. */
+export interface SessionEventPort {
+  on(type: 'session/event', handler: (session: Session, event: SessionEvent) => void): () => void
+  on(type: 'session/flush', handler: (session: Session) => void): () => void
+}
+
+/** Services the bridge needs (M2-C5b: the plugin Context enters only through
+ * the two explicit ports below — session events and the /model catalog). */
 export interface BridgeDeps {
-  ctx: Context
+  ctx: SessionEventPort
+  /** Resolves once the host's boot-time configuration (the loader service) is
+   * fully applied; index.ts owns the 'loader' lookup and swallows its errors.
+   * Absent in test assemblies = no gate (matches the previously swallowed
+   * lookup). Must not reject. */
+  hostReady?: (() => Promise<void>) | undefined
+  /** Live model-catalog port for /model (M2-C5b); index.ts implements it over
+   * the live llm service. Absent only in assemblies that never route /model. */
+  llmCatalog?: LlmCatalogPort | undefined
   connection: OneBotConnection
   /** The dsh data home (default <home>/.dsh); used to enumerate agent presets. */
   dshHome?: string | undefined
@@ -116,14 +144,14 @@ export interface BridgeDeps {
   transcriber: Transcriber
   agents: AgentRegistry
   sessions: SessionStore
-  agentPresets: AgentPresetsLike
+  agentPresets: AgentPresetsLike | undefined
   /** Host command runtime: forwards /plan so QQ reaches the native plan command.
    * `signal` is REQUIRED by the host implementation (it reads `signal.aborted`
    * unconditionally) — pass a fresh never-aborted one. */
   commands?: { execute(agent: unknown, line: string, signal: AbortSignal): Promise<{ kind?: string; text?: string; result?: { kind?: string; text?: string } }> } | undefined
   /** Durable persistence for cold-reading a session's recorded preset; absent = config/default fallback. */
   sessionPersistence: SessionPersistenceLike | undefined
-  workspaceRegistry: WorkspaceRegistryLike
+  workspaceRegistry: WorkspaceRegistryLike | undefined
   agentDefaultModel: AgentDefaultModelLike | undefined
   defaultModel: (() => ModelSelection | undefined) | undefined
   config: BridgeConfig
@@ -206,12 +234,12 @@ export class ChatBridge {
 
   /** Start listening: wire connection handlers and the session event feed. */
   start(): void {
-    const { connection, ctx } = this.deps
+    const { connection, ctx: sessionEvents } = this.deps
     connection.selfId = this.deps.config.botQQ
-    this.sessionEventOff = ctx.on('session/event', (session: Session, event: SessionEvent) => {
+    this.sessionEventOff = sessionEvents.on('session/event', (session: Session, event: SessionEvent) => {
       this.onSessionEvent(session, event)
     })
-    this.sessionFlushOff = ctx.on('session/flush', (session: Session) => {
+    this.sessionFlushOff = sessionEvents.on('session/flush', (session: Session) => {
       void this.onSessionFlush(session)
     })
     connection.onStatus = (connected: boolean) => {
@@ -317,12 +345,7 @@ export class ChatBridge {
    * default.
    */
   private async ready(): Promise<void> {
-    try {
-      const loader = this.deps.ctx.get('loader') as { await(): Promise<void> } | undefined
-      await loader?.await()
-    } catch (error) {
-      this.deps.log('debug', 'loader.await failed: ' + (error instanceof Error ? error.message : String(error)))
-    }
+    await this.deps.hostReady?.()
   }
 
   // ------------------------------------------------------------ inbound
@@ -421,7 +444,7 @@ export class ChatBridge {
   /**
    * The CommandContext handed to the command table (D1-PR1): exposes exactly
    * the bridge capabilities the routed commands use, resolved live per
-   * invocation (ctx.llm especially must stay a live service lookup).
+   * invocation (the llm catalog especially must stay a live service lookup).
    */
   private get commandCtx(): CommandContext {
     const bridge = this
@@ -453,7 +476,7 @@ export class ChatBridge {
         return ref
       },
       resolveMediaRef: (ref, chatId) => bridge.resolveMediaRef(ref, chatId),
-      get llm() { return bridge.deps.ctx.llm },
+      llmCatalog: bridge.deps.llmCatalog,
       workspaceRegistry: bridge.deps.workspaceRegistry,
       agentDefaultModel: bridge.deps.agentDefaultModel,
       agentPresets: bridge.deps.agentPresets,

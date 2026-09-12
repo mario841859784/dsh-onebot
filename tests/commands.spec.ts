@@ -108,9 +108,9 @@ describe('commands', () => {
         saveSelection,
       },
     })
-    // The command context reads ctx.llm live, so attaching the catalog after
-    // construction is observable exactly like the host wiring.
-    ;(h.ctx as unknown as { llm: unknown }).llm = {
+    // The command context reads the catalog live, so attaching the port after
+    // construction is observable exactly like the host wiring (M2-C5b port).
+    ;(h.bridge as unknown as { deps: { llmCatalog?: unknown } }).deps.llmCatalog = {
       listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
       listModels: async () => [{ provider: 'deepseek', id: 'deepseek-chat' }, { provider: 'deepseek', id: 'deepseek-reasoner' }],
     }
