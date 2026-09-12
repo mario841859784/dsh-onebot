@@ -23,7 +23,6 @@ import type { MediaRef } from './cq.js'
 import type { ChatId, UserRole } from './chat.js'
 import { classifyUserRole, splitChatId } from './chat.js'
 import type { AccessPolicyConfig } from './chat.js'
-import { renderTextImage } from './t2i/index.js'
 import { buildPlatformPrompt } from './prompt.js'
 import { registerTools } from './tools.js'
 import { tryHandleCommand as routeCommand, type CommandContext } from './commands.js'
@@ -34,6 +33,7 @@ import { ChatRegistry } from './registry.js'
 import type { ChatAgent } from './registry.js'
 import { InboundPipeline, normalizeOneBot11 } from './inbound.js'
 import type { NormalizedInbound } from './inbound.js'
+import { InterimTracker } from './interim.js'
 /** Resolved runtime configuration for the bridge. */
 export interface BridgeConfig {
   botQQ: string
@@ -160,10 +160,6 @@ export interface BridgeDeps {
   log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void
 }
 
-/** Spacing between recall delete_msg calls (NapCat recallMsg is slow; bursting
- * them pushes borderline-late recalls over the server timeout). */
-const RECALL_SPACING_MS = 60
-
 /**
  * Bridge between OneBot events and dsh agents. Create via the constructor and
  * call start() from the plugin's effect; call stop() on disposal.
@@ -178,6 +174,9 @@ export class ChatBridge {
   /** Inbound pipeline (D1-PR4): normalizeOneBot11 + the policy→media→quote→
    * dispatch path; the same-name bridge methods below delegate here. */
   private readonly inbound: InboundPipeline
+  /** Interim domain (D1-PR5): the assistant/message interim routing, the
+   * per-message recall timers and the turn/end settlement. */
+  private readonly interim: InterimTracker
   /** Live registry indexes — the inbound/outbound/interim/turn links keep
    * reading them through these same-name views. */
   private get chats(): Map<ChatId, ChatAgent> { return this.registry.chats }
@@ -227,6 +226,16 @@ export class ChatBridge {
       expandQuote: messageId => this.expandQuote(messageId),
       dispatchFollowup: (chatId, text, role, nickname) => this.dispatchFollowup(chatId, text, role, nickname),
       sendToChat: (chatId, text) => this.sendToChat(chatId, text),
+      log: (level, message) => this.deps.log(level, message),
+      config: deps.config,
+    })
+    this.interim = new InterimTracker({
+      sendToChat: (chatId, text, options) => this.sendToChat(chatId, text, options),
+      sendMsg: (chatId, segments, options) => this.sendMsg(chatId, segments, options),
+      call: (action, params) => this.deps.connection.call(action, params),
+      chainTail: chatId => this.outbound.chainTail(chatId),
+      relayHostCards: (chatId, content) => this.relayHostCards(chatId, content),
+      effectiveInterim: chatId => this.effectiveInterim(chatId),
       log: (level, message) => this.deps.log(level, message),
       config: deps.config,
     })
@@ -522,127 +531,7 @@ export class ChatBridge {
     return this.outbound.sendForward(chatId, nodes)
   }
 
-  /** Cancel a message's pending 90s auto-recall timer. */
-  private clearInterimTimer(chat: ChatAgent, id: string): void {
-    const timer = chat.recallTimers.get(id)
-    if (timer !== undefined) {
-      clearTimeout(timer)
-      chat.recallTimers.delete(id)
-    }
-  }
-
-  /**
-   * Recall the still-on-screen interim originals (turn/end step 2). Ids the
-   * 90s timer already revoked during the turn are skipped (already gone).
-   * Recall failure is logged only — the summary card still carries the text.
-   */
-  private async recallLoopMessages(chatId: ChatId, chat: ChatAgent, buf: Array<{ id: string; text: string }>): Promise<void> {
-    for (const { id } of buf) {
-      if (chat.recalledInterimIds.has(id)) continue
-      this.clearInterimTimer(chat, id)
-      try {
-        await this.deps.connection.call('delete_msg', { message_id: id })
-        chat.recalledInterimIds.add(id)
-        await new Promise(resolve => setTimeout(resolve, RECALL_SPACING_MS))
-      } catch (error) {
-        this.deps.log('debug', 'loop recall delete_msg failed for ' + id + ': ' + (error instanceof Error ? error.message : String(error)))
-      }
-    }
-  }
-
-  /** Fire when an interim's own 90s timer elapses mid-turn: revoke it alone. */
-  private revokeInterim(chatId: ChatId, chat: ChatAgent, id: string): void {
-    chat.recallTimers.delete(id)
-    this.deps.connection.call('delete_msg', { message_id: id }).then(() => {
-      chat.recalledInterimIds.add(id)
-    }).catch(error => {
-      this.deps.log('debug', 'interim auto-recall failed for ' + id + ': ' + (error instanceof Error ? error.message : String(error)))
-    })
-  }
-
-  /** Render this turn's interims into one t2i image (summary card, before final). */
-  private async sendInterimSummary(chatId: ChatId, buf: Array<{ id: string; text: string }>): Promise<void> {
-    const body = buf.map((item, index) => (index + 1) + '. ' + item.text.trim()).filter(line => line !== '').join('\n\n')
-    if (body === '') return
-    let png: Buffer
-    try {
-      png = renderTextImage(body, {
-        title: '📋 本轮中间记录',
-        footerBrand: this.deps.config.cardFooter,
-        fontFiles: this.deps.config.fontFiles,
-        fontFamilies: this.deps.config.fontFamilies,
-      })
-    } catch (error) {
-      this.deps.log('warn', 'interim summary t2i failed, sending as text: ' + (error instanceof Error ? error.message : String(error)))
-      await this.sendToChat(chatId, body)
-      return
-    }
-    const b64 = 'base64://' + png.toString('base64')
-    if (b64.length <= this.deps.config.maxImageBytes) {
-      await this.sendMsg(chatId, [{ type: 'image', data: { file: b64 } }], {})
-    } else {
-      await this.sendToChat(chatId, body)
-    }
-  }
-
   // ------------------------------------------------------------ session events
-
-  /** Send one interim live and record it: text for the turn/end summary card,
-   * plus a per-message auto-recall timer (config interimRecallMs) so long turns
-   * clean up their early messages even before the summary arrives. */
-  private sendInterim(chatId: ChatId, chat: ChatAgent, text: string): void {
-    this.sendToChat(chatId, text).then(ids => {
-      const sentAt = Date.now()
-      for (const id of ids) {
-        chat.loopBuffer.push({ id, text, sentAt })
-        const delay = this.deps.config.interimRecallMs ?? 90_000
-        const timer = setTimeout(() => this.revokeInterim(chatId, chat, id), delay)
-        chat.recallTimers.set(id, timer)
-      }
-    }).catch(error => {
-      this.deps.log('warn', 'interim send failed: ' + (error instanceof Error ? error.message : String(error)))
-    })
-  }
-
-  /**
-   * Settle a finished turn's interim trail (interimMessages on): drain the send
-   * chain so every interim id is recorded, then render ONE t2i summary card of
-   * all interims, immediately recall the still-on-screen originals, and finally
-   * send the deferred final text. No merged-forward any more — QQ refuses to
-   * recall messages older than ~2 min, and a forward of aged interims would
-   * leave the originals plus a duplicate card, so interims are surfaced live
-   * and auto-revoked per message (90s) during long turns.
-   */
-  private async settleLoop(chatId: ChatId, chat: ChatAgent): Promise<void> {
-    try {
-      await this.outbound.chainTail(chatId)
-    } catch {
-      // failures already settle the enqueue chain; keep going
-    }
-    const buf = chat.loopBuffer
-    chat.loopBuffer = []
-    if (buf.length >= 1) {
-      try {
-        await this.sendInterimSummary(chatId, buf)
-      } catch (error) {
-        this.deps.log('warn', 'interim summary send failed: ' + (error instanceof Error ? error.message : String(error)))
-      }
-      try {
-        await this.recallLoopMessages(chatId, chat, buf)
-      } catch (error) {
-        this.deps.log('warn', 'loop recall failed: ' + (error instanceof Error ? error.message : String(error)))
-      }
-    }
-    if (chat.loopPending !== null) {
-      const final = chat.loopPending
-      chat.loopPending = null
-      try {
-        await this.sendToChat(chatId, final, { queuable: true })
-      } catch (error) {
-        this.deps.log('warn', 'final send failed: ' + (error instanceof Error ? error.message : String(error)))
-      }
-    }
-  }
 
   private onSessionEvent(session: Session, event: SessionEvent): void {
     if (this.stopping) return
@@ -651,6 +540,9 @@ export class ChatBridge {
     const chat = this.chats.get(chatId)
     if (chat === undefined || chat.sessionId !== session.id) return
     if (event.type === 'turn/start') {
+      // B8: a new turn begins — prune the previous turn's recalled-id
+      // residue (see InterimTracker.onTurnStart for the safety analysis).
+      this.interim.onTurnStart(chat)
       // Freeze the running turn's initiator role from the dispatch FIFO
       // (M1-A2): turns the plugin did not dispatch (host/web input) find an
       // empty queue and fail closed as member.
@@ -660,57 +552,11 @@ export class ChatBridge {
       return
     }
     if (event.type === 'assistant/message') {
-      // Dedupe: the session may re-emit the same message (streaming/usage
-      // updates); each id is handled exactly once, or interims would send
-      // repeatedly and flood the loop buffer.
-      const messageId = event.data.message.id
-      if (messageId !== undefined && chat.lastHandledMessageId === messageId) return
-      if (messageId !== undefined) chat.lastHandledMessageId = messageId
-      // Host-plane cards (plan review / ask_user_question) never enter the
-      // session text stream — the model calls a tool whose arguments carry the
-      // content and whose text block is empty, so the `text === ''` early
-      // return below would otherwise leave QQ silent. Relay those cards here,
-      // before any early return, so the user is never left hanging.
-      this.relayHostCards(chatId, event.data.message.content)
-      const text = event.data.message.content
-        .filter(block => block.type === 'text')
-        .map(block => block.text)
-        .join('')
-      if (text === '') return
-      if (this.effectiveInterim(chatId)) {
-        // The arriving message proves the previously deferred text interim —
-        // flush it now, regardless of this message's shape.
-        const prior = chat.loopPending
-        if (prior !== null) {
-          chat.loopPending = null
-          this.sendInterim(chatId, chat, prior)
-        }
-        // A message carrying tool calls can never be the final reply (the
-        // model continues after the tool) — send it immediately instead of
-        // deferring one step, so QQ receives interims without the one-step
-        // lag. Only tool-free text stays deferred until turn/end proves it
-        // either interim (next assistant/message) or final.
-        const hasToolCall = event.data.message.content.some(block => block.type === 'tool-call')
-        if (hasToolCall) {
-          this.sendInterim(chatId, chat, text)
-        } else {
-          chat.loopPending = text
-        }
-      } else {
-        chat.pendingFinal = text
-      }
+      this.interim.onAssistantMessage(chatId, chat, event.data.message)
       return
     }
     if (event.type === 'turn/end') {
-      if (this.effectiveInterim(chatId)) {
-        void this.settleLoop(chatId, chat)
-      } else if (chat.pendingFinal !== '') {
-        const final = chat.pendingFinal
-        chat.pendingFinal = ''
-        this.sendToChat(chatId, final, { queuable: true }).catch(error => {
-          this.deps.log('warn', 'final send failed: ' + (error instanceof Error ? error.message : String(error)))
-        })
-      }
+      this.interim.onTurnEnd(chatId, chat)
       if (event.data.reason.kind === 'error' && this.deps.config.sendErrorNotice) {
         const message = event.data.reason.error.message
         this.sendToChat(chatId, '⚠️ 运行出错：' + message, { queuable: true }).catch(() => undefined)
