@@ -87,10 +87,14 @@ export interface Config {
   sensitivePatterns: string[]
   mediaDir: string
   tempTtlHours: number
-  maxImageBytes: number
+  outboundImageMaxBytes: number
   maxVoiceBytes: number
   maxFileBytes: number
-  imageMaxSize: number
+  inboundImageMaxPx: number
+  /** @deprecated D4a alias of inboundImageMaxPx; honored for one release. */
+  imageMaxSize?: number
+  /** @deprecated D4a alias of outboundImageMaxBytes; honored for one release. */
+  maxImageBytes?: number
   sttEnabled: boolean
   sttEngine: 'auto' | 'openai' | 'whisper-cpp' | 'custom'
   sttCommand: string
@@ -103,7 +107,9 @@ export interface Config {
   fontFamilies: string[]
   agentPreset: string
   workspacePath: string
-  maxInboundFileBytes: number
+  inboundFileMaxBytes: number
+  /** @deprecated D4a alias of inboundFileMaxBytes; honored for one release. */
+  maxInboundFileBytes?: number
   /** B8c: chats idle longer than this many days are evicted (0 disables). */
   chatIdleEvictDays: number
   /** Escape hatch: skip the download private-address check (local reverse proxy). */
@@ -122,6 +128,11 @@ export function defaultMediaDir(): string {
 export function dshHome(): string {
   return ENV('DSH_HOME') !== '' ? ENV('DSH_HOME') : join(process.env.HOME ?? '/tmp', '.dsh')
 }
+
+/** D4a: schema defaults for the renamed fields (referenced by the deprecated-name fallback). */
+const INBOUND_IMAGE_MAX_PX = 2048
+const OUTBOUND_IMAGE_MAX_BYTES = IMAGE_MAX_BYTES
+const INBOUND_FILE_MAX_BYTES = 20 * 1024 * 1024
 
 export const Config: z<Config> = z.object({
   mode: z.union([z.const('reverse'), z.const('forward')]).default('reverse')
@@ -174,10 +185,14 @@ export const Config: z<Config> = z.object({
     .description('入站媒体与映射文件目录；留空默认 <dsh-home>/media/onebot'),
   tempTtlHours: z.number().default(6)
     .description('入站临时媒体文件保留时长（小时），到期自动清理'),
-  maxImageBytes: z.number().default(IMAGE_MAX_BYTES)
+  outboundImageMaxBytes: z.number().default(OUTBOUND_IMAGE_MAX_BYTES)
     .description('出站图片大小上限（字节）'),
-  imageMaxSize: z.number().default(2048)
+  maxImageBytes: z.number().deprecated()
+    .description('[deprecated] 旧名别名（现 outboundImageMaxBytes）：出站图片大小上限（字节）；本版兼容读取，新配置请用新名'),
+  inboundImageMaxPx: z.number().default(INBOUND_IMAGE_MAX_PX)
     .description('入站图片长边上限（像素）；超过则等比压缩后交给视觉模型，<=0 禁用'),
+  imageMaxSize: z.number().deprecated()
+    .description('[deprecated] 旧名别名（现 inboundImageMaxPx）：入站图片长边上限（像素）；本版兼容读取，新配置请用新名'),
   maxVoiceBytes: z.number().default(VOICE_MAX_BYTES)
     .description('出站语音大小上限（字节）'),
   maxFileBytes: z.number().default(MEDIA_MAX_BYTES)
@@ -206,13 +221,39 @@ export const Config: z<Config> = z.object({
     .description('QQ 会话加入的 agent 预设 id；留空用部署默认（settings 的 agent-presets.default，当前为 router-flash）。创建时总是解析有效预设并写入会话 header，Web 界面可见；resume 优先恢复会话自己记录的预设'),
   workspacePath: z.string().default('')
     .description('QQ 会话的工作区目录（写入会话 cwd，并自动归入该工作区，不存在则创建）；留空用宿主进程 cwd'),
-  maxInboundFileBytes: z.number().default(20 * 1024 * 1024)
+  inboundFileMaxBytes: z.number().default(INBOUND_FILE_MAX_BYTES)
     .description('QQ 入站文件最大字节数（直链/base64 拉取，0 = 不限制）'),
+  maxInboundFileBytes: z.number().deprecated()
+    .description('[deprecated] 旧名别名（现 inboundFileMaxBytes）：QQ 入站文件最大字节数；本版兼容读取，新配置请用新名'),
   allowPrivateHosts: z.boolean().default(false)
     .description('下载 SSRF 防护逃生门：默认拒绝解析到私网/环回/链路本地地址的下载目标（协议仅 http/https、重定向逐跳复检仍生效）；NapCat 文件服务器或反代部署在本机/内网时置 true 跳过私网检查'),
   chatIdleEvictDays: z.number().default(7)
     .description('会话空闲淘汰天数：chat 超过该天数无任何活动时，在下一条入站消息处理前清理其 agent（会话先落盘 flush、映射保留，之后同一 chat 的消息可 resume 恢复原会话）；0 = 禁用'),
 })
+
+/** D4a: the deprecated config names kept for one release, mapped onto their
+ * renamed fields. */
+const DEPRECATED_CONFIG_ALIASES: ReadonlyArray<readonly [oldName: string, newName: string, defaultValue: number]> = [
+  ['imageMaxSize', 'inboundImageMaxPx', INBOUND_IMAGE_MAX_PX],
+  ['maxImageBytes', 'outboundImageMaxBytes', OUTBOUND_IMAGE_MAX_BYTES],
+  ['maxInboundFileBytes', 'inboundFileMaxBytes', INBOUND_FILE_MAX_BYTES],
+]
+
+/** Map deprecated config names onto their renamed fields: a legacy value is
+ * honored only while the new name still sits at its schema default (the new
+ * name wins when both are configured), each legacy use warns once, and the
+ * legacy keys never leak into the effective config. */
+export function resolveDeprecatedConfig(config: Config): Config {
+  const resolved = { ...config } as Config & Record<string, unknown>
+  for (const [oldName, newName, defaultValue] of DEPRECATED_CONFIG_ALIASES) {
+    const legacy = resolved[oldName]
+    if (legacy === undefined) continue
+    console.warn('[dsh-onebot] config "' + oldName + '" is deprecated; rename it to "' + newName + '"')
+    delete resolved[oldName]
+    if (resolved[newName] === defaultValue) resolved[newName] = legacy
+  }
+  return resolved
+}
 
 /** Resolve env-var fallbacks into the effective access policy. */
 function resolvePolicy(config: Config): AccessPolicyConfig {
@@ -241,6 +282,8 @@ export function logMetaEvent(selfId: string, event: OneBotEvent): void {
 
 /** Mount the plugin. */
 export function apply(ctx: Context, config: Config): void {
+  // D4a: honor the deprecated config names before any consumer reads them.
+  config = resolveDeprecatedConfig(config)
   const mediaDir = config.mediaDir !== '' ? config.mediaDir : defaultMediaDir()
   const policy = resolvePolicy(config)
   const connection = new OneBotConnection(
@@ -254,7 +297,7 @@ export function apply(ctx: Context, config: Config): void {
       callTimeoutMs: 30_000,
     },
   )
-  const media = new MediaStore(mediaDir, config.tempTtlHours, config.imageMaxSize, { maxBytes: config.maxInboundFileBytes, allowPrivateHosts: config.allowPrivateHosts })
+  const media = new MediaStore(mediaDir, config.tempTtlHours, config.inboundImageMaxPx, { maxBytes: config.inboundFileMaxBytes, allowPrivateHosts: config.allowPrivateHosts })
   const transcriber = new Transcriber({
     enabled: config.sttEnabled,
     engine: config.sttEngine,
@@ -326,7 +369,7 @@ export function apply(ctx: Context, config: Config): void {
       restrictedMemberPrefix: config.restrictedMemberPrefix,
       sensitivePatterns: config.sensitivePatterns,
       mediaDir,
-      maxImageBytes: config.maxImageBytes,
+      maxImageBytes: config.outboundImageMaxBytes,
       maxVoiceBytes: config.maxVoiceBytes,
       maxFileBytes: config.maxFileBytes,
       textImageThreshold: config.textImageThreshold,
@@ -335,7 +378,7 @@ export function apply(ctx: Context, config: Config): void {
       fontFamilies: config.fontFamilies,
       agentPreset: config.agentPreset,
       workspacePath: config.workspacePath,
-      maxInboundFileBytes: config.maxInboundFileBytes,
+      maxInboundFileBytes: config.inboundFileMaxBytes,
       chatIdleEvictDays: config.chatIdleEvictDays,
     },
     policy,
