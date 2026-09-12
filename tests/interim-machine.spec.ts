@@ -8,7 +8,7 @@
  * completion, placeholder drop on send failure).
  * @module dsh-onebot/tests/interim-machine
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { InterimTracker } from '../src/interim.js'
 import type { InterimChat } from '../src/interim.js'
@@ -58,8 +58,12 @@ function makeHarness(opts?: { interim?: boolean; interimRecallMs?: number; inter
       ? [{ type: 'text', text }, { type: 'tool-call', id: 'c1', name: 'bash', arguments: '{}' }]
       : [{ type: 'text', text }],
   })
-  // 120ms: a settlement recalls its interims with a 60ms spacing sleep per
-  // id (RECALL_SPACING_MS), so the drain needs more than one spacing tick.
+  // Fixed tick for microtask-only drains (send backfill etc. — microtasks
+  // settle before this timer fires). It deliberately does NOT bound the full
+  // settlement drain (summary card + RECALL_SPACING_MS recall spacing): the
+  // drain-heavy tests wait on the terminal state ('idle', set last in
+  // settleLoop) via vi.waitFor instead, so load can never outrun a fixed
+  // timeout.
   const settle = () => new Promise(resolve => setTimeout(resolve, 120))
   return { tracker, chat, sentTexts, recalledIds, summaryCards, assistant, settle, setMode: (value: boolean) => { interimMode = value } }
 }
@@ -106,8 +110,7 @@ describe('InterimTracker state machine (M3-D2a)', () => {
     h.tracker.onAssistantMessage('private:10001', h.chat, h.assistant('最终答') as never)
     h.tracker.onTurnEnd('private:10001', h.chat)
     expect(h.tracker.stateOf(h.chat)).toBe('settling')
-    await h.settle()
-    expect(h.tracker.stateOf(h.chat)).toBe('idle')
+    await vi.waitFor(() => expect(h.tracker.stateOf(h.chat)).toBe('idle'))
     expect(h.summaryCards).toHaveLength(1)
     expect(h.recalledIds).toEqual(['7'])
     expect(h.sentTexts).toEqual(['中间步', '最终答'])
@@ -131,7 +134,7 @@ describe('InterimTracker state machine (M3-D2a)', () => {
     h.tracker.onAssistantMessage('private:10001', h.chat, h.assistant('中间步', { toolCall: true }) as never)
     h.tracker.onTurnEnd('private:10001', h.chat)
     h.tracker.onTurnEnd('private:10001', h.chat)
-    await h.settle()
+    await vi.waitFor(() => expect(h.tracker.stateOf(h.chat)).toBe('idle'))
     expect(h.summaryCards).toHaveLength(1)
     expect(h.recalledIds).toEqual(['7'])
     expect(h.tracker.stateOf(h.chat)).toBe('idle')
