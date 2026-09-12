@@ -207,8 +207,8 @@ export const Config: z<Config> = z.object({
     .description('custom 引擎参数模板，{file} 与 {out} 会被替换'),
   sttModel: z.string().default('small')
     .description('whisper 模型（openai: small/base/medium...；whisper.cpp: 模型名或 .bin 绝对路径）'),
-  sttTimeoutMs: z.number().default(300_000)
-    .description('单次转写超时（毫秒）'),
+  sttTimeoutMs: z.number().default(60_000)
+    .description('单次转写超时（毫秒，默认 60000）；超时后占位即终态，不追加转写'),
   textImageThreshold: z.number().default(150)
     .description('回复正文超过该长度（字符数）时渲染为文字图卡片发送；<=0 禁用卡片路径'),
   cardFooter: z.string().default('dsh')

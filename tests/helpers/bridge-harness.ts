@@ -22,7 +22,7 @@ import { Transcriber } from '../../src/stt.js'
 /** A fake agent handle for the bridge. */
 export function makeFakeAgents(
   sessionIds: string[],
-  captured: { followups: Array<{ text: string; sessionId: string }>; createdMeta?: Array<{ cwd?: string; agentPreset?: string }> },
+  captured: { followups: Array<{ text: string; sessionId: string }>; steers?: Array<{ text: string; sessionId: string }>; createdMeta?: Array<{ cwd?: string; agentPreset?: string }> },
   opts?: { failCreateFor?: string; resumeOk?: boolean; createDelayMs?: number },
 ) {
   const disposed: string[] = []
@@ -42,6 +42,10 @@ export function makeFakeAgents(
         followup: (message: { content: Array<{ type: string; text?: string }> }) => {
           const text = message.content.map(b => b.text ?? '').join('')
           captured.followups.push({ text, sessionId })
+        },
+        // M3-D4c: the transcript steer path (raw text capture).
+        steer: (message: { content: Array<{ type: string; text?: string }> }) => {
+          captured.steers?.push({ text: message.content.map(b => b.text ?? '').join(''), sessionId })
         },
         whenIdle: async () => undefined,
       }
@@ -71,6 +75,9 @@ export function makeFakeAgents(
           const text = message.content.map(b => b.text ?? '').join('')
           captured.followups.push({ text, sessionId })
         },
+        steer: (message: { content: Array<{ type: string; text?: string }> }) => {
+          captured.steers?.push({ text: message.content.map(b => b.text ?? '').join(''), sessionId })
+        },
         whenIdle: async () => undefined,
       }
       if (typeof options.setup === 'function') {
@@ -83,7 +90,7 @@ export function makeFakeAgents(
 }
 
 /** Full bridge + WS harness: inbound via real WebSocket, outbound captured. */
-export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number }) {
+export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber }) {
   const ctx = new Context()
   const sessionIds: string[] = []
   const captured = { followups: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[] }
@@ -97,7 +104,7 @@ export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: st
     ctx,
     connection,
     media: new MediaStore(join(mediaDir, 'media'), 6),
-    transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
+    transcriber: opts?.transcriber ?? new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
     agents: agents as never,
     sessions: sessions as never,
     agentPresets: undefined as never,

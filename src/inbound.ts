@@ -138,6 +138,9 @@ export interface InboundContext {
   media: MediaStore
   /** Voice transcriber. */
   transcriber: Transcriber
+  /** M3-D4c: deliver a completed voice transcript into the chat's agent
+   * (bridge-owned: steers the running turn, or opens one when idle). */
+  steerTranscript(chatId: ChatId, text: string): void
   /** Slash-command router (bridge facade: the command table's ctx lives there). */
   tryHandleCommand(chatId: ChatId, text: string, userId: string): Promise<boolean>
   /** Message body assembly (bridge facade: overridable, see the pipeline-order test). */
@@ -319,14 +322,11 @@ export class InboundPipeline {
         settings.pendingImageRef = undefined
         return '[图片:' + resolved.path + ']'
       case 'voice': {
+        // M3-D4c: dispatch must not wait on STT — the [语音] placeholder ships
+        // now and the transcript steers into the turn when it completes. A
+        // failure/timeout keeps the placeholder as the final state.
         if (this.ctx.transcriber.enabled) {
-          try {
-            const text = await this.ctx.transcriber.transcribe(resolved.path)
-            const label = transcriptLabel(text)
-            if (label !== '') return '[语音]' + label
-          } catch (error) {
-            this.ctx.log('warn', 'STT failed: ' + (error instanceof Error ? error.message : String(error)))
-          }
+          void this.transcribeLater(resolved.path, chatId)
         }
         return '[语音]'
       }
@@ -334,6 +334,19 @@ export class InboundPipeline {
         return '[视频:' + resolved.path + ']'
       default:
         return '[文件:' + resolved.path + ']'
+    }
+  }
+
+  /** M3-D4c: transcribe in the background and deliver the labeled transcript
+   * into the chat's turn (steer at the running turn's nearest step boundary,
+   * or a new turn when the agent is idle). Failure keeps [语音] as final. */
+  private async transcribeLater(path: string, chatId: ChatId): Promise<void> {
+    try {
+      const text = await this.ctx.transcriber.transcribe(path)
+      if (transcriptLabel(text) === '') return
+      this.ctx.steerTranscript(chatId, text)
+    } catch (error) {
+      this.ctx.log('warn', 'STT failed: ' + (error instanceof Error ? error.message : String(error)))
     }
   }
 

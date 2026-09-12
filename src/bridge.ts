@@ -19,6 +19,7 @@ import { realpath } from 'node:fs/promises'
 import type { OneBotConnection, OneBotEvent } from './connection.js'
 import type { MediaStore } from './media.js'
 import type { Transcriber } from './stt.js'
+import { transcriptLabel } from './stt.js'
 import type { MediaRef } from './cq.js'
 import type { ChatId, UserRole } from './chat.js'
 import { classifyUserRole, splitChatId } from './chat.js'
@@ -225,6 +226,7 @@ export class ChatBridge {
       sweepIdleChats: () => this.registry.sweepIdleChats(),
       media: deps.media,
       transcriber: deps.transcriber,
+      steerTranscript: (chatId, text) => this.steerTranscript(chatId, text),
       tryHandleCommand: (chatId, text, userId) => this.tryHandleCommand(chatId, text, userId),
       buildBody: (text, media, chatId) => this.buildBody(text, media, chatId),
       expandQuote: messageId => this.expandQuote(messageId),
@@ -520,6 +522,21 @@ export class ChatBridge {
   /** Resolve one media ref to a text annotation with a local path. */
   private resolveMediaRef(ref: MediaRef, chatId: ChatId): Promise<string> {
     return this.inbound.resolveMediaRef(ref, chatId)
+  }
+
+  /** M3-D4c: steer a completed voice transcript into the chat's agent — the
+   * running turn consumes it at its nearest step boundary; an idle agent
+   * opens a turn. No live chat (dispatch dropped/never happened) drops it. */
+  private steerTranscript(chatId: ChatId, text: string): void {
+    const chat = this.chats.get(chatId)
+    if (chat === undefined) {
+      this.deps.log('debug', 'voice transcript dropped (no live chat): ' + chatId)
+      return
+    }
+    chat.agent.steer(createUserMessage({
+      content: [{ type: 'text', text: transcriptLabel(text) }],
+      source: { kind: 'plugin', plugin: 'dsh-onebot' },
+    }))
   }
 
   /** Expand a quoted (reply) message into [引用] text via get_msg. */

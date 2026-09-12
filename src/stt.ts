@@ -27,7 +27,7 @@ export interface SttConfig {
   timeoutMs: number
 }
 
-const DEFAULT_TIMEOUT_MS = 300_000
+const DEFAULT_TIMEOUT_MS = 60_000
 
 /** Run a process, collecting output; rejects on non-zero exit or timeout. */
 function runProcess(
