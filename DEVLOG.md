@@ -258,6 +258,15 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 全天 | **测试 324→327 全绿**（新增 3 用例：①/permission 无参菜单断言含「当前权限」「← 当前」「用法：/permission」+ 自定义预设 team-strict 标「部署自定义」；②宿主回文格式变化回退路径=原文转告+快捷提示+无「当前权限：」+宿主仅调用一次；③报错用法行审计=/retry 下一步、/mode 非法值（含当前生效值）、/workspace 不是目录、/preset 未知 id、/model 未知模型 五处）；适配 2 处：commands.spec /permission 用例第 1 段「宿主原文转告」改为中文菜单断言、命令表用例由 preSplit 字节等值改为 helpText() 全文快照（卡片逐字节钉死+每命令在卡片体恰出现一次）；session-switch.spec 的「序号越界」断言因 ❌ 前缀仍子串匹配通过，零改动；npm test 327/327、npm run build 退出 0（lib/commands.js、lib/types/commands.d.ts 随 helpText 导出同步） |
 | 全天 | **文档回写**——README 斜杠命令速查表：/model 行参数形态改为 `[--default] <provider> <model>`、/workspace 行补序号与 `list`、/preset 行补序号、/permission 行改参数顺序+无参中文菜单说明、新增 /help 行；src/prompt.ts 本轮零改动（命令清单未变，git 核对无 diff）；DEVLOG 本条目。遗留：README.en.md 命令表仍滞后（沿用前两轮记录，建议后续一次性补齐双语表） |
 
+### 2026-09-13（/permission 与 /plan 宿主转发崩溃修复：commands.execute 4 参签名适配）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **线上报错与根因链**——用户实测 `/permission f` 回 `❌ 权限预设切换失败：Cannot read properties of undefined (reading 'aborted')`。链路：宿主 dsh 0.1.5-rc.1 的 dsh-commands `execute` 实际启用 **4 参** `(agent, line, submittedAttachments, signal)`（第 3 参无条件读 `.length`，第 4 参无条件读 `.aborted`），返回值变为 settle 包裹 `{commandId, result:{kind,text}}`（admission miss 仍 undefined）；而本插件 /plan、/permission 两处转发仍按旧 3 参调用——`new AbortController().signal` 落在 submittedAttachments 槽，宿主读真 signal（undefined）的 `.aborted` 即崩；即便不崩，扁平 `result.kind/text` 读取也会落空。当日 /permission 上线时宿主 lib 已见 4 参签名但部署包未引用、按 /plan 实测口径沿用 3 参转发，该口径随宿主升级失效为直接诱因 |
+| 全天 | **修复（最小签名适配，不动命令语义）**——①两处调用改 4 参：`commands.execute(agent, line, [], new AbortController().signal)`（空数组=无附件，signal 归位第 4 参，保持「从不中止」语义）；②新增 `unwrapCommandResult` 解包工具（src/commands.ts，两处共用）：入参含 `result` 属性取 `.result`（新宿主包裹结构），否则按扁平 `{kind,text}` 处理（旧宿主对多余第 4 参安全：其内部只读 signal.aborted），undefined 原样透传=admission miss；③/permission 的「宿主未注册 /permission 命令（未挂载权限预设插件）」提示与 /plan 的默认文案回退保持原状；④类型同步：BridgeDeps（bridge.ts）与 Context（index.ts）的 execute 声明改 4 参、返回类型放行包裹结构；⑤/permission 成功回文增强：宿主原文太简（'preset X'），命中改回 `✅ 已切换权限预设：<preset>（<中文含义>）`，含义用现有 PERMISSION_PRESET_LABELS（workspace-write=工作区可写+需审批、danger-full-access=全盘+免审批），表外预设名（部署自定义）回退「部署自定义」；❌ 转告维持宿主原文+QQ 快捷提示，/plan 回文不变 |
+| 全天 | **测试 327→328 全绿**（新增 1 用例钉死本次事故：4 参转发形态——args[2] 为空数组、args[3] 为 AbortSignal、包裹结构正确解包转告（/plan 路径）；适配既有桩：/plan 与 /permission 菜单+别名用例的宿主桩改包裹返回（args 断言补 `[]`、别名命中断言改中文含义标签）、harness 默认桩镜像新宿主（4 参+attachments 数组性检查+包裹返回）、序号用例宿主桩保留旧扁平返回=旧宿主兼容转告回归、bare 菜单/格式漂移回退两用例桩签名同步；全仓 grep 确认 commands.execute 仅 /plan、/permission 两处调用点）；npm test 328/328、npm run build 退出 0（lib/commands.js、lib/types/*.d.ts 随签名同步） |
+| 全天 | **文档核对**——src/prompt.ts 与 README 的 /permission 描述均为命令面/别名/菜单语义，未涉及成功回文措辞，命令面没变，零改动；DEVLOG 本条目 |
+
 ---
 ## 3. 关键决策与坑（按价值排序）
 

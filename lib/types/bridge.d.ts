@@ -138,11 +138,13 @@ export interface BridgeDeps {
     agents: AgentRegistry;
     sessions: SessionStore;
     agentPresets: AgentPresetsLike | undefined;
-    /** Host command runtime: forwards /plan so QQ reaches the native plan command.
-     * `signal` is REQUIRED by the host implementation (it reads `signal.aborted`
-     * unconditionally) — pass a fresh never-aborted one. */
+    /** Host command runtime: forwards /plan and /permission so QQ reaches the
+     * native commands. dsh ≥0.1.5-rc.1: `submittedAttachments` (always pass an
+     * empty array) and `signal` are both REQUIRED (the host reads `.length` /
+     * `.aborted` unconditionally); the settled return is the
+     * `{ commandId, result: { kind, text } }` wrapper (older hosts: flat). */
     commands?: {
-        execute(agent: unknown, line: string, signal: AbortSignal): Promise<{
+        execute(agent: unknown, line: string, submittedAttachments: readonly unknown[], signal: AbortSignal): Promise<{
             kind?: string;
             text?: string;
             result?: {

@@ -191,10 +191,12 @@ export async function makeCmdHarness(opts?: {
     sessions: sessions as never,
     agentPresets: opts?.agentPresets as never,
     commands: (opts?.commands ?? {
-      execute: vi.fn(async (_agent: unknown, _line: string, signal: AbortSignal | undefined) => {
-        // Mirror the host: execute() reads signal.aborted unconditionally.
+      execute: vi.fn(async (_agent: unknown, _line: string, attachments: readonly unknown[], signal: AbortSignal | undefined) => {
+        // Mirror the host: execute() reads submittedAttachments.length and
+        // signal.aborted unconditionally.
+        if (!Array.isArray(attachments)) throw new Error("Cannot read properties of undefined (reading 'length')")
         if (signal === undefined) throw new Error("Cannot read properties of undefined (reading 'aborted')")
-        return { kind: 'success', text: 'Plan mode on. Use /plan off to leave.' }
+        return { commandId: 'cmd-test', result: { kind: 'success', text: 'Plan mode on. Use /plan off to leave.' } }
       }),
     }) as never,
     workspaceRegistry: (opts?.workspaceRegistry ?? undefined) as never,

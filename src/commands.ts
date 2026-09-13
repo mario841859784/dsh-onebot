@@ -767,6 +767,18 @@ function formatRetiredAt(ts: number): string {
   return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes())
 }
 
+/** Unwrap the host command execution outcome: dsh ≥0.1.5-rc.1 settles as
+ * the `{ commandId, result: { kind, text } }` wrapper while older hosts
+ * returned the flat `{ kind, text }` (and safely ignore the extra
+ * attachments argument). undefined stays undefined — an admission miss
+ * (unknown command name) under both host versions. */
+function unwrapCommandResult(
+  executed: { kind?: string; text?: string; result?: { kind?: string; text?: string } } | undefined,
+): { kind?: string; text?: string } | undefined {
+  if (executed === undefined) return undefined
+  return 'result' in executed ? executed.result : executed
+}
+
 /** /plan: forward to the HOST plan command so QQ enters/leaves host plan
  * mode (the host `/plan off` path exits directly, no Web review card). The
  * plugin no longer runs its own prefix plan mode — that duplicated the host
@@ -784,10 +796,12 @@ async function handlePlanCommand(ctx: CommandContext, chatId: ChatId, arg: strin
   }
   const line = arg.trim() === '' ? '/plan' : '/plan ' + arg.trim()
   try {
-    // The host command runtime requires a signal (it reads `signal.aborted`
-    // unconditionally) — pass a fresh never-aborted one; QQ user-initiated
-    // /plan must not be interruptible by our own cancellation.
-    const result = await commands.execute(chat.agent as never, line, new AbortController().signal)
+    // The host command runtime requires the attachments array (it reads
+    // `.length` unconditionally) and a signal (it reads `signal.aborted`
+    // unconditionally) — pass an empty array and a fresh never-aborted one;
+    // QQ user-initiated /plan must not be interruptible by our own
+    // cancellation.
+    const result = unwrapCommandResult(await commands.execute(chat.agent as never, line, [], new AbortController().signal))
     const text = result?.text !== undefined && result.text !== '' ? result.text : (arg.trim().toLowerCase() === 'off' ? '已退出计划模式。' : '已进入计划模式。')
     const hint = arg.trim().toLowerCase() === 'off' ? '' : '\n（QQ 退出计划模式：发 /plan off）'
     await ctx.sendToChat(chatId, text + hint)
@@ -840,14 +854,15 @@ async function handlePermissionCommand(ctx: CommandContext, chatId: ChatId, arg:
   }
   // One host /permission execution: returns the settled reply (null when a
   // failure was already reported to the chat). Same forwarding constraints
-  // as /plan — the host runtime reads signal.aborted unconditionally, so
-  // pass a fresh never-aborted signal; a QQ-initiated switch must not be
-  // interruptible by our own cancellation.
+  // as /plan — the host runtime reads submittedAttachments.length and
+  // signal.aborted unconditionally, so pass an empty array and a fresh
+  // never-aborted signal; a QQ-initiated switch must not be interruptible
+  // by our own cancellation.
   const executeHost = async (line: string): Promise<{ ok: boolean; text: string } | null> => {
     try {
       const live = ctx.getChat(chatId)
       if (live === undefined) return null
-      const result = await commands.execute(live.agent as never, line, new AbortController().signal)
+      const result = unwrapCommandResult(await commands.execute(live.agent as never, line, [], new AbortController().signal))
       if (result === undefined) {
         // Host admission miss: /permission is only registered when the
         // permission-presets plugin is composed on the host side.
@@ -861,10 +876,17 @@ async function handlePermissionCommand(ctx: CommandContext, chatId: ChatId, arg:
       return null
     }
   }
-  const relayMarked = async (result: { ok: boolean; text: string }): Promise<void> => {
-    // ❌ relays keep the host text verbatim and append the QQ usage hint so
-    // the failure is actionable without a second round-trip.
-    await ctx.sendToChat(chatId, (result.ok ? '✅ ' : '❌ ') + result.text + (result.ok ? '' : '\n' + PERMISSION_USAGE_HINT))
+  const relayMarked = async (result: { ok: boolean; text: string }, preset: string): Promise<void> => {
+    // Success: the host's own reply is too terse ('preset X') — render the
+    // switch confirmation with the Chinese meaning label (deployment-custom
+    // preset names fall back to a fixed label). ❌ relays keep the host text
+    // verbatim and append the QQ usage hint so the failure is actionable
+    // without a second round-trip.
+    if (result.ok) {
+      await ctx.sendToChat(chatId, '✅ 已切换权限预设：' + preset + '（' + (PERMISSION_PRESET_LABELS[preset] ?? '部署自定义') + '）')
+      return
+    }
+    await ctx.sendToChat(chatId, '❌ ' + result.text + '\n' + PERMISSION_USAGE_HINT)
   }
   const trimmed = arg.trim()
   if (trimmed === '') {
@@ -891,7 +913,7 @@ async function handlePermissionCommand(ctx: CommandContext, chatId: ChatId, arg:
       return
     }
     const switched = await executeHost('/permission ' + preset)
-    if (switched !== null) await relayMarked(switched)
+    if (switched !== null) await relayMarked(switched, preset)
     return
   }
   // Alias first (QQ-side, case-insensitive); anything else is forwarded
@@ -899,7 +921,7 @@ async function handlePermissionCommand(ctx: CommandContext, chatId: ChatId, arg:
   // error reply (with the available list), relayed with the ❌ mark.
   const preset = PERMISSION_PRESET_ALIASES[trimmed.toLowerCase()] ?? trimmed
   const switched = await executeHost('/permission ' + preset)
-  if (switched !== null) await relayMarked(switched)
+  if (switched !== null) await relayMarked(switched, preset)
 }
 
 /** Parse the 「(available: A, B)」 list out of a host permission reply (both

@@ -263,7 +263,7 @@ describe('commands', () => {
   })
 
   it('slash /goal /plan /mode set per-chat state and forward to host plan command', async () => {
-    const commands = { execute: vi.fn(async () => ({ kind: 'success', text: 'Plan mode on. Use /plan off to leave.' })) }
+    const commands = { execute: vi.fn(async () => ({ commandId: 'cmd-1', result: { kind: 'success', text: 'Plan mode on. Use /plan off to leave.' } })) }
     const h = await makeCmdHarness({ commands })
 
     // /goal stays a native per-chat prefix.
@@ -278,16 +278,16 @@ describe('commands', () => {
     // /plan forwards to the host plan command (no 【计划模式】 prefix anymore).
     h.sendText('/plan')
     await vi.waitFor(() => {
-      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/plan', expect.any(AbortSignal))
+      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/plan', [], expect.any(AbortSignal))
       expect(h.outbound.some(f => JSON.stringify(f.params).includes('Plan mode on. Use /plan off to leave.'))).toBe(true)
     })
     h.sendText('/plan 写一个新模块')
     await vi.waitFor(() => {
-      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/plan 写一个新模块', expect.any(AbortSignal))
+      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/plan 写一个新模块', [], expect.any(AbortSignal))
     })
     h.sendText('/plan off')
     await vi.waitFor(() => {
-      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/plan off', expect.any(AbortSignal))
+      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/plan off', [], expect.any(AbortSignal))
     })
     // No 【计划模式】 prefix on normal turns.
     h.sendText('再来一轮')
@@ -308,13 +308,31 @@ describe('commands', () => {
     await h.connection.stop()
   })
 
+  it('forwards host commands with the 4-arg execute signature dsh 0.1.5-rc.1 requires (empty attachments array in slot 3, AbortSignal in slot 4) and unwraps the settled { commandId, result } wrapper', async () => {
+    const commands = { execute: vi.fn(async () => ({ commandId: 'cmd-1', result: { kind: 'success', text: 'Plan mode on. Use /plan off to leave.' } })) }
+    const h = await makeCmdHarness({ commands })
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    h.sendText('/plan')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('Plan mode on. Use /plan off to leave.'))).toBe(true)
+    })
+    const call = (commands.execute as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[]
+    expect(call).toHaveLength(4)
+    expect(call[2]).toEqual([])
+    expect(call[3]).toBeInstanceOf(AbortSignal)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
   it('slash /permission renders the parsed Chinese menu, maps QQ aliases, and marks host errors (host forward like /plan)', async () => {
-    const commands = { execute: vi.fn(async (_agent: unknown, line: string, signal: AbortSignal | undefined) => {
+    const commands = { execute: vi.fn(async (_agent: unknown, line: string, _attachments: readonly unknown[], signal: AbortSignal | undefined) => {
       if (signal === undefined) throw new Error("Cannot read properties of undefined (reading 'aborted')")
-      if (line === '/permission') return { kind: 'success', text: 'current preset workspace-write (available: workspace-write, danger-full-access)' }
-      if (line === '/permission workspace-write') return { kind: 'success', text: 'preset workspace-write' }
-      if (line === '/permission danger-full-access') return { kind: 'success', text: 'preset danger-full-access' }
-      return { kind: 'error', text: `unknown preset "${line.slice('/permission '.length)}" (available: workspace-write, danger-full-access)` }
+      if (line === '/permission') return { commandId: 'cmd-1', result: { kind: 'success', text: 'current preset workspace-write (available: workspace-write, danger-full-access)' } }
+      if (line === '/permission workspace-write') return { commandId: 'cmd-2', result: { kind: 'success', text: 'preset workspace-write' } }
+      if (line === '/permission danger-full-access') return { commandId: 'cmd-3', result: { kind: 'success', text: 'preset danger-full-access' } }
+      return { commandId: 'cmd-x', result: { kind: 'error', text: `unknown preset "${line.slice('/permission '.length)}" (available: workspace-write, danger-full-access)` } }
     }) }
     const h = await makeCmdHarness({ commands })
     h.sendText('你好')
@@ -324,7 +342,7 @@ describe('commands', () => {
     //    (current + numbered available list + usage line), not a verbatim relay.
     h.sendText('/permission')
     await vi.waitFor(() => {
-      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/permission', expect.any(AbortSignal))
+      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/permission', [], expect.any(AbortSignal))
       const text = h.outbound.map(f => JSON.stringify(f.params)).join('\n')
       expect(text).toContain('当前权限：workspace-write（工作区可写+需审批）')
       expect(text).toContain('1. workspace-write（工作区可写+需审批） ← 当前')
@@ -342,8 +360,9 @@ describe('commands', () => {
     for (const [alias, preset] of aliases) {
       h.sendText('/permission ' + alias)
       await vi.waitFor(() => {
-        expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/permission ' + preset, expect.any(AbortSignal))
-        expect(h.outbound.some(f => JSON.stringify(f.params).includes('preset ' + preset))).toBe(true)
+        expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/permission ' + preset, [], expect.any(AbortSignal))
+        const label = preset === 'workspace-write' ? '工作区可写+需审批' : '全盘+免审批'
+        expect(h.outbound.some(f => JSON.stringify(f.params).includes('✅ 已切换权限预设：' + preset + '（' + label + '）'))).toBe(true)
       })
     }
 
@@ -351,7 +370,7 @@ describe('commands', () => {
     //    available list) is relayed with the ❌ mark.
     h.sendText('/permission nope')
     await vi.waitFor(() => {
-      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/permission nope', expect.any(AbortSignal))
+      expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/permission nope', [], expect.any(AbortSignal))
       expect(h.outbound.some(f => JSON.stringify(f.params).includes('❌ unknown preset \\"nope\\" (available: workspace-write, danger-full-access)'))).toBe(true)
     })
 
@@ -361,7 +380,7 @@ describe('commands', () => {
   }, 60_000)
 
   it('slash /permission numeric index resolves against the live available list (no snapshot)', async () => {
-    const commands = { execute: vi.fn(async (_agent: unknown, line: string, signal: AbortSignal | undefined) => {
+    const commands = { execute: vi.fn(async (_agent: unknown, line: string, _attachments: readonly unknown[], signal: AbortSignal | undefined) => {
       if (signal === undefined) throw new Error("Cannot read properties of undefined (reading 'aborted')")
       if (line === '/permission') return { kind: 'success', text: 'current preset workspace-write (available: workspace-write, danger-full-access)' }
       if (line === '/permission danger-full-access') return { kind: 'success', text: 'preset danger-full-access' }
@@ -377,7 +396,7 @@ describe('commands', () => {
     await vi.waitFor(() => {
       const lines = (commands.execute as ReturnType<typeof vi.fn>).mock.calls.map(c => c[1])
       expect(lines).toEqual(['/permission', '/permission danger-full-access'])
-      expect(h.outbound.some(f => JSON.stringify(f.params).includes('✅ preset danger-full-access'))).toBe(true)
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('✅ 已切换权限预设：danger-full-access（全盘+免审批）'))).toBe(true)
     })
 
     // 2. Out-of-range index: usage fallback, host listing still relayed.
@@ -395,7 +414,7 @@ describe('commands', () => {
   }, 60_000)
 
   it('slash /permission bare form renders the Chinese menu (← 当前 + usage line); preset names outside the default two show 部署自定义, never a guess', async () => {
-    const commands = { execute: vi.fn(async (_agent: unknown, _line: string, signal: AbortSignal | undefined) => {
+    const commands = { execute: vi.fn(async (_agent: unknown, _line: string, _attachments: readonly unknown[], signal: AbortSignal | undefined) => {
       if (signal === undefined) throw new Error("Cannot read properties of undefined (reading 'aborted')")
       return { kind: 'success', text: 'current preset team-strict (available: workspace-write, danger-full-access, team-strict)' }
     }) }
@@ -417,7 +436,7 @@ describe('commands', () => {
   }, 60_000)
 
   it('slash /permission falls back to the raw host relay + QQ hint when the reply shape changes (parse-failure guard, no crash)', async () => {
-    const commands = { execute: vi.fn(async (_agent: unknown, _line: string, signal: AbortSignal | undefined) => {
+    const commands = { execute: vi.fn(async (_agent: unknown, _line: string, _attachments: readonly unknown[], signal: AbortSignal | undefined) => {
       if (signal === undefined) throw new Error("Cannot read properties of undefined (reading 'aborted')")
       return { kind: 'success', text: 'permission subsystem degraded: try again later' }
     }) }
