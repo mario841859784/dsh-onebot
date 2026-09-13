@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path'
 import type { OneBotConnection } from './connection.js'
 import type { MediaRef } from './cq.js'
 import type { ChatId, UserRole } from './chat.js'
-import type { PendingSelection } from './registry.js'
+import type { PendingSelection, SessionSwitchOutcome, SwitchableSession } from './registry.js'
 import { fileToBase64 } from './media.js'
 import type { AgentDefaultModelLike, AgentPresetsLike, BridgeConfig, BridgeDeps, LlmCatalogPort, WorkspaceRegistryLike } from './bridge.js'
 import { describeError } from './errors.js'
@@ -69,7 +69,11 @@ export interface CommandContext {
   lastImagePath(chatId: ChatId): string | undefined
   lastImagePath(chatId: ChatId): string | undefined
   /** R2: per-chat pending serial-number selection snapshot (the numbered list
-   * a bare /workspace|/model|/preset rendered; lazy 5-min TTL, see below). */
+   * a bare /workspace|/model|/preset|/session rendered; lazy 5-min TTL, see below). */
+  /** /session: this chat's switchable retired sessions (newest first). */
+  switchableSessions(chatId: ChatId): SwitchableSession[]
+  /** /session <序号>: switch the chat back to a listed session. */
+  switchSession(chatId: ChatId, targetSessionId: string): Promise<SessionSwitchOutcome>
   pendingSelection(chatId: ChatId): PendingSelection | undefined
   setPendingSelection(chatId: ChatId, value: PendingSelection | undefined): void
   /** Lazy media resolution for the /ocr pending image ref (C6a). */
@@ -113,6 +117,7 @@ export const COMMANDS: CommandDefinition[] = [
   { name: 'model', adminOnly: true, help: '[--default] <provider> <model> 查看或切换模型（--default 改部署默认）', handler: (ctx, chatId, arg) => handleModelCommand(ctx, chatId, arg) },
   { name: 'workspace', adminOnly: true, help: '[路径|list] 查看或切换工作区', handler: (ctx, chatId, arg) => handleWorkspaceCommand(ctx, chatId, arg) },
   { name: 'preset', adminOnly: true, help: '[id] 查看或切换 agent 预设', handler: (ctx, chatId, arg) => handlePresetCommand(ctx, chatId, arg) },
+  { name: 'session', adminOnly: true, help: '[序号] 查看可切回历史会话或切回', handler: (ctx, chatId, arg) => handleSessionCommand(ctx, chatId, arg) },
   { name: 'status', adminOnly: true, help: '会话全景状态', handler: (ctx, chatId) => handleStatusCommand(ctx, chatId) },
   { name: 'retry', adminOnly: true, help: '重跑上一条', handler: (ctx, chatId) => handleRetryCommand(ctx, chatId) },
   { name: 'id', adminOnly: true, help: '查看 session/chat id', handler: (ctx, chatId) => handleIdCommand(ctx, chatId) },
@@ -519,6 +524,7 @@ async function handleStatusCommand(ctx: CommandContext, chatId: ChatId): Promise
   const agentState = chat !== undefined
     ? 'busy=' + chat.busy + ' loopBuffer=' + chat.loopBuffer.length
     : '（未建立会话）'
+  const switchableCount = ctx.switchableSessions(chatId).length
   await ctx.sendToChat(chatId,
     'chat    : ' + chatId + '\n' +
     'session : ' + (sessionId ?? '（未建立会话）') + '\n' +
@@ -526,7 +532,8 @@ async function handleStatusCommand(ctx: CommandContext, chatId: ChatId): Promise
     'model   : ' + model + '\n' +
     'cwd     : ' + cwd + ' ' + wsSuffix + '\n' +
     '出站     : ' + modeLabel + '\n' +
-    'agent   : ' + agentState)
+    'agent   : ' + agentState + '\n' +
+    '可切回   : ' + switchableCount + ' 条历史会话（/session 查看列表）')
 }
 
 /** /mode: per-chat outbound-mode override (interim vs instant). */
@@ -664,6 +671,68 @@ async function handlePresetCommand(ctx: CommandContext, chatId: ChatId, arg: str
   }
   ctx.log('info', 'preset switch for ' + chatId + ' -> ' + resolvedId)
   await ctx.sendToChat(chatId, `✅ 预设已切换：${resolvedId}\n下一条消息将重建会话并按新预设运行。`)
+}
+
+/** /session: list this chat's switchable retired sessions (the ones /new,
+ * /workspace and /preset retired with intact history), or switch the chat back
+ * to one by serial number. The numbered list is snapshotted (R2, kind
+ * 'session') so a following `/session <序号>` picks without re-listing. */
+async function handleSessionCommand(ctx: CommandContext, chatId: ChatId, arg: string): Promise<void> {
+  if (arg.trim() === '') {
+    const list = ctx.switchableSessions(chatId)
+    const current = ctx.getChat(chatId)?.sessionId ?? await ctx.sessionIdFromMapping(chatId)
+    if (list.length === 0) {
+      await ctx.sendToChat(chatId, '当前 session：' + (current ?? '（未建立会话）') + '\n（该会话没有可切回的历史会话）\n用法：/session <序号> 切回；/new、/workspace、/preset 切换下来的旧会话会进入列表。')
+      return
+    }
+    let out = '当前 session：' + (current ?? '（未建立会话）') + '\n可切回历史会话：\n' + list.map((e, i) => `${i + 1}. ${e.id}（${formatRetiredAt(e.retiredAt)} 退休）`).join('\n')
+    out += '\n回复 /session <序号> 切回（当前会话会进入列表，可来回切换）。'
+    ctx.setPendingSelection(chatId, {
+      kind: 'session',
+      items: list.map(e => ({ label: e.id, payload: e.id })),
+      createdAt: Date.now(),
+    })
+    await ctx.sendToChat(chatId, out)
+    return
+  }
+  // A busy chat must not be switched mid-generation (the outbound pipeline and
+  // the interim state belong to the live agent; the switch disposes it).
+  const chat = ctx.getChat(chatId)
+  if (/^\d+$/.test(arg.trim()) && chat !== undefined && chat.busy) {
+    await ctx.sendToChat(chatId, '当前正在生成回复，请先 /stop 再切换会话。')
+    return
+  }
+  const picked = await resolveNumericSelection(ctx, chatId, 'session', arg, '/session')
+  if (picked === null) return
+  if (picked === undefined) {
+    await ctx.sendToChat(chatId, '用法：/session 查看可切回会话；/session <序号> 切回。')
+    return
+  }
+  const outcome = await ctx.switchSession(chatId, picked.payload)
+  if (outcome.ok) {
+    await ctx.sendToChat(chatId, `✅ 已切回历史会话：${outcome.sessionId}\n（原会话已进入可切回列表，发 /session 查看；下一条消息继续该会话的历史上下文。）`)
+    return
+  }
+  if (outcome.reason === 'busy') {
+    await ctx.sendToChat(chatId, '当前正在生成回复，请先 /stop 再切换会话。')
+    return
+  }
+  if (outcome.reason === 'not-switchable') {
+    await ctx.sendToChat(chatId, '❌ 该序号对应的会话不在当前会话的可切回列表中。发 /session 重新查看。')
+    return
+  }
+  if (outcome.reason === 'broken') {
+    await ctx.sendToChat(chatId, '❌ 该历史会话已损坏，无法切回。')
+    return
+  }
+  await ctx.sendToChat(chatId, '❌ 切回历史会话失败：' + outcome.message + '\n已回退：下一条消息将开启全新会话，原会话仍保留在 /session 列表中。')
+}
+
+/** Render a retired-at timestamp as YYYY-MM-DD HH:mm (local time). */
+function formatRetiredAt(ts: number): string {
+  const d = new Date(ts)
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes())
 }
 
 /** /plan: forward to the HOST plan command so QQ enters/leaves host plan

@@ -11,7 +11,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session';
 import type { OneBotConnection } from './connection.js';
 import type { MediaRef } from './cq.js';
 import type { ChatId, UserRole } from './chat.js';
-import type { PendingSelection } from './registry.js';
+import type { PendingSelection, SessionSwitchOutcome, SwitchableSession } from './registry.js';
 import type { AgentDefaultModelLike, AgentPresetsLike, BridgeConfig, BridgeDeps, LlmCatalogPort, WorkspaceRegistryLike } from './bridge.js';
 /** Narrow view of a live chat the command handlers may read or mutate —
  * the structural subset of the bridge's internal ChatAgent that the
@@ -64,7 +64,11 @@ export interface CommandContext {
     lastImagePath(chatId: ChatId): string | undefined;
     lastImagePath(chatId: ChatId): string | undefined;
     /** R2: per-chat pending serial-number selection snapshot (the numbered list
-     * a bare /workspace|/model|/preset rendered; lazy 5-min TTL, see below). */
+     * a bare /workspace|/model|/preset|/session rendered; lazy 5-min TTL, see below). */
+    /** /session: this chat's switchable retired sessions (newest first). */
+    switchableSessions(chatId: ChatId): SwitchableSession[];
+    /** /session <序号>: switch the chat back to a listed session. */
+    switchSession(chatId: ChatId, targetSessionId: string): Promise<SessionSwitchOutcome>;
     pendingSelection(chatId: ChatId): PendingSelection | undefined;
     setPendingSelection(chatId: ChatId, value: PendingSelection | undefined): void;
     /** Lazy media resolution for the /ocr pending image ref (C6a). */

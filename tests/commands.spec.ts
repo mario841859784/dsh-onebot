@@ -461,7 +461,7 @@ describe('commands', () => {
       expect(h.outbound.some(f => JSON.stringify(f.params).includes('可用命令'))).toBe(true)
     })
     const helpText = h.outbound.filter(f => f.action === 'send_msg').map(f => JSON.stringify(f.params)).join('\n')
-    for (const name of ['new', 'stop', 'model', 'workspace', 'preset', 'status', 'retry', 'id', 'ver', 'ocr', 'mode', 'plan', 'goal', 'help']) {
+    for (const name of ['new', 'stop', 'model', 'workspace', 'preset', 'session', 'status', 'retry', 'id', 'ver', 'ocr', 'mode', 'plan', 'goal', 'help']) {
       expect(helpText).toContain('/' + name)
     }
     expect(h.captured.followups).toHaveLength(0)
@@ -473,7 +473,7 @@ describe('commands', () => {
   it('rejects every routed slash command for a non-admin with no side effects (M2-T0 command table)', async () => {
     const commands = { execute: vi.fn(async () => ({ kind: 'success', text: 'unreachable' })) }
     const h = await makeCmdHarness({ commands })
-    for (const name of ['new', 'stop', 'model', 'workspace', 'preset', 'status', 'retry', 'id', 'ver', 'ocr', 'mode', 'plan', 'goal', 'help']) {
+    for (const name of ['new', 'stop', 'model', 'workspace', 'preset', 'session', 'status', 'retry', 'id', 'ver', 'ocr', 'mode', 'plan', 'goal', 'help']) {
       const before = h.outbound.length
       h.sendGroupTextAs('/' + name, 20002)
       await vi.waitFor(() => {
@@ -489,21 +489,22 @@ describe('commands', () => {
     await h.connection.stop()
   }, 60_000)
 
-  it('command table registers exactly the 14 routed commands, one row each, and /help is generated from the table (D1-PR1)', () => {
+  it('command table registers exactly the 15 routed commands, one row each, and /help is generated from the table (D1-PR1)', () => {
     // Row order = /help order; the router matches by name so ordering is
     // routing-neutral. Adding a command is exactly one row here.
-    expect(COMMANDS.map(c => c.name)).toEqual(['new', 'stop', 'model', 'workspace', 'preset', 'status', 'retry', 'id', 'ver', 'ocr', 'mode', 'plan', 'goal', 'help'])
-    expect(COMMANDS).toHaveLength(14)
-    expect(new Set(COMMANDS.map(c => c.name)).size).toBe(14)
+    expect(COMMANDS.map(c => c.name)).toEqual(['new', 'stop', 'model', 'workspace', 'preset', 'session', 'status', 'retry', 'id', 'ver', 'ocr', 'mode', 'plan', 'goal', 'help'])
+    expect(COMMANDS).toHaveLength(15)
+    expect(new Set(COMMANDS.map(c => c.name)).size).toBe(15)
     for (const c of COMMANDS) {
       expect(c.adminOnly).toBe(true)
       expect(c.help).not.toContain('\n')
     }
     // Byte-identity gate: the table-rendered /help body equals the pre-split
     // hardcoded text verbatim (the harness-level /help test above exercises
-    // the real outbound path); the R1 tail line (unknown-command intercept) is the one intentional change from the pre-split text.
+    // the real outbound path); the R1 tail line (unknown-command intercept)
+    // and the /session row are the intentional changes from the pre-split text.
     const rendered = '可用命令：\n' + COMMANDS.map(c => '/' + c.name + ' ' + c.help).join('\n') + '\n\n未知命令默认拦截并提示相近命令；配置 unknownCommand: passthrough 可改为透传给模型。'
-    const preSplit = '可用命令：\n/new 开启新会话（清空上下文）\n/stop 停止当前生成\n/model [--default] <provider> <model> 查看或切换模型（--default 改部署默认）\n/workspace [路径|list] 查看或切换工作区\n/preset [id] 查看或切换 agent 预设\n/status 会话全景状态\n/retry 重跑上一条\n/id 查看 session/chat id\n/ver 插件版本\n/ocr 识别最近一张图片\n/mode [interim|instant] 切换出站模式\n/plan [off|内容] 宿主计划模式（/plan off 退出）\n/goal [目标|clear] 查看/设置目标\n/help 本帮助\n\n未知命令默认拦截并提示相近命令；配置 unknownCommand: passthrough 可改为透传给模型。'
+    const preSplit = '可用命令：\n/new 开启新会话（清空上下文）\n/stop 停止当前生成\n/model [--default] <provider> <model> 查看或切换模型（--default 改部署默认）\n/workspace [路径|list] 查看或切换工作区\n/preset [id] 查看或切换 agent 预设\n/session [序号] 查看可切回历史会话或切回\n/status 会话全景状态\n/retry 重跑上一条\n/id 查看 session/chat id\n/ver 插件版本\n/ocr 识别最近一张图片\n/mode [interim|instant] 切换出站模式\n/plan [off|内容] 宿主计划模式（/plan off 退出）\n/goal [目标|clear] 查看/设置目标\n/help 本帮助\n\n未知命令默认拦截并提示相近命令；配置 unknownCommand: passthrough 可改为透传给模型。'
     expect(rendered).toBe(preSplit)
   })
 

@@ -1,9 +1,10 @@
 /**
  * The chat↔session registry (M2-D1-PR3): one live ChatAgent per QQ chat with
  * the chats/bySession dual index, session-id minting and retirement
- * (brokenSessions + the durable retired-sessions.json record), the
- * chat-sessions.json mapping persistence (save + debounced flush + restart
- * resume), the per-chat settings that survive /new, and the shared
+ * (brokenSessions + the durable retired-sessions.json record), the per-chat
+ * switchable-session list (switchable-sessions.json, the /session switch-back
+ * history), the chat-sessions.json mapping persistence (save + debounced flush
+ * + restart resume), the per-chat settings that survive /new, and the shared
  * create/resume assembly (C2) behind ensureChat/loadMapping. Extracted from
  * bridge.ts — persistence formats, retirement semantics and assembly
  * behavior are unchanged; the bridge keeps same-name facades so the command
@@ -16,16 +17,33 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { MediaRef } from './cq.js';
 import type { ChatId, UserRole } from './chat.js';
 import type { AgentPresetsLike, BridgeConfig, SessionPersistenceLike, WorkspaceRegistryLike } from './bridge.js';
+/** One switchable (retired-but-intact) session of a chat: /new, /workspace and
+ * /preset switches retire the live session with its history intact — /session
+ * can switch the chat back to it. Newest first, deduped, capped per chat. */
+export interface SwitchableSession {
+    id: string;
+    retiredAt: number;
+}
+/** The outcome of a /session switch attempt (the command layer phrases the
+ * user-facing reply from `reason`; `message` carries the resume error text). */
+export type SessionSwitchOutcome = {
+    ok: true;
+    sessionId: string;
+} | {
+    ok: false;
+    reason: 'busy' | 'not-switchable' | 'broken' | 'resume-failed';
+    message: string;
+};
 /** R2: one pending serial-number selection snapshot — the numbered list a
- * bare /workspace|/model|/preset rendered, kept per chat so a following
- * `/cmd <序号>` picks an entry without re-listing. `payload` stores the exact
- * resolved value (workspace path / provider id / preset id; the model level-2
- * list stores the model id under `provider`). Single shared slot: a fresh
- * bare call of any kind overwrites it, other commands never touch it; expiry
- * is judged lazily at the next numeric reply (commands.ts
+ * bare /workspace|/model|/preset|/session rendered, kept per chat so a
+ * following `/cmd <序号>` picks an entry without re-listing. `payload` stores the exact
+ * resolved value (workspace path / provider id / preset id / switchable session
+ * id; the model level-2 list stores the model id under `provider`). Single
+ * shared slot: a fresh bare call of any kind overwrites it, other commands
+ * never touch it; expiry is judged lazily at the next numeric reply (commands.ts
  * PENDING_SELECTION_TTL_MS) — no timer, and the field is never persisted. */
 export interface PendingSelection {
-    kind: 'workspace' | 'model' | 'preset';
+    kind: 'workspace' | 'model' | 'preset' | 'session';
     /** /model only: 'providers' (level 1) or 'models' (level 2). */
     phase?: 'providers' | 'models';
     /** /model level 2: the provider the listed models belong to. */
@@ -165,10 +183,16 @@ export declare class ChatRegistry {
     readonly bySession: Map<string, string>;
     /** Per-chat settings (workspace/preset/mode/goal/ocr), lazy-created. */
     private readonly chatSettings;
-    /** Session ids whose persisted logs are unusable; creates must avoid them. */
+    /** Session ids whose persisted logs are unusable (collision heals, failed
+     * resumes, create collisions); creates must avoid them. Deliberately kept
+     * apart from retiredSessionIds: /session's soft-retired (switchable) ids
+     * land in retiredSessionIds only, so they stay switch-back targets. */
     private readonly brokenSessions;
-    /** Session ids retired across restarts (durable copy of brokenSessions). */
+    /** Session ids retired across restarts (durable copy in retired-sessions.json):
+     * both the broken ones and the soft-retired /session switchables. */
     retiredSessionIds: Set<string>;
+    /** Per-chat switchable retired sessions (/session history), newest first. */
+    private switchableByChat;
     private mappingSaveTimer;
     /** Resolves once the on-disk chat mapping has been loaded (wired by the bridge's start()). */
     mappingLoaded: Promise<void>;
@@ -247,6 +271,40 @@ export declare class ChatRegistry {
     private retiredPath;
     loadRetired(): Promise<void>;
     private saveRetired;
+    private switchablePath;
+    /** Load the per-chat switchable lists from disk (same discipline as
+     * loadRetired: only a missing file means "fresh start"; a read failure or
+     * corrupt JSON keeps the current in-memory lists so a later save never
+     * obliterates them). */
+    loadSwitchable(): Promise<void>;
+    /** Atomic write of the switchable lists (temp + rename, like saveRetired). */
+    private saveSwitchable;
+    /** The chat's switchable retired sessions (a copy; newest first). */
+    switchableSessions(chatId: ChatId): SwitchableSession[];
+    /** Record a just-soft-retired session as switchable for its chat: dedupe by
+     * id (a later re-retire refreshes retiredAt and moves it to the front),
+     * newest first, capped per chat. */
+    private recordSwitchable;
+    private removeSwitchable;
+    /** /session switch success: the target session is live again — lift the
+     * retired mark (in-memory plus the durable file) so the NORMAL resume paths
+     * (restart loadMapping, idle-evict re-activation) keep finding it. The
+     * create paths stay protected without the mark: hasPersistedLog catches the
+     * target's own log and the create-collision fallback covers the rest. */
+    private unRetireSession;
+    /**
+     * /session <序号>: switch a chat back to one of its switchable (soft-retired)
+     * sessions. Validation is per-chat (chat A's history is invisible to chat
+     * B) and refuses broken ids. With a live chat the current session is
+     * soft-retired into the list first (the retire half of resetChat — the
+     * settings carrier included — so a failed resume still rebuilds cleanly);
+     * with no live chat the switch is carried through evictedChats like
+     * noteWorkspaceOverride. On success the target is un-retired and leaves the
+     * list (it is the current session); on resume failure the target is
+     * hard-retired, dropped from the list, and the chat falls back to a fresh
+     * session on its next message — it never gets stuck.
+     */
+    switchSession(chatId: ChatId, targetSessionId: string): Promise<SessionSwitchOutcome>;
     /** T3-R1 (review closure): carry the chat's persisted settings across a
      * reset or a collision heal — snapshot them into evictedChats under the
      * (about-to-be-retired) session id, so the trailing saveMapping keeps the

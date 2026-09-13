@@ -227,6 +227,17 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 全天 | **测试 283→306 全绿**（T1 +5→288、T2 +6→294、T3 +9→303、T4 回炉 +3→306），npm test 全绿、build 退出 0；T5 文档回写：DEVLOG 本条目 + 双语 README（命令行为段/unknownCommand 配置行/workspacePath 说明/透传说明改写/最后验证与测试数更新） |
 | 全天 | **遗留清单（M4 评审记录，M5 候选）**：①**saveMapping 的 `??` 字段并集**——触发：chat 被空闲淘汰后执行 /goal clear，之后任一次 saveMapping；影响：live.goal 为 undefined 时 `??` 回退 evictedChats 快照旧值，已清除的 goal 复活并每轮重新提醒；建议方向：哨兵值区分「未设/已清」（或 clear 时同步清快照）。②**PendingSelection 单槽跨 kind**——触发：/model 列表在场时误回其他命令旧列表的序号（如 /workspace 1）；影响：无同 kind 快照 → 走原参数路径报错（如「目录无效：1」），提示略费解；建议方向：跨 kind 的序号回复给明确提示（当前不消费、行为安全但反直觉）。③**pendingSelection 随 ChatSettings 在 /new 后保留**——触发：列列表后执行 /new、TTL（5 分钟）内回序号；影响：序号仍可用（不持久化、到期自然失效，无害但语义略怪）；建议方向：/new 时顺手清 pendingSelection。④**幻影 bare id 累积（优先级最高）**——触发：每次重启 resume 失败的 session id 都会 retireSession 永久追加进 retired-sessions.json（append-only、无清理路径）；影响：文件只增不减、缓慢膨胀，有累积效应；建议方向：「同 id 已 retired 不重复追加」+ 定期清理，M5 候选首项 |
 
+### 2026-09-13（M5：/session 历史会话切换）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **M5 启动：/session 命令**——动机：/new、/workspace、/preset 每次切换都把旧会话退休在磁盘，但用户无法回去；任务书要求按序号切回历史会话并恢复其历史上下文，支持来回切。基线 306 测试全绿（m0-hardening @9841167，工作树干净） |
+| 全天 | **关键取舍：resume 放行例外 → 切换成功后 unRetire（与任务书设计建议偏离，已报告）**——任务书建议 createChat evicted 分支与 loadMapping 的 retired 跳过分支改为「retired 且在该 chat 可切回列表且未 broken → 允许 resume」。分析发现该例外无法与 T3 设置载体共存：/new（含持久化设置时）恰好会留下「retired + 在列表」的载体条目，基于列表成员的例外会让 /new 后的下一条消息（或一次重启）复活刚被 /new 掉的会话，直接违背 /new 契约与本任务自己钉死的端到端用例（/new → 下一条必须 create 新会话，除非显式 /session）。改为：switchSession 成功 resume 目标后调用 unRetireSession（brokenSessions/retiredSessionIds 双删 + saveRetired 落盘），目标回到「未退休」状态，重启 loadMapping、空闲淘汰后再激活全部走**常规路径**找回；create 路径的 isSessionIdBlocked 一字未动，T3 载体语义逐字节保留。un-retire 后 create 路径仍安全：hasPersistedLog 预检兜住目标自身日志、agents.create 碰撞回退兜底 |
+| 全天 | **软/硬退休拆分**——retireSession（broken+retired 双集+落盘）仅保留给真实损坏路径（heal、create 碰撞、stale log、resume 失败）；resetChat 改为软退休（仅 retiredSessionIds+落盘+记入可切回列表），并当 bare 派生 id 就是当前会话（初代 /new）时跳过原有的 bare id 硬退休（软退休已覆盖重启防碰撞，硬退休会把初代会话标记为 broken 导致永不可切回）；loadRetired 不再把文件 id 回填 brokenSessions（文件无法区分来源，blocked 并集对 create 路径行为不变） |
+| 全天 | **实现三件套**——registry.ts：SWITCHABLE_FILE（switchable-sessions.json，纪律照抄 loadRetired/saveRetired：ENOENT=全新、读失败/损坏保留内存并 warn、tmp+rename 原子写；每 chat 上限 20 条、去重、最新在前）、switchableSessions()/switchSession()（校验目标在该 chat 列表内且未 broken，busy 拒绝；在线走 resetChat 退休半段+resumeChat，离线走 noteWorkspaceOverride 式 evictedChats 载体；resume 失败→硬退休目标+移出列表+落盘映射，下一条消息全新会话，不卡死）、PendingSelection kind 加 'session'；commands.ts：/session 入命令表（/help 自动收录）、无参渲染编号列表（含 YYYY-MM-DD HH:mm 退休时间）+ 设 kind 'session' 快照、序号走 resolveNumericSelection、busy 先拒（提示 /stop）且不消费快照、/status 追加「可切回」计数行；bridge.ts：commandCtx 透传两方法 + start() 装载 loadSwitchable |
+| 全天 | **测试 306→321 全绿**（新增 tests/session-switch.spec.ts 15 用例：列表持久化/上限去重/损坏文件纪律、resetChat 软退休、broken 拒绝与跨 chat 隔离、在线来回切、resume 失败回退、碰撞 heal 与 create 碰撞绝不入列表、**e2e 钉死 /new→/session 1→下一条普通消息 agents.resume 收到原 session id 且 create 仅 1 次**、重启 loadMapping 恢复切换后目标、越界保留快照/非数字用法行、busy 拒绝、/status 计数）；commands.spec 命令表用例同步 14→15（含 /help 全文快照行）；npm test 321/321、npm run build 退出 0 |
+| 全天 | **文档回写**——README 能力表命令单元格、斜杠命令速查表（/session 行+/status 行更新）、模型平台说明「14 个→15 个」、/session 持久化与回退语义说明段；DEVLOG 本条目。遗留：src/prompt.ts 的模型平台提示词命令清单未列 /session（任务书范围外，建议后续同步，避免模型不知该命令）；M4 遗留清单 ④（幻影 bare id）可借 unRetire 机制一并治理，M5 后续候选 |
+
 ---
 ## 3. 关键决策与坑（按价值排序）
 

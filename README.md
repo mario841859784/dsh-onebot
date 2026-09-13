@@ -30,7 +30,7 @@
 | 语音 | ffmpeg 转 16kHz WAV + whisper 转写（openai-whisper / whisper.cpp / 自定义命令）；**非阻塞**：语音消息先以 [语音] 占位进入回合（不阻塞回复），转写完成后以「（语音转写：…）」补递（默认超时 60s）；转写失败/超时保留 [语音] 占位 |
 | 文字图 | t2i 卡片渲染器（@napi-rs/canvas）：标题/粗斜体/删除线/引用/列表/代码块/表格/行内 code 胶囊/彩色 emoji/中文标点禁则；与 Hermes 原版同款数值（800px/26px/禁则集合/右缘 790） |
 | 出站 | 长消息按句号分段（默认 ≤100 字/条）、**>150 字渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji，渲染失败自动回退分段）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、**实时中间消息**（interimMessages：每条中间文本立即发出、实时可见；各自在 `interimRecallMs`（默认 90s）后自动单独撤回；回合结束时先把整轮中间消息渲染成一张 **t2i 小结卡**、立即撤回仍在屏幕上的原文、再发送最终回复——不用回合末合并转发，避免长回合「原文超 2 分钟撤不回+转发卡重复」；`interimRecall: false` 时降级为只发不撤（无小结卡、不撤回））、**宿主「计划书/提问卡」自动中继**（模型调用 exit_plan_mode / ask_user_question 时把计划全文/问题选项发到 QQ）、正在输入提示（set_input_status，仅私聊） |
-| 命令 | 斜杠命令（仅管理员）：`/new` 开新会话、`/stop` 停止生成、`/model` 查看或切换当前会话模型（`--default` 修改部署默认；无参输出两级序号列表，回复序号选 provider → 再回复序号选模型）、`/workspace` 查看或切换工作区（无参编号列表，回复序号即选）、`/preset` 查看或切换 agent 预设（无参编号列表，回复序号即选）、`/status` 会话全景、`/retry` 重跑上一条、`/id` 会话标识、`/ver` 版本、`/ocr` 识别最近图片、`/mode` 切换出站模式（跨重启持久化）、`/plan` 计划模式、`/goal` 目标记录（跨重启持久化）、`/help` 帮助；未知斜杠命令默认拦截并提示相近命令（`unknownCommand: passthrough` 改为透传给模型） |
+| 命令 | 斜杠命令（仅管理员）：`/new` 开新会话、`/stop` 停止生成、`/model` 查看或切换当前会话模型（`--default` 修改部署默认；无参输出两级序号列表，回复序号选 provider → 再回复序号选模型）、`/workspace` 查看或切换工作区（无参编号列表，回复序号即选）、`/preset` 查看或切换 agent 预设（无参编号列表，回复序号即选）、`/session` 查看可切回历史会话并按序号切回（`/new`、`/workspace`、`/preset` 切换下来的旧会话进列表，可来回切，历史上下文恢复）、`/status` 会话全景、`/retry` 重跑上一条、`/id` 会话标识、`/ver` 版本、`/ocr` 识别最近图片、`/mode` 切换出站模式（跨重启持久化）、`/plan` 计划模式、`/goal` 目标记录（跨重启持久化）、`/help` 帮助；未知斜杠命令默认拦截并提示相近命令（`unknownCommand: passthrough` 改为透传给模型） |
 | 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_napcat_api`（14 个白名单 action）、`qq_group_history`（文件编辑工具 `code_safe_edit` 等已拆至独立插件 dsh-safe-edit，见下文「安全编辑」） |
 | 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计 |
 | 会话 | 每个 QQ 会话一个持久 Agent（session id 稳定派生），重启后自动 resume；按 `agentPreset`/`workspacePath` 挂载到 preset 与工作区；每轮结束 flush 落盘 |
@@ -165,7 +165,8 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `/model [provider/model]` | 查看或切换当前会话模型；`--default` 修改部署默认。无参输出两级序号列表：回复序号选 provider → 再回复序号选模型并切换当前会话 |
 | `/workspace [路径\|list]` | 查看或切换工作区；无参输出编号列表（标「← 当前」），回复 `/workspace <序号>` 即切换 |
 | `/preset [id]` | 查看当前/可用预设（无参编号列表，回复序号即选），或切换 preset（重建会话，新会话 header 记录） |
-| `/status` | 会话全景：chat/session/preset/model/cwd/出站模式/agent 状态 |
+| `/session [序号]` | 查看本会话可切回的历史会话（无参编号列表，含退休时间），回复序号切回：当前会话退休进列表、目标会话恢复其历史上下文（含 per-chat 设置），支持来回切换；列表跨重启保留（switchable-sessions.json，每 chat 上限 20 条） |
+| `/status` | 会话全景：chat/session/preset/model/cwd/出站模式/agent/可切回数 状态 |
 | `/retry` | 重跑上一条用户消息（上一轮出错后重试） |
 | `/id` | 只看 chat/session/cwd（排查用） |
 | `/ver` | 插件版本 + git commit |
@@ -177,6 +178,10 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 `/preset` 切换为进程内 per-chat 覆盖（跨 `/new` 保留）：下一条消息重建会话并以新 preset
 写入 header，重启后 resume 按记录恢复；`/mode`、`/goal` 的 per-chat 状态已持久化进映射文件（v0.4.0 起，跨重启
 保留），`/workspace` 的覆盖同样持久化；`/plan` 仍为进程内覆盖，重启回退到默认。
+`/session` 的可切回列表按 chat 持久化在媒体目录的 switchable-sessions.json（读写纪律与 retired-sessions.json
+一致：文件缺失=全新、损坏保留内存、原子写；每 chat 上限 20 条、去重、最新在前）。切换成功后目标会话解除退休
+标记，重启 resume 与空闲淘汰后的再激活都走常规路径找回它；切回目标 resume 失败时该 id 立即硬退休并移出列表，
+chat 回退到下一条消息新建会话，不会卡死。损坏（碰撞/恢复失败）退休的会话绝不进列表、不可切回。
 序号选择基于命令输出列表的快照，5 分钟内有效（过期提示重新查看）；纯数字参数仅在有对应有效列表时
 按序号解释，否则维持原参数语义。未知斜杠命令默认拦截并提示相近命令，配置 `unknownCommand: passthrough`
 可改为透传给模型。
@@ -245,7 +250,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 - 用户发来的图片/语音/视频在文本中标注为 `[图片]`/`[语音]`/`[视频]` 占位（路径不进入文本）；无可用看图工具时如实告知用户。
 - 群聊消息带 `[HH:MM 昵称(QQ)]` 前缀；受限用户消息带 `[受限用户:仅问答]` 前缀（仅回答，禁止文件/终端/配置操作）。
 - 本通道为 QQ，宿主无 Web 交互卡：禁止调用 `ask_user_question` / `exit_plan_mode`（确认卡仅 Web 可用，会阻塞对话），提问/确认走纯文本；宿主计划模式下输出纯文本计划并提示「/plan off 退出」。
-- 斜杠命令由插件拦截（14 个，仅管理员，`/help` 查看）；未知斜杠命令默认拦截并提示相近命令，配置 `unknownCommand: passthrough` 时透传给模型；非 `/纯单词` 开头的文本（如路径）仍正常交给模型。
+- 斜杠命令由插件拦截（15 个，仅管理员，`/help` 查看）；未知斜杠命令默认拦截并提示相近命令，配置 `unknownCommand: passthrough` 时透传给模型；非 `/纯单词` 开头的文本（如路径）仍正常交给模型。
 - 修改宿主文件走内置 read/edit（行级 hash 锚点、dsh-better-edit 自动 undo），勿用 write 整文件覆盖（清空 undo 历史）。
 
 ## 卸载

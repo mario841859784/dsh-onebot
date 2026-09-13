@@ -1,9 +1,10 @@
 /**
  * The chat↔session registry (M2-D1-PR3): one live ChatAgent per QQ chat with
  * the chats/bySession dual index, session-id minting and retirement
- * (brokenSessions + the durable retired-sessions.json record), the
- * chat-sessions.json mapping persistence (save + debounced flush + restart
- * resume), the per-chat settings that survive /new, and the shared
+ * (brokenSessions + the durable retired-sessions.json record), the per-chat
+ * switchable-session list (switchable-sessions.json, the /session switch-back
+ * history), the chat-sessions.json mapping persistence (save + debounced flush
+ * + restart resume), the per-chat settings that survive /new, and the shared
  * create/resume assembly (C2) behind ensureChat/loadMapping. Extracted from
  * bridge.ts — persistence formats, retirement semantics and assembly
  * behavior are unchanged; the bridge keeps same-name facades so the command
@@ -27,17 +28,36 @@ import { describeError } from './errors.js'
 const MAPPING_FILE = 'chat-sessions.json'
 /** The retired-session-id file name inside the media dir (append-only). */
 const RETIRED_FILE = 'retired-sessions.json'
+/** The per-chat switchable-session file name inside the media dir. */
+const SWITCHABLE_FILE = 'switchable-sessions.json'
+
+/** One switchable (retired-but-intact) session of a chat: /new, /workspace and
+ * /preset switches retire the live session with its history intact — /session
+ * can switch the chat back to it. Newest first, deduped, capped per chat. */
+export interface SwitchableSession {
+  id: string
+  retiredAt: number
+}
+
+/** Per-chat cap of the switchable list (hard-wired; no config surface). */
+const SWITCHABLE_CAP = 20
+
+/** The outcome of a /session switch attempt (the command layer phrases the
+ * user-facing reply from `reason`; `message` carries the resume error text). */
+export type SessionSwitchOutcome =
+  | { ok: true; sessionId: string }
+  | { ok: false; reason: 'busy' | 'not-switchable' | 'broken' | 'resume-failed'; message: string }
 
 /** R2: one pending serial-number selection snapshot — the numbered list a
- * bare /workspace|/model|/preset rendered, kept per chat so a following
- * `/cmd <序号>` picks an entry without re-listing. `payload` stores the exact
- * resolved value (workspace path / provider id / preset id; the model level-2
- * list stores the model id under `provider`). Single shared slot: a fresh
- * bare call of any kind overwrites it, other commands never touch it; expiry
- * is judged lazily at the next numeric reply (commands.ts
+ * bare /workspace|/model|/preset|/session rendered, kept per chat so a
+ * following `/cmd <序号>` picks an entry without re-listing. `payload` stores the exact
+ * resolved value (workspace path / provider id / preset id / switchable session
+ * id; the model level-2 list stores the model id under `provider`). Single
+ * shared slot: a fresh bare call of any kind overwrites it, other commands
+ * never touch it; expiry is judged lazily at the next numeric reply (commands.ts
  * PENDING_SELECTION_TTL_MS) — no timer, and the field is never persisted. */
 export interface PendingSelection {
-  kind: 'workspace' | 'model' | 'preset'
+  kind: 'workspace' | 'model' | 'preset' | 'session'
   /** /model only: 'providers' (level 1) or 'models' (level 2). */
   phase?: 'providers' | 'models'
   /** /model level 2: the provider the listed models belong to. */
@@ -203,10 +223,16 @@ export class ChatRegistry {
   readonly bySession = new Map<string, ChatId>()
   /** Per-chat settings (workspace/preset/mode/goal/ocr), lazy-created. */
   private readonly chatSettings = new Map<ChatId, ChatSettings>()
-  /** Session ids whose persisted logs are unusable; creates must avoid them. */
+  /** Session ids whose persisted logs are unusable (collision heals, failed
+   * resumes, create collisions); creates must avoid them. Deliberately kept
+   * apart from retiredSessionIds: /session's soft-retired (switchable) ids
+   * land in retiredSessionIds only, so they stay switch-back targets. */
   private readonly brokenSessions = new Set<string>()
-  /** Session ids retired across restarts (durable copy of brokenSessions). */
+  /** Session ids retired across restarts (durable copy in retired-sessions.json):
+   * both the broken ones and the soft-retired /session switchables. */
   retiredSessionIds = new Set<string>()
+  /** Per-chat switchable retired sessions (/session history), newest first. */
+  private switchableByChat = new Map<ChatId, SwitchableSession[]>()
   private mappingSaveTimer: ReturnType<typeof setTimeout> | undefined
   /** Resolves once the on-disk chat mapping has been loaded (wired by the bridge's start()). */
   mappingLoaded: Promise<void> = Promise.resolve()
@@ -676,7 +702,11 @@ export class ChatRegistry {
       const parsed = JSON.parse(content) as unknown
       if (Array.isArray(parsed)) {
         this.retiredSessionIds = new Set(parsed.filter((id): id is string => typeof id === 'string'))
-        for (const id of this.retiredSessionIds) this.brokenSessions.add(id)
+        // Not backfilled into brokenSessions: the durable file cannot tell a
+        // broken id from a soft-retired (/session switchable) one, and the
+        // blocked union below already keeps every file id out of the create
+        // paths. A genuinely broken id that is somehow targeted after a
+        // restart fails inside switchSession's resume and falls back safely.
         this.deps.log('debug', 'retired-sessions file has ' + this.retiredSessionIds.size + ' id(s)')
       } else {
         this.deps.log('warn', 'retired-sessions file is not a JSON array; ignoring')
@@ -699,6 +729,180 @@ export class ChatRegistry {
     } catch (error) {
       this.deps.log('warn', 'retired-sessions save failed: ' + describeError(error))
     }
+  }
+
+  // ---------------------------------------------------- switchable history
+
+  private switchablePath(): string {
+    return this.deps.config.mediaDir.endsWith('/') || this.deps.config.mediaDir.endsWith('\\')
+      ? this.deps.config.mediaDir + SWITCHABLE_FILE
+      : this.deps.config.mediaDir + '/' + SWITCHABLE_FILE
+  }
+
+  /** Load the per-chat switchable lists from disk (same discipline as
+   * loadRetired: only a missing file means "fresh start"; a read failure or
+   * corrupt JSON keeps the current in-memory lists so a later save never
+   * obliterates them). */
+  async loadSwitchable(): Promise<void> {
+    let content: string
+    try {
+      content = await readFile(this.switchablePath(), 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        this.deps.log('warn', 'switchable-sessions read failed; keeping the current lists: ' + describeError(error))
+      }
+      return
+    }
+    try {
+      const parsed = JSON.parse(content) as unknown
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const loaded = new Map<ChatId, SwitchableSession[]>()
+        for (const [chatId, list] of Object.entries(parsed as Record<string, unknown>)) {
+          if (!Array.isArray(list)) continue
+          const entries = list.filter((entry): entry is SwitchableSession =>
+            entry !== null && typeof entry === 'object' &&
+            typeof (entry as SwitchableSession).id === 'string' && typeof (entry as SwitchableSession).retiredAt === 'number')
+          if (entries.length > 0) loaded.set(chatId, entries.slice(0, SWITCHABLE_CAP))
+        }
+        this.switchableByChat = loaded
+        this.deps.log('debug', 'switchable-sessions file has ' + loaded.size + ' chat(s)')
+      } else {
+        this.deps.log('warn', 'switchable-sessions file is not a JSON object; ignoring')
+      }
+    } catch (error) {
+      // Corrupt JSON: keep the current in-memory lists (never replace them
+      // with an empty map) and warn so a future save does not drop history.
+      this.deps.log('warn', 'switchable-sessions file is unparsable; keeping the current lists: ' + describeError(error))
+    }
+  }
+
+  /** Atomic write of the switchable lists (temp + rename, like saveRetired). */
+  private async saveSwitchable(): Promise<void> {
+    try {
+      await mkdir(this.deps.config.mediaDir, { recursive: true })
+      const payload: Record<string, SwitchableSession[]> = {}
+      for (const [chatId, list] of this.switchableByChat) payload[chatId] = list
+      const tmpPath = this.switchablePath() + '.tmp'
+      await writeFile(tmpPath, JSON.stringify(payload, null, 2), 'utf8')
+      await rename(tmpPath, this.switchablePath())
+    } catch (error) {
+      this.deps.log('warn', 'switchable-sessions save failed: ' + describeError(error))
+    }
+  }
+
+  /** The chat's switchable retired sessions (a copy; newest first). */
+  switchableSessions(chatId: ChatId): SwitchableSession[] {
+    return [...(this.switchableByChat.get(chatId) ?? [])]
+  }
+
+  /** Record a just-soft-retired session as switchable for its chat: dedupe by
+   * id (a later re-retire refreshes retiredAt and moves it to the front),
+   * newest first, capped per chat. */
+  private recordSwitchable(chatId: ChatId, sessionId: string): void {
+    const rest = (this.switchableByChat.get(chatId) ?? []).filter(entry => entry.id !== sessionId)
+    this.switchableByChat.set(chatId, [{ id: sessionId, retiredAt: Date.now() }, ...rest].slice(0, SWITCHABLE_CAP))
+    void this.saveSwitchable()
+  }
+
+  private removeSwitchable(chatId: ChatId, sessionId: string): void {
+    const list = this.switchableByChat.get(chatId)
+    if (list === undefined) return
+    const next = list.filter(entry => entry.id !== sessionId)
+    if (next.length === 0) this.switchableByChat.delete(chatId)
+    else this.switchableByChat.set(chatId, next)
+    void this.saveSwitchable()
+  }
+
+  /** /session switch success: the target session is live again — lift the
+   * retired mark (in-memory plus the durable file) so the NORMAL resume paths
+   * (restart loadMapping, idle-evict re-activation) keep finding it. The
+   * create paths stay protected without the mark: hasPersistedLog catches the
+   * target's own log and the create-collision fallback covers the rest. */
+  private unRetireSession(id: string): void {
+    this.brokenSessions.delete(id)
+    this.retiredSessionIds.delete(id)
+    void this.saveRetired()
+  }
+
+  /**
+   * /session <序号>: switch a chat back to one of its switchable (soft-retired)
+   * sessions. Validation is per-chat (chat A's history is invisible to chat
+   * B) and refuses broken ids. With a live chat the current session is
+   * soft-retired into the list first (the retire half of resetChat — the
+   * settings carrier included — so a failed resume still rebuilds cleanly);
+   * with no live chat the switch is carried through evictedChats like
+   * noteWorkspaceOverride. On success the target is un-retired and leaves the
+   * list (it is the current session); on resume failure the target is
+   * hard-retired, dropped from the list, and the chat falls back to a fresh
+   * session on its next message — it never gets stuck.
+   */
+  async switchSession(chatId: ChatId, targetSessionId: string): Promise<SessionSwitchOutcome> {
+    const target = targetSessionId.trim()
+    if (!(this.switchableByChat.get(chatId) ?? []).some(entry => entry.id === target)) {
+      this.deps.log('warn', 'session switch rejected for ' + chatId + ': ' + target + ' is not in the chat switchable list')
+      return { ok: false, reason: 'not-switchable', message: '目标会话不在该 chat 的可切回列表中' }
+    }
+    if (this.brokenSessions.has(target)) {
+      this.deps.log('warn', 'session switch rejected for ' + chatId + ': ' + target + ' is broken')
+      return { ok: false, reason: 'broken', message: '目标会话已损坏' }
+    }
+    const chat = this.chats.get(chatId)
+    if (chat !== undefined && chat.busy) {
+      return { ok: false, reason: 'busy', message: '当前会话正在生成' }
+    }
+    if (chat !== undefined) {
+      // The retire half of resetChat: keep the settings carrier, then retire
+      // the live session as SOFT-retired (switchable, not broken) and record
+      // it so the user can switch back later.
+      this.snapshotRetainedSettings(chatId, chat.sessionId)
+      this.deps.onChatRemoved(chat)
+      this.clearInterimTimers(chat)
+      this.retiredSessionIds.add(chat.sessionId)
+      void this.saveRetired()
+      this.recordSwitchable(chatId, chat.sessionId)
+      this.chats.delete(chatId)
+      this.bySession.delete(chat.sessionId)
+      try {
+        await chat.dispose()
+      } catch (error) {
+        this.deps.log('warn', 'session switch dispose failed: ' + describeError(error))
+      }
+    } else {
+      // Chat not live (before its first message / after a failed resume):
+      // carry the switch through the evictedChats carrier exactly like
+      // noteWorkspaceOverride — saveMapping only writes chats/evictedChats,
+      // and the next message's createChat resumes the (un-retired) target
+      // from the carrier. On resume failure below the carrier points at the
+      // hard-retired target, which the evicted branch skips into a fresh
+      // create with the settings intact.
+      const settings = this.chatSettings.get(chatId)
+      const known = this.evictedChats.get(chatId)
+      this.evictedChats.set(chatId, {
+        session: target,
+        interimOverride: settings?.interimOverride ?? known?.interimOverride,
+        goal: settings?.goal ?? known?.goal,
+        workspacePath: settings?.workspacePath ?? known?.workspacePath,
+      })
+    }
+    try {
+      await this.resumeChat(chatId, target)
+    } catch (error) {
+      // The target's log is unusable: hard-retire it, drop it from the list
+      // and let the chat rebuild on a fresh session (never stuck).
+      this.retireSession(target)
+      this.removeSwitchable(chatId, target)
+      void this.saveMapping()
+      this.deps.log('warn', 'session switch resume failed for ' + chatId + ' -> ' + target + '; falling back to a fresh session: ' + describeError(error))
+      return { ok: false, reason: 'resume-failed', message: describeError(error) }
+    }
+    this.unRetireSession(target)
+    this.removeSwitchable(chatId, target)
+    // The live (or just-resumed) chat owns the mapping entry now; drop any
+    // stale carrier so it cannot shadow the fresh entry.
+    this.evictedChats.delete(chatId)
+    void this.saveMapping()
+    this.deps.log('info', 'session switch for ' + chatId + ' -> ' + target)
+    return { ok: true, sessionId: target }
   }
 
   /** T3-R1 (review closure): carry the chat's persisted settings across a
@@ -893,12 +1097,21 @@ export class ChatRegistry {
       this.snapshotRetainedSettings(chatId, chat.sessionId)
       this.deps.onChatRemoved(chat)
       this.clearInterimTimers(chat)
-      this.retireSession(chat.sessionId)
+      // SOFT retire (not brokenSessions): the old session's history is
+      // intact, and /session must keep it switchable — the durable retired
+      // record still keeps the id out of every create path (blocked union).
+      this.retiredSessionIds.add(chat.sessionId)
+      void this.saveRetired()
+      this.recordSwitchable(chatId, chat.sessionId)
       // The bare derived id is forever unsafe for this chat once its history
       // has moved to a suffixed id: its on-disk log (if any) would collide
       // with any future bare-id session. Retire it up front so a /new after a
       // restart — when only the retired file protects us — stays safe.
-      this.retireSession(sessionIdForChat(chatId))
+      // Skipped when it IS the current session (a first-generation /new): the
+      // soft retire above already covers it, and a hard retire would mark the
+      // chat's own first session broken and un-switchable for /session.
+      const bareId = sessionIdForChat(chatId)
+      if (bareId !== chat.sessionId) this.retireSession(bareId)
       this.chats.delete(chatId)
       this.bySession.delete(chat.sessionId)
       try {
