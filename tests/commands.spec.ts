@@ -10,7 +10,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { COMMANDS } from '../src/commands.js'
+import { COMMANDS, helpText } from '../src/commands.js'
 import { MediaStore } from '../src/media.js'
 import { makeCmdHarness } from './helpers/bridge-harness.js'
 
@@ -308,7 +308,7 @@ describe('commands', () => {
     await h.connection.stop()
   })
 
-  it('slash /permission relays the host listing, maps QQ aliases, and marks host errors (host forward like /plan)', async () => {
+  it('slash /permission renders the parsed Chinese menu, maps QQ aliases, and marks host errors (host forward like /plan)', async () => {
     const commands = { execute: vi.fn(async (_agent: unknown, line: string, signal: AbortSignal | undefined) => {
       if (signal === undefined) throw new Error("Cannot read properties of undefined (reading 'aborted')")
       if (line === '/permission') return { kind: 'success', text: 'current preset workspace-write (available: workspace-write, danger-full-access)' }
@@ -320,13 +320,17 @@ describe('commands', () => {
     h.sendText('你好')
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
 
-    // 1. Bare form: the host listing is relayed verbatim + the QQ shortcut hint.
+    // 1. Bare form: the host listing is parsed into the Chinese preset menu
+    //    (current + numbered available list + usage line), not a verbatim relay.
     h.sendText('/permission')
     await vi.waitFor(() => {
       expect(commands.execute).toHaveBeenCalledWith(expect.anything(), '/permission', expect.any(AbortSignal))
       const text = h.outbound.map(f => JSON.stringify(f.params)).join('\n')
-      expect(text).toContain('current preset workspace-write (available: workspace-write, danger-full-access)')
-      expect(text).toContain('/permission w')
+      expect(text).toContain('当前权限：workspace-write（工作区可写+需审批）')
+      expect(text).toContain('1. workspace-write（工作区可写+需审批） ← 当前')
+      expect(text).toContain('2. danger-full-access（全盘+免审批）')
+      expect(text).toContain('用法：/permission <序号|w|f|完整名> 切换，立即生效')
+      expect(text).not.toContain('current preset workspace-write')
     })
 
     // 2. Aliases resolve on the QQ side; the full preset name is what reaches
@@ -385,6 +389,50 @@ describe('commands', () => {
       expect(text).toContain('/permission w')
     })
 
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 60_000)
+
+  it('slash /permission bare form renders the Chinese menu (← 当前 + usage line); preset names outside the default two show 部署自定义, never a guess', async () => {
+    const commands = { execute: vi.fn(async (_agent: unknown, _line: string, signal: AbortSignal | undefined) => {
+      if (signal === undefined) throw new Error("Cannot read properties of undefined (reading 'aborted')")
+      return { kind: 'success', text: 'current preset team-strict (available: workspace-write, danger-full-access, team-strict)' }
+    }) }
+    const h = await makeCmdHarness({ commands })
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    h.sendText('/permission')
+    await vi.waitFor(() => {
+      const text = h.outbound.map(f => JSON.stringify(f.params)).join('\n')
+      expect(text).toContain('当前权限：team-strict（部署自定义）')
+      expect(text).toContain('1. workspace-write（工作区可写+需审批）')
+      expect(text).toContain('2. danger-full-access（全盘+免审批）')
+      expect(text).toContain('3. team-strict（部署自定义） ← 当前')
+      expect(text).toContain('用法：/permission <序号|w|f|完整名> 切换，立即生效')
+    })
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 60_000)
+
+  it('slash /permission falls back to the raw host relay + QQ hint when the reply shape changes (parse-failure guard, no crash)', async () => {
+    const commands = { execute: vi.fn(async (_agent: unknown, _line: string, signal: AbortSignal | undefined) => {
+      if (signal === undefined) throw new Error("Cannot read properties of undefined (reading 'aborted')")
+      return { kind: 'success', text: 'permission subsystem degraded: try again later' }
+    }) }
+    const h = await makeCmdHarness({ commands })
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    h.sendText('/permission')
+    await vi.waitFor(() => {
+      const text = h.outbound.map(f => JSON.stringify(f.params)).join('\n')
+      expect(text).toContain('permission subsystem degraded: try again later')
+      expect(text).toContain('/permission w')
+      expect(text).not.toContain('当前权限：')
+    })
+    // The fallback is a pure render of the single host reply — no extra calls.
+    expect((commands.execute as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1)
     h.client.close()
     await h.bridge.stop()
     await h.connection.stop()
@@ -584,24 +632,104 @@ describe('commands', () => {
     await h.connection.stop()
   }, 60_000)
 
-  it('command table registers exactly the 16 routed commands, one row each, and /help is generated from the table (D1-PR1)', () => {
-    // Row order = /help order; the router matches by name so ordering is
-    // routing-neutral. Adding a command is exactly one row here.
+  it('command table registers exactly the 16 routed commands, one row each, and /help renders the grouped card from the table (D1-PR1)', () => {
+    // Row order = the /help line order inside each group; the router matches
+    // by name so ordering is routing-neutral. Adding a command is exactly one
+    // row here (group + usage-style help) — /help picks it up for free.
     expect(COMMANDS.map(c => c.name)).toEqual(['new', 'stop', 'model', 'workspace', 'preset', 'session', 'status', 'retry', 'id', 'ver', 'ocr', 'mode', 'plan', 'permission', 'goal', 'help'])
     expect(COMMANDS).toHaveLength(16)
     expect(new Set(COMMANDS.map(c => c.name)).size).toBe(16)
     for (const c of COMMANDS) {
       expect(c.adminOnly).toBe(true)
       expect(c.help).not.toContain('\n')
+      expect(c.help.trim()).not.toBe('')
+      expect(c.group).toBeDefined()
     }
-    // Byte-identity gate: the table-rendered /help body equals the pre-split
-    // hardcoded text verbatim (the harness-level /help test above exercises
-    // the real outbound path); the R1 tail line (unknown-command intercept)
-    // and the /session and /permission rows are the intentional changes from the pre-split text.
-    const rendered = '可用命令：\n' + COMMANDS.map(c => '/' + c.name + ' ' + c.help).join('\n') + '\n\n未知命令默认拦截并提示相近命令；配置 unknownCommand: passthrough 可改为透传给模型。'
-    const preSplit = '可用命令：\n/new 开启新会话（清空上下文）\n/stop 停止当前生成\n/model [--default] <provider> <model> 查看或切换模型（--default 改部署默认）\n/workspace [路径|list] 查看或切换工作区\n/preset [id] 查看或切换 agent 预设\n/session [序号] 查看可切回历史会话或切回\n/status 会话全景状态\n/retry 重跑上一条\n/id 查看 session/chat id\n/ver 插件版本\n/ocr 识别最近一张图片\n/mode [interim|instant] 切换出站模式\n/plan [off|内容] 宿主计划模式（/plan off 退出）\n/permission [预设名|w|f] 切换宿主权限预设（w=工作区可写+需审批，f=全权+免审批；无参查看当前）\n/goal [目标|clear] 查看/设置目标\n/help 本帮助\n\n未知命令默认拦截并提示相近命令；配置 unknownCommand: passthrough 可改为透传给模型。'
-    expect(rendered).toBe(preSplit)
+    // Full-text snapshot gate: the grouped /help card, byte-exact (the
+    // harness-level /help test above exercises the real outbound path).
+    // Every routed command must appear exactly once in the card body.
+    const card = helpText()
+    expect(card).toBe([
+      '可用命令（仅管理员）：',
+      '▍会话',
+      '/new 开启新会话（清空上下文）',
+      '/workspace [路径|序号|list] 查看或切换工作区',
+      '/preset [id|序号] 查看/切换 agent 预设',
+      '/session [序号] 查看/切回历史会话',
+      '/permission [w|f|预设名|序号] 切换权限预设（w=工作区可写+需审批，f=全盘+免审批）',
+      '▍输出',
+      '/mode [interim|instant] 出站模式（合并卡片/逐条即时）',
+      '/plan [off|内容] 宿主计划模式',
+      '▍查询',
+      '/status 会话全景',
+      '/id 会话标识（session/chat）',
+      '/ver 插件版本',
+      '▍操作',
+      '/stop 停止当前生成',
+      '/retry 重跑上一条',
+      '/ocr 识别最近一张图片',
+      '▍其他',
+      '/model [--default] <provider> <model> 切换模型（--default 改部署默认；无参两级序号列表）',
+      '/goal [目标|clear] 目标记录',
+      '/help 本帮助',
+      '',
+      '未知命令默认拦截并提示相近命令；unknownCommand: passthrough 可改为透传给模型。',
+    ].join('\n'))
+    for (const c of COMMANDS) {
+      expect(card.split('\n').filter(l => l.startsWith('/' + c.name + ' '))).toHaveLength(1)
+    }
   })
+
+  it('command errors carry a how-to-fix usage/next-step line (usability audit)', async () => {
+    const resolve = vi.fn(async (id?: string) => {
+      throw new Error('unknown preset ' + id)
+    })
+    const h = await makeCmdHarness({
+      agentPresets: { defaultId: 'standard', resolve, mount: vi.fn() },
+    })
+    ;(h.bridge as unknown as { deps: { llmCatalog?: unknown } }).deps.llmCatalog = {
+      listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
+      listModels: async () => [{ provider: 'deepseek', id: 'deepseek-chat' }],
+    }
+    const notDir = join(h.mediaDir, 'not-a-dir.txt')
+    await writeFile(notDir, 'x')
+    const text = () => h.outbound.map(f => JSON.stringify(f.params)).join('\n')
+
+    // /retry with nothing to retry: reason + next step.
+    h.sendText('/retry')
+    await vi.waitFor(() => {
+      expect(text()).toContain('没有可重试的上一条消息')
+      expect(text()).toContain('先发送一条消息，之后才能 /retry')
+    })
+    // /mode invalid value: current effective mode + the legal values.
+    h.sendText('/mode blah')
+    await vi.waitFor(() => {
+      expect(text()).toContain('无法识别的出站模式：blah')
+      expect(text()).toContain('当前生效：interim（合并卡片）')
+      expect(text()).toContain('用法：/mode interim|instant')
+    })
+    // /workspace pointing at a file (not a directory): numbered-list pointer.
+    h.sendText('/workspace ' + notDir)
+    await vi.waitFor(() => {
+      expect(text()).toContain('❌ 不是目录：' + notDir)
+      expect(text()).toContain('发 /workspace 查看编号列表，或发 /workspace list 查看全部')
+    })
+    // /preset unknown id with no on-disk presets: still carries the usage line.
+    h.sendText('/preset nope')
+    await vi.waitFor(() => {
+      expect(text()).toContain('❌ 预设不存在：nope')
+      expect(text()).toContain('用法：/preset <id|序号> 切换')
+    })
+    // /model unknown model for the provider: available list + usage line.
+    h.sendText('/model deepseek no-such-model')
+    await vi.waitFor(() => {
+      expect(text()).toContain('没有模型 no-such-model')
+      expect(text()).toContain('用法：/model <provider> <model>')
+    })
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 60_000)
 
   it('unknown command with a close match suggests candidates and is consumed (R1)', async () => {
     const h = await makeCmdHarness()

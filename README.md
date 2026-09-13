@@ -162,9 +162,9 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 |---|---|
 | `/new` | 开启新会话（清空上下文，旧会话保留在磁盘） |
 | `/stop` | 停止当前生成 |
-| `/model [provider/model]` | 查看或切换当前会话模型；`--default` 修改部署默认。无参输出两级序号列表：回复序号选 provider → 再回复序号选模型并切换当前会话 |
-| `/workspace [路径\|list]` | 查看或切换工作区；无参输出编号列表（标「← 当前」），回复 `/workspace <序号>` 即切换 |
-| `/preset [id]` | 查看当前/可用预设（无参编号列表，回复序号即选），或切换 preset（重建会话，新会话 header 记录） |
+| `/model [--default] <provider> <model>` | 查看或切换当前会话模型；`--default` 修改部署默认。无参输出两级序号列表：回复序号选 provider → 再回复序号选模型并切换当前会话 |
+| `/workspace [路径\|序号\|list]` | 查看或切换工作区；无参输出编号列表（标「← 当前」），回复 `/workspace <序号>` 即切换；`/workspace list` 列出全部记录 |
+| `/preset [id\|序号]` | 查看当前/可用预设（无参编号列表，回复序号即选），或切换 preset（重建会话，新会话 header 记录） |
 | `/session [序号]` | 查看本会话可切回的历史会话（无参编号列表，含退休时间），回复序号切回：当前会话退休进列表、目标会话恢复其历史上下文（含 per-chat 设置），支持来回切换；列表跨重启保留（switchable-sessions.json，每 chat 上限 20 条） |
 | `/status` | 会话全景：chat/session/preset/model/cwd/出站模式/agent/可切回数 状态 |
 | `/retry` | 重跑上一条用户消息（上一轮出错后重试） |
@@ -173,8 +173,9 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `/ocr` | 识别本会话最近一张入站图片（NapCat ocr_image） |
 | `/mode [interim\|instant]` | 切换本会话出站模式（per-chat 覆盖，跨重启持久化） |
 | `/plan [off\|内容]` | 宿主计划模式（`/plan` 进入；`/plan off` 直接退出，无 Web 审批卡；`/plan <内容>` 进入并处理该内容） |
-| `/permission [预设名\|w\|f]` | 转发宿主权限 preset 切换（沙箱模式+审批策略，切换立即生效）：`w`/`ws`/`write`/`工作区`→workspace-write（工作区内可写+需审批）、`f`/`full`/`danger`/`全权`→danger-full-access（全盘读写+免审批）；完整预设名照原样转发（未知名由宿主报错并回显可用列表）；无参查看当前与可用列表，纯数字序号按 available 顺序（现场解析，不落快照） |
+| `/permission [w\|f\|预设名\|序号]` | 切换宿主权限 preset（沙箱模式+审批策略，切换立即生效）：`w`/`ws`/`write`/`工作区`→workspace-write（工作区内可写+需审批）、`f`/`full`/`danger`/`全权`→danger-full-access（全盘读写+免审批）；完整预设名照原样转发（未知名由宿主报错并回显可用列表）；无参渲染中文权限菜单（当前权限+可用预设编号列表+用法行，未知预设名标「部署自定义」；宿主回文格式变化时回退转发原文+快捷提示），纯数字序号按 available 顺序（现场解析，不落快照） |
 | `/goal [目标\|clear]` | 记录/更新本会话目标（每轮自动附带提醒，跨重启持久化） |
+| `/help` | 分组命令卡片（▍会话/输出/查询/操作/其他），每条带参数用法；报错提示均附用法或下一步动作 |
 
 `/preset` 切换为进程内 per-chat 覆盖（跨 `/new` 保留）：下一条消息重建会话并以新 preset
 写入 header，重启后 resume 按记录恢复；`/mode`、`/goal` 的 per-chat 状态已持久化进映射文件（v0.4.0 起，跨重启

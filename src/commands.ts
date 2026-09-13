@@ -101,41 +101,71 @@ export interface CommandDefinition {
   name: string
   /** Admin-only flag; every current command is gated at the router entry. */
   adminOnly: boolean
-  /** /help description shown after "/name " (exact pre-split wording). */
+  /** /help line shown after "/name ": the usage-argument form (when the
+   * command takes arguments) followed by the description, e.g.
+   * "[路径|序号|list] 查看或切换工作区" or plain "本帮助". */
   help: string
+  /** /help group header the row renders under (no ▍ prefix). Rows without
+   * one fall into 「其他」; a group outside the fixed card order still renders
+   * (appended), so a new row always shows up in the card. */
+  group?: string
   handler(ctx: CommandContext, chatId: ChatId, arg: string): Promise<void>
 }
 
-/** The routed command table. Row order = /help output order (the router
- * matches by name, so ordering is routing-neutral). */
+/** The routed command table. Row order = the /help line order inside each
+ * group (the router matches by name, so ordering is routing-neutral). */
 export const COMMANDS: CommandDefinition[] = [
-  { name: 'new', adminOnly: true, help: '开启新会话（清空上下文）', handler: async (ctx, chatId) => {
+  { name: 'new', adminOnly: true, group: '会话', help: '开启新会话（清空上下文）', handler: async (ctx, chatId) => {
     ctx.log('info', 'slash /new for ' + chatId)
     await ctx.resetChat(chatId)
   } },
-  { name: 'stop', adminOnly: true, help: '停止当前生成', handler: (ctx, chatId) => handleStopCommand(ctx, chatId) },
-  { name: 'model', adminOnly: true, help: '[--default] <provider> <model> 查看或切换模型（--default 改部署默认）', handler: (ctx, chatId, arg) => handleModelCommand(ctx, chatId, arg) },
-  { name: 'workspace', adminOnly: true, help: '[路径|list] 查看或切换工作区', handler: (ctx, chatId, arg) => handleWorkspaceCommand(ctx, chatId, arg) },
-  { name: 'preset', adminOnly: true, help: '[id] 查看或切换 agent 预设', handler: (ctx, chatId, arg) => handlePresetCommand(ctx, chatId, arg) },
-  { name: 'session', adminOnly: true, help: '[序号] 查看可切回历史会话或切回', handler: (ctx, chatId, arg) => handleSessionCommand(ctx, chatId, arg) },
-  { name: 'status', adminOnly: true, help: '会话全景状态', handler: (ctx, chatId) => handleStatusCommand(ctx, chatId) },
-  { name: 'retry', adminOnly: true, help: '重跑上一条', handler: (ctx, chatId) => handleRetryCommand(ctx, chatId) },
-  { name: 'id', adminOnly: true, help: '查看 session/chat id', handler: (ctx, chatId) => handleIdCommand(ctx, chatId) },
-  { name: 'ver', adminOnly: true, help: '插件版本', handler: (ctx, chatId) => handleVerCommand(ctx, chatId) },
-  { name: 'ocr', adminOnly: true, help: '识别最近一张图片', handler: (ctx, chatId) => handleOcrCommand(ctx, chatId) },
-  { name: 'mode', adminOnly: true, help: '[interim|instant] 切换出站模式', handler: (ctx, chatId, arg) => handleModeCommand(ctx, chatId, arg) },
-  { name: 'plan', adminOnly: true, help: '[off|内容] 宿主计划模式（/plan off 退出）', handler: (ctx, chatId, arg) => handlePlanCommand(ctx, chatId, arg) },
-  { name: 'permission', adminOnly: true, help: '[预设名|w|f] 切换宿主权限预设（w=工作区可写+需审批，f=全权+免审批；无参查看当前）', handler: (ctx, chatId, arg) => handlePermissionCommand(ctx, chatId, arg) },
-  { name: 'goal', adminOnly: true, help: '[目标|clear] 查看/设置目标', handler: (ctx, chatId, arg) => handleGoalCommand(ctx, chatId, arg) },
-  { name: 'help', adminOnly: true, help: '本帮助', handler: async (ctx, chatId) => {
+  { name: 'stop', adminOnly: true, group: '操作', help: '停止当前生成', handler: (ctx, chatId) => handleStopCommand(ctx, chatId) },
+  { name: 'model', adminOnly: true, group: '其他', help: '[--default] <provider> <model> 切换模型（--default 改部署默认；无参两级序号列表）', handler: (ctx, chatId, arg) => handleModelCommand(ctx, chatId, arg) },
+  { name: 'workspace', adminOnly: true, group: '会话', help: '[路径|序号|list] 查看或切换工作区', handler: (ctx, chatId, arg) => handleWorkspaceCommand(ctx, chatId, arg) },
+  { name: 'preset', adminOnly: true, group: '会话', help: '[id|序号] 查看/切换 agent 预设', handler: (ctx, chatId, arg) => handlePresetCommand(ctx, chatId, arg) },
+  { name: 'session', adminOnly: true, group: '会话', help: '[序号] 查看/切回历史会话', handler: (ctx, chatId, arg) => handleSessionCommand(ctx, chatId, arg) },
+  { name: 'status', adminOnly: true, group: '查询', help: '会话全景', handler: (ctx, chatId) => handleStatusCommand(ctx, chatId) },
+  { name: 'retry', adminOnly: true, group: '操作', help: '重跑上一条', handler: (ctx, chatId) => handleRetryCommand(ctx, chatId) },
+  { name: 'id', adminOnly: true, group: '查询', help: '会话标识（session/chat）', handler: (ctx, chatId) => handleIdCommand(ctx, chatId) },
+  { name: 'ver', adminOnly: true, group: '查询', help: '插件版本', handler: (ctx, chatId) => handleVerCommand(ctx, chatId) },
+  { name: 'ocr', adminOnly: true, group: '操作', help: '识别最近一张图片', handler: (ctx, chatId) => handleOcrCommand(ctx, chatId) },
+  { name: 'mode', adminOnly: true, group: '输出', help: '[interim|instant] 出站模式（合并卡片/逐条即时）', handler: (ctx, chatId, arg) => handleModeCommand(ctx, chatId, arg) },
+  { name: 'plan', adminOnly: true, group: '输出', help: '[off|内容] 宿主计划模式', handler: (ctx, chatId, arg) => handlePlanCommand(ctx, chatId, arg) },
+  { name: 'permission', adminOnly: true, group: '会话', help: '[w|f|预设名|序号] 切换权限预设（w=工作区可写+需审批，f=全盘+免审批）', handler: (ctx, chatId, arg) => handlePermissionCommand(ctx, chatId, arg) },
+  { name: 'goal', adminOnly: true, group: '其他', help: '[目标|clear] 目标记录', handler: (ctx, chatId, arg) => handleGoalCommand(ctx, chatId, arg) },
+  { name: 'help', adminOnly: true, group: '其他', help: '本帮助', handler: async (ctx, chatId) => {
     await ctx.sendToChat(chatId, helpText())
   } },
 ]
 
-/** /help body, generated from the table so a new registration stays a
- * one-row change; the R1 tail line documents the unknown-command behavior. */
-function helpText(): string {
-  return '可用命令：\n' + COMMANDS.map(c => '/' + c.name + ' ' + c.help).join('\n') + '\n\n未知命令默认拦截并提示相近命令；配置 unknownCommand: passthrough 可改为透传给模型。'
+/** /help group headers in card order; a row whose group is not listed here
+ * renders under an appended header (first-seen table order), so a new
+ * command row always shows up in the card. */
+const HELP_GROUP_ORDER = ['会话', '输出', '查询', '操作', '其他']
+
+/** /help body: grouped multi-line card generated from the table — adding a
+ * command stays a one-row change and its group header comes from the row
+ * (unlisted groups append). The R1 tail line documents the unknown-command
+ * behavior. Exported for the full-text snapshot gate in tests/commands.spec.ts. */
+export function helpText(): string {
+  const groups = new Map<string, CommandDefinition[]>()
+  for (const c of COMMANDS) {
+    const key = c.group ?? '其他'
+    const rows = groups.get(key)
+    if (rows === undefined) groups.set(key, [c])
+    else rows.push(c)
+  }
+  const order = [...groups.keys()].sort((a, b) => {
+    const ia = HELP_GROUP_ORDER.indexOf(a)
+    const ib = HELP_GROUP_ORDER.indexOf(b)
+    return (ia === -1 ? HELP_GROUP_ORDER.length : ia) - (ib === -1 ? HELP_GROUP_ORDER.length : ib)
+  })
+  const lines = ['可用命令（仅管理员）：']
+  for (const g of order) {
+    lines.push('▍' + g)
+    for (const c of groups.get(g)!) lines.push('/' + c.name + ' ' + c.help)
+  }
+  return lines.join('\n') + '\n\n未知命令默认拦截并提示相近命令；unknownCommand: passthrough 可改为透传给模型。'
 }
 
 /** Close command-name suggestions for an unknown /word: prefix matches first
@@ -265,12 +295,12 @@ async function resolveNumericSelection(
   if (pending === undefined || pending.kind !== kind) return undefined
   if (Date.now() - pending.createdAt > PENDING_SELECTION_TTL_MS) {
     ctx.setPendingSelection(chatId, undefined)
-    await ctx.sendToChat(chatId, `序号选择已过期，请重新执行 ${command} 查看。`)
+    await ctx.sendToChat(chatId, `❌ 序号选择已过期，请重新执行 ${command} 查看。`)
     return null
   }
   const item = pending.items[Number(arg.trim()) - 1]
   if (item === undefined) {
-    await ctx.sendToChat(chatId, `序号越界，请回复 ${command} 重新查看列表。`)
+    await ctx.sendToChat(chatId, `❌ 序号越界，请回复 ${command} 重新查看列表。`)
     return null
   }
   ctx.setPendingSelection(chatId, undefined)
@@ -341,7 +371,7 @@ async function handleModelCommand(ctx: CommandContext, chatId: ChatId, arg: stri
   const rest = toDefault ? arg.slice(first.length).trim() : arg
   const m = /^(\S+)[\s/]+(\S+)$/.exec(rest)
   if (m === null) {
-    await ctx.sendToChat(chatId, '用法：/model <provider> <model> 切换当前会话；/model --default <provider> <model> 修改部署默认')
+    await ctx.sendToChat(chatId, '❌ 参数不完整或无法识别。\n用法：/model <provider> <model> 切换当前会话；/model --default <provider> <model> 修改部署默认')
     return
   }
   const provider = m[1]
@@ -349,7 +379,7 @@ async function handleModelCommand(ctx: CommandContext, chatId: ChatId, arg: stri
   try {
     const models = (await ctx.llmCatalog?.listModels(provider)) ?? []
     if (models.length > 0 && !models.some(x => x.id === model)) {
-      await ctx.sendToChat(chatId, `❌ ${provider} 下没有模型 ${model}。可用：` + models.slice(0, 10).map(x => x.id).join(', '))
+      await ctx.sendToChat(chatId, `❌ ${provider} 下没有模型 ${model}。可用：` + models.slice(0, 10).map(x => x.id).join(', ') + '\n用法：/model <provider> <model> 切换；/model 查看序号列表')
       return
     }
   } catch (error) {
@@ -450,7 +480,7 @@ async function handleWorkspaceCommand(ctx: CommandContext, chatId: ChatId, arg: 
       await ctx.sendToChat(chatId, list.map(w => `${w.id}  ${w.path}（${w.sessionIds.length} 会话）`).join('\n'))
     } catch (error) {
       ctx.log('debug', 'workspace list failed: ' + String(error))
-      await ctx.sendToChat(chatId, '❌ 无法列出工作区。')
+      await ctx.sendToChat(chatId, '❌ 无法列出工作区。\n发 /workspace 查看当前工作目录。')
     }
     return
   }
@@ -463,7 +493,7 @@ async function handleWorkspaceCommand(ctx: CommandContext, chatId: ChatId, arg: 
     const path = await realpath(arg)
     const s = await stat(path)
     if (!s.isDirectory()) {
-      await ctx.sendToChat(chatId, `❌ 不是目录：${arg}`)
+      await ctx.sendToChat(chatId, `❌ 不是目录：${arg}\n发 /workspace 查看编号列表，或发 /workspace list 查看全部。`)
       return
     }
     const hadChat = ctx.hasChat(chatId)
@@ -477,7 +507,7 @@ async function handleWorkspaceCommand(ctx: CommandContext, chatId: ChatId, arg: 
     ctx.log('info', 'workspace switch for ' + chatId + ' -> ' + path)
   } catch (error) {
     ctx.log('debug', 'workspace switch failed: ' + String(error))
-    await ctx.sendToChat(chatId, `❌ 目录无效或不可访问：${arg}`)
+    await ctx.sendToChat(chatId, `❌ 目录无效或不可访问：${arg}\n发 /workspace 查看编号列表，或发 /workspace list 查看全部。`)
   }
 }
 
@@ -557,14 +587,15 @@ async function handleModeCommand(ctx: CommandContext, chatId: ChatId, arg: strin
     await ctx.sendToChat(chatId, '✅ 出站模式已切换为 instant（逐条即时）。下一条回复生效。')
     return
   }
-  await ctx.sendToChat(chatId, '用法：/mode interim|instant 切换；/mode 查看当前')
+  const eff = ctx.interimOverride(chatId) ?? ctx.config.interimMessages
+  await ctx.sendToChat(chatId, `❌ 无法识别的出站模式：${arg.trim()}\n当前生效：${eff ? 'interim（合并卡片）' : 'instant（逐条即时）'}\n用法：/mode interim|instant 切换；/mode 查看当前`)
 }
 
 /** /retry: re-feed the last user message into the agent. */
 async function handleRetryCommand(ctx: CommandContext, chatId: ChatId): Promise<void> {
   const chat = ctx.getChat(chatId)
   if (chat === undefined) {
-    await ctx.sendToChat(chatId, '没有可重试的上一条消息。')
+    await ctx.sendToChat(chatId, '没有可重试的上一条消息。\n先发送一条消息，之后才能 /retry。')
     return
   }
   if (chat.busy) {
@@ -573,7 +604,7 @@ async function handleRetryCommand(ctx: CommandContext, chatId: ChatId): Promise<
   }
   const text = chat.lastFollowup
   if (text === undefined || text === '') {
-    await ctx.sendToChat(chatId, '没有可重试的上一条消息。')
+    await ctx.sendToChat(chatId, '没有可重试的上一条消息。\n先发送一条消息，之后才能 /retry。')
     return
   }
   // Start a fresh reply cycle exactly like a new inbound turn.
@@ -604,7 +635,7 @@ async function handleOcrCommand(ctx: CommandContext, chatId: ChatId): Promise<vo
     b64 = await fileToBase64(path, ctx.config.maxImageBytes)
   } catch (error) {
     ctx.log('warn', 'ocr image read failed: ' + String(error))
-    await ctx.sendToChat(chatId, `❌ 读取图片失败：${describeError(error)}`)
+    await ctx.sendToChat(chatId, `❌ 读取图片失败：${describeError(error)}\n请重新发送图片后再 /ocr。`)
     return
   }
   let lines: string
@@ -614,7 +645,7 @@ async function handleOcrCommand(ctx: CommandContext, chatId: ChatId): Promise<vo
     lines = texts.join('\n')
   } catch (error) {
     ctx.log('warn', 'ocr_image failed: ' + String(error))
-    await ctx.sendToChat(chatId, `❌ OCR 失败：${describeError(error)}`)
+    await ctx.sendToChat(chatId, `❌ OCR 失败：${describeError(error)}\n请稍后重试，或重新发送图片后再 /ocr。`)
     return
   }
   if (lines.trim() === '') {
@@ -663,7 +694,7 @@ async function handlePresetCommand(ctx: CommandContext, chatId: ChatId, arg: str
     resolvedId = preset.id
   } catch (error) {
     ctx.log('debug', 'preset resolve failed: ' + String(error))
-    await ctx.sendToChat(chatId, '❌ 预设不存在：' + id + (listed.length > 0 ? '\n可用：' + listed.join(', ') : ''))
+    await ctx.sendToChat(chatId, '❌ 预设不存在：' + id + (listed.length > 0 ? '\n可用：' + listed.join(', ') : '\n（未枚举到可用预设列表）') + '\n用法：/preset <id|序号> 切换（重建会话）；发 /preset 查看当前与可用列表。')
     return
   }
   ctx.setPresetOverride(chatId, resolvedId)
@@ -723,7 +754,7 @@ async function handleSessionCommand(ctx: CommandContext, chatId: ChatId, arg: st
     return
   }
   if (outcome.reason === 'broken') {
-    await ctx.sendToChat(chatId, '❌ 该历史会话已损坏，无法切回。')
+    await ctx.sendToChat(chatId, '❌ 该历史会话已损坏，无法切回。\n发 /session 查看其他可切回会话。')
     return
   }
   await ctx.sendToChat(chatId, '❌ 切回历史会话失败：' + outcome.message + '\n已回退：下一条消息将开启全新会话，原会话仍保留在 /session 列表中。')
@@ -763,7 +794,7 @@ async function handlePlanCommand(ctx: CommandContext, chatId: ChatId, arg: strin
     ctx.log('info', 'host plan command for ' + chatId + ': ' + line)
   } catch (error) {
     ctx.log('warn', 'host plan command failed: ' + String(error))
-    await ctx.sendToChat(chatId, '❌ 计划模式切换失败：' + describeError(error))
+    await ctx.sendToChat(chatId, '❌ 计划模式切换失败：' + describeError(error) + '\n可稍后重试；发 /plan 查看当前计划模式状态。')
   }
 }
 
@@ -783,17 +814,19 @@ const PERMISSION_PRESET_ALIASES: Record<string, string> = {
   全权: 'danger-full-access',
 }
 
-/** QQ shortcut hint appended to the bare /permission relay (the host text
- * lists its own presets; these are the QQ-side shortcuts). */
-const PERMISSION_USAGE_HINT = '（QQ 快捷用法：/permission w 切工作区可写+需审批、/permission f 切全权+免审批；也支持完整预设名或序号）'
+/** QQ shortcut hint: the bare-form parse-failure fallback and the ❌-relay
+ * tail (the host lists its own presets; these are the QQ-side shortcuts). */
+const PERMISSION_USAGE_HINT = '（QQ 快捷用法：/permission w 切工作区可写+需审批、/permission f 切全盘+免审批；也支持完整预设名或序号）'
 
-/** /permission: show the current host permission preset (bare form) or
- * switch it (sandbox mode + approval policy, effective immediately in the
- * session). Same host-forwarding pattern as /plan. A pure number indexes the
- * available list the bare form renders, resolved live per invocation —
- * deliberately NO pending-selection snapshot: with two presets a stored
- * snapshot could only ever disagree with the host reply, so the bare
- * pre-flight is the single source of truth. */
+/** /permission: show the current host permission preset (the bare form
+ * renders the parsed Chinese menu: current + numbered available list + usage
+ * line; on host-reply format drift it falls back to the verbatim relay + QQ
+ * hint) or switch it (sandbox mode + approval policy, effective immediately
+ * in the session). Same host-forwarding pattern as /plan. A pure number
+ * indexes the available list the bare form parses, resolved live per
+ * invocation — deliberately NO pending-selection snapshot: with two presets
+ * a stored snapshot could only ever disagree with the host reply, so the
+ * bare pre-flight is the single source of truth. */
 async function handlePermissionCommand(ctx: CommandContext, chatId: ChatId, arg: string): Promise<void> {
   const chat = ctx.getChat(chatId)
   if (chat === undefined) {
@@ -824,19 +857,24 @@ async function handlePermissionCommand(ctx: CommandContext, chatId: ChatId, arg:
       return { ok: result.kind !== 'error', text: result.text ?? '' }
     } catch (error) {
       ctx.log('warn', 'host permission command failed: ' + String(error))
-      await ctx.sendToChat(chatId, '❌ 权限预设切换失败：' + describeError(error))
+      await ctx.sendToChat(chatId, '❌ 权限预设切换失败：' + describeError(error) + '\n可稍后重试；发 /permission 查看当前权限。')
       return null
     }
   }
   const relayMarked = async (result: { ok: boolean; text: string }): Promise<void> => {
-    await ctx.sendToChat(chatId, (result.ok ? '✅ ' : '❌ ') + result.text)
+    // ❌ relays keep the host text verbatim and append the QQ usage hint so
+    // the failure is actionable without a second round-trip.
+    await ctx.sendToChat(chatId, (result.ok ? '✅ ' : '❌ ') + result.text + (result.ok ? '' : '\n' + PERMISSION_USAGE_HINT))
   }
   const trimmed = arg.trim()
   if (trimmed === '') {
-    // Bare form: relay the host's 「current preset … (available: …)」 verbatim
-    // and append the QQ shortcut hint.
+    // Bare form: render the parsed host reply as a Chinese menu — current
+    // preset line, numbered available list (「← 当前」 marker + meaning label
+    // per preset) and the usage line. When the reply does not match the
+    // expected host shape, renderPermissionMenu falls back to the previous
+    // behavior (verbatim relay + QQ shortcut hint) instead of crashing.
     const bare = await executeHost('/permission')
-    if (bare !== null) await ctx.sendToChat(chatId, bare.text + '\n' + PERMISSION_USAGE_HINT)
+    if (bare !== null) await ctx.sendToChat(chatId, renderPermissionMenu(bare.text))
     return
   }
   if (/^\d+$/.test(trimmed)) {
@@ -871,6 +909,41 @@ function parseAvailablePresets(text: string): string[] {
   const m = /\(available: ([^)]*)\)/.exec(text)
   if (m === null) return []
   return m[1].split(',').map(s => s.trim()).filter(s => s !== '')
+}
+
+const PERMISSION_PRESET_LABELS: Record<string, string> = {
+  'workspace-write': '工作区可写+需审批',
+  'danger-full-access': '全盘+免审批',
+}
+
+/** The usage line that closes the bare-form menu. */
+const PERMISSION_USAGE = '用法：/permission <序号|w|f|完整名> 切换，立即生效'
+
+/** Parse the 「current preset X」 marker out of a host permission reply
+ * (undefined when the reply does not match the host's reply shape). */
+function parseCurrentPreset(text: string): string | undefined {
+  return /current preset ([^\s(]+)/.exec(text)?.[1]
+}
+
+/** /permission bare form: the host reply parsed into a Chinese menu —
+ * current preset line, numbered available list (「← 当前」 marker, meaning
+ * label per preset, 「部署自定义」 for names outside the default two, never a
+ * guess) and the usage line. Any parse failure (host reply format drift)
+ * falls back to the previous behavior — verbatim relay + QQ shortcut hint —
+ * and never throws. */
+function renderPermissionMenu(hostText: string): string {
+  const available = parseAvailablePresets(hostText)
+  const current = parseCurrentPreset(hostText)
+  if (available.length === 0 || current === undefined) {
+    return hostText + '\n' + PERMISSION_USAGE_HINT
+  }
+  const labelOf = (preset: string): string => PERMISSION_PRESET_LABELS[preset] ?? '部署自定义'
+  return [
+    '当前权限：' + current + '（' + labelOf(current) + '）',
+    '可用预设：',
+    ...available.map((p, i) => (i + 1) + '. ' + p + '（' + labelOf(p) + '）' + (p === current ? ' ← 当前' : '')),
+    PERMISSION_USAGE,
+  ].join('\n')
 }
 
 /** /goal: per-chat objective — recorded and reminded on each turn. */

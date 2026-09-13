@@ -95,13 +95,24 @@ export interface CommandDefinition {
     name: string;
     /** Admin-only flag; every current command is gated at the router entry. */
     adminOnly: boolean;
-    /** /help description shown after "/name " (exact pre-split wording). */
+    /** /help line shown after "/name ": the usage-argument form (when the
+     * command takes arguments) followed by the description, e.g.
+     * "[路径|序号|list] 查看或切换工作区" or plain "本帮助". */
     help: string;
+    /** /help group header the row renders under (no ▍ prefix). Rows without
+     * one fall into 「其他」; a group outside the fixed card order still renders
+     * (appended), so a new row always shows up in the card. */
+    group?: string;
     handler(ctx: CommandContext, chatId: ChatId, arg: string): Promise<void>;
 }
-/** The routed command table. Row order = /help output order (the router
- * matches by name, so ordering is routing-neutral). */
+/** The routed command table. Row order = the /help line order inside each
+ * group (the router matches by name, so ordering is routing-neutral). */
 export declare const COMMANDS: CommandDefinition[];
+/** /help body: grouped multi-line card generated from the table — adding a
+ * command stays a one-row change and its group header comes from the row
+ * (unlisted groups append). The R1 tail line documents the unknown-command
+ * behavior. Exported for the full-text snapshot gate in tests/commands.spec.ts. */
+export declare function helpText(): string;
 /**
  * Slash-command router. Commands are admin-only (the Hermes member
  * slash-command block) and are matched on the first word; a leading
