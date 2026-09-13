@@ -238,6 +238,16 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 全天 | **测试 306→321 全绿**（新增 tests/session-switch.spec.ts 15 用例：列表持久化/上限去重/损坏文件纪律、resetChat 软退休、broken 拒绝与跨 chat 隔离、在线来回切、resume 失败回退、碰撞 heal 与 create 碰撞绝不入列表、**e2e 钉死 /new→/session 1→下一条普通消息 agents.resume 收到原 session id 且 create 仅 1 次**、重启 loadMapping 恢复切换后目标、越界保留快照/非数字用法行、busy 拒绝、/status 计数）；commands.spec 命令表用例同步 14→15（含 /help 全文快照行）；npm test 321/321、npm run build 退出 0 |
 | 全天 | **文档回写**——README 能力表命令单元格、斜杠命令速查表（/session 行+/status 行更新）、模型平台说明「14 个→15 个」、/session 持久化与回退语义说明段；DEVLOG 本条目。遗留：src/prompt.ts 的模型平台提示词命令清单未列 /session（任务书范围外，建议后续同步，避免模型不知该命令）；M4 遗留清单 ④（幻影 bare id）可借 unRetire 机制一并治理，M5 后续候选 |
 
+### 2026-09-13（/permission 宿主权限切换转发，参数名简化）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **启动：/permission 命令**——动机：宿主 dsh-permission-presets 插件注册 name 'permission' 的命令（空参回 `current preset X (available: A, B)`、未知名回 `unknown preset "…" (available: …)`、命中即 apply 并回 `preset <name>`，sandbox/mode+approval/policy 事件落盘、切换立即生效），QQ 侧无入口。基线 321 测试全绿（m0-hardening @1cf79dc，工作树干净）。宿主 0.1.5-rc.1 的 dsh-commands lib 已出现 4 参 execute（submittedAttachments）且返回 `{commandId, result:{kind,text}}` 包装，但部署包未引用该签名——沿用本仓 /plan 实测口径：3 参转发 + BridgeDeps 扁平 `{kind?, text?}` 结果类型 |
+| 全天 | **实现**——commands.ts：/permission 一行入表（/plan 与 /goal 之间，宿主转发类命令相邻）；handlePermissionCommand 照抄 handlePlanCommand 转发纪律：先判 live chat（无则提示先发消息）、再判 commands 服务、`commands.execute(chat.agent as never, line, new AbortController().signal)`（永不中止 signal，QQ 发起的切换不被本侧取消打断）、闭包内重取 live chat 防切换间隙 agent 被退休、execute 返回 undefined 视为宿主未挂载权限预设插件并明示。QQ 侧别名映射 PERMISSION_PRESET_ALIASES（`w`/`ws`/`write`/`工作区`→workspace-write，`f`/`full`/`danger`/`全权`→danger-full-access，查找前 toLowerCase 故大小写不敏感）；非别名参数照原样转发=完整 preset 名，未知名由宿主报错并回显可用列表，插件加 ❌ 原样转告（命中加 ✅）；无参转发 bare 并把宿主回文转告 + 附 QQ 快捷用法提示 |
+| 全天 | **关键取舍：序号不接 PendingSelection 快照，改为现场解析（与 R2 机制偏离，任务书明示允许论证）**——纯数字 1/2 先执行一次 bare `/permission` 取宿主实时 `available` 列表（parseAvailablePresets 解析 `(available: A, B)`），命中即第二次执行 `/permission <名>`；不落快照的理由：仅两个 preset，且 presets 表可被部署用 cordis.patch.yml 覆盖，快照唯一可能的价值是省一次往返，却引入与宿主表不一致的陈旧状态面（R2 快照解决的是列表渲染成本高的问题，这里列表渲染成本≈0）。代价：序号切换多一次宿主命令执行（各追加 command/run+done 生命周期事件，无害）。越界或列表不可解析→回退用法提示并转告宿主原文。诚实记录边缘：若部署把 preset 短名恰好取作 `w`/`f` 等别名键，别名优先于同名字 preset |
+| 全天 | **测试 321→324 全绿**（新增 3 用例：①无参转发+宿主回文转告含快捷提示+别名映射全表 8 项逐一断言转发行与回告+未知名 ❌ 原文转告；②序号 2 现场解析=先 bare 后 `/permission danger-full-access` 且 ✅ 回告、序号 9 越界回退用法提示且宿主列表仍转告；③无 live chat 拒绝且 commands.execute 零调用）；commands.spec：/help 名单与非管理员拦截循环加 /permission，命令表用例 15→16（含 /help 全文快照行同步）；npm test 324/324、npm run build 退出 0 |
+| 全天 | **文档回写**——src/prompt.ts 模型平台说明命令清单 15→16（/plan 后插 /permission，模型知道该命令存在）；README 能力表命令单元格、斜杠命令速查表新增 /permission 行、序号语义段补「/permission 现场解析不落快照」例外、模型平台说明「15 个→16 个」；DEVLOG 本条目。注：任务书预期 README 有两处「N 个」计数，全仓实查仅一处（平台说明段），已同步。遗留：README.en.md 命令表自 M5 起未收 /session、本版亦未收 /permission（任务书范围外，双语表已滞后两轮），建议后续一次性补齐 |
+
 ---
 ## 3. 关键决策与坑（按价值排序）
 

@@ -27,6 +27,6 @@ export function buildPlatformPrompt(restrictedMembers: boolean): string {
   text += '- 本通道为 QQ，宿主无 Web 交互卡：**禁止调用 ask_user_question 与 exit_plan_mode**（它们的确认卡仅 Web 端可用，会阻塞对话）。需要提问/确认时直接纯文本提问并等待用户回复。\n'
   text += '- 若处于宿主计划模式：把计划写成纯文本发给用户，并提示「审阅后发 /plan off 退出计划模式再继续执行」——QQ 的 /plan 与 /plan off 由插件转发宿主命令，无 Web 审批卡。\n'
   text += '- 修改宿主文件：用内置 read/edit 工具小步修改（行级 hash 锚点，dsh-better-edit 自动记录 undo，可撤销），改后重读或跑检查确认；不要用 write 整文件覆盖（会清空 undo 历史）。\n'
-  text += '- 斜杠命令由插件拦截（/new /stop /model /workspace /preset /session /status /retry /id /ver /ocr /mode /plan /goal /help，仅管理员，发 /help 查看说明）；你收到其他以 / 开头的内容通常是用户想让模型处理的话题，正常回答即可。\n'
+  text += '- 斜杠命令由插件拦截（/new /stop /model /workspace /preset /session /status /retry /id /ver /ocr /mode /plan /permission /goal /help，仅管理员，发 /help 查看说明）；你收到其他以 / 开头的内容通常是用户想让模型处理的话题，正常回答即可。\n'
   return text
 }
