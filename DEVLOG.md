@@ -299,6 +299,17 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 时间 | 工作 |
 |---|---|
 | 全天 | **用户裁决方案 B（彻底删除 splitLength）收尾完成**——前序执行专家中断于 src/outbound.ts 语法半成品（TS1128：原 for-of 分段循环删除时少一个闭合花括号），本会话续完不回退：①补回 sendToChat 缺失的 1 个闭合花括号（该函数唯一改动）；②落地新行为：正文 ≤textImageThreshold 单条发送；>threshold 渲染 t2i 图卡；渲染失败、PNG 超 maxImageBytes 或 threshold≤0 → stripMarkdown 后整段单条 sendMsg（不分段）；多 message id 仅剩 [[qq_forward]] 场景；interim 同日方案 B 修复（completeInterim 仅首条带原文 + 小结卡先滤空再连续编号）原样保留；③tests：interim.spec.ts 104 字符用例改钉新行为（恰 1 次 send_msg=完整原文、turn/end 后恰 1 次 delete_msg 撤回该 live id、小结卡 maxImageBytes=500 文本回退 body 恰为 '1. '+原文，[[qq_forward]] 用例未动），outbound.spec.ts maxImageBytes=500 兜底用例改断单条全文消息（golden「恰一张 t2i 卡」用例不受影响零改动）；④README.md/README.en.md 删 splitLength 表行、textImageThreshold 行改两档描述（≤threshold 单条 → >threshold 图卡，渲染失败/超 outboundImageMaxBytes/禁卡片回退单条纯文本）；⑤兼容性说明：config zod 非 strict，旧用户配置里的 splitLength 被静默忽略；docs/dsh-onebot-architecture.html 为历史定格文档不在清理范围。**验证**——全量 vitest 345→338 全绿（减 7 为前序删除的 splitLongText 分段用例，本会话零新增用例、仅改写断言）；npx tsc --noEmit 退出码 0；./scripts/build.sh 重建入库，本次构建 lib 内容变化 7 文件：lib/index.js、lib/outbound.js、lib/split.js、lib/types/bridge.d.ts、lib/types/index.d.ts、lib/types/outbound.d.ts、lib/types/split.d.ts |
+### 2026-09-14（README 双语出站叙述清理：标点分段残留清零）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **b19fa5e（splitLength 拆除）文档收尾补漏**——配置表已两档化，但叙述区仍残留旧「标点分段」描述；全量 grep（分段/split/sentence/≤100/回退分段）定位 4 处并仅修过时描述：①README.md 架构图「出站：分段发送」→「出站：单条/t2i 卡片发送」（树形缩进与框线列位不变）；②README.md 功能表出站行「长消息按句号分段（默认 ≤100 字/条）…渲染失败自动回退分段」→「正文 ≤ `textImageThreshold`（默认 150）字符单条发送、超过阈值渲染 t2i 文字图卡片（渲染失败、PNG 超 `outboundImageMaxBytes` 或 `<=0` 禁用卡片时回退单条纯文本）」，与本表 textImageThreshold 行语义对齐；③README.en.md Outbound 行 "Long messages split on sentence boundaries (default ≤100 chars/message)…auto-fallback to split text" → 同两档英文表述（与②中英对齐）；④README.en.md 架构图 "split sending" → "single/t2i-card send"（全量扫描新发现的第 4 处，编排者列点外漏清）。理由：出站现行为两档、无任何分段，旧描述误导用户。范围说明：README.en.md "splits emoji surrogate pairs"（t2i 码点迭代代理对说明）非分段描述、未动；docs/ 历史定格文档与本日志既有内容未动；未执行 git add/commit/push |
+
+### 2026-09-14（README 双语配置表补齐 10 个缺失 schema 键）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **配置表补齐 10 键（用户裁决「全部补齐」）**——双语 README 配置表对照 src/index.ts zod schema 补入一直缺失的 10 个键（动手前复核：10 键在两 README grep 均 0 命中、schema 行内容逐行核实）：`ignoreSelf` 紧随 botQQ 行；`restrictedMemberPrefix` 紧随 groupPolicy 行（群聊权限策略簇）；`sendErrorNotice`+`sensitivePatterns` 紧随 interimRecall 行（出站行为簇：错误提示→出站敏感审计，审计说明含「留空用内置默认」语义）；STT 簇内顺序 Enabled→Engine→Model→Command→Args→TimeoutMs——`sttEngine` 插入 sttEnabled 与 sttModel 之间、`sttCommand`+`sttArgs` 插入 sttModel 与 sttTimeoutMs 之间（custom 引擎专参数后置，含 `{file}`/`{out}` 占位语义）；`tempTtlHours` 紧随 mediaDir 行；`maxVoiceBytes`+`maxFileBytes` 紧随 outboundImageMaxBytes 行（出站大小上限簇）。默认值实取（常量 grep 实算非照抄他行）：tempTtlHours=6、maxVoiceBytes=15728640（src/media.ts:17 VOICE_MAX_BYTES=15*1024*1024）、maxFileBytes=20971520（src/media.ts:18 MEDIA_MAX_BYTES=20*1024*1024）、sttEngine=auto、sttCommand=空串、sttArgs=[]，boolean 键（ignoreSelf/sendErrorNotice/restrictedMemberPrefix）均 true、sensitivePatterns=[]；README.en.md 对称插入同位、中英行语义严格对齐。收尾核验：10 键双语各 ≥1 命中且均落配置表内、双语配置表行数 39/39 差 0、git diff 范围仅 README.md/README.en.md/DEVLOG.md 三文件、未执行 git add/commit/push |
 ---
 ## 3. 关键决策与坑（按价值排序）
 

@@ -12,7 +12,7 @@
 用户(QQ) ←→ NapCat ←→ dsh-onebot 插件 ←→ dsh Agent（每个会话一个）
                         ├─ 反向 WS 服务器 / 正向 WS 客户端（自动重连）
                         ├─ 入站：CQ 解析、图片下载、语音转写(STT)、引用/合并转发展开
-                        └─ 出站：分段发送、Markdown 剥离、[[qq_forward]]、图片/语音/视频/文件工具
+                        └─ 出站：单条/t2i 卡片发送、Markdown 剥离、[[qq_forward]]、图片/语音/视频/文件工具
 ```
 
 ## 架构
@@ -29,7 +29,7 @@
 | 入站 | 私聊/群聊、段数组优先解析（CQ 字符串回退）、CQ 反转义、@/回复触发检测（fail-closed；回复仅认机器人自己的消息）、图片四路解析（url/base64/file/hash）、大图自动压缩（长边 ≤`inboundImageMaxPx`，GIF 不压）、文件段双通道接收（CDN 直链 get_private_file_url + get_file base64/url 回退）、表情 id→emoji/卡片/戳一戳段类型、引用消息自动取原文（get_msg）、合并转发自动展开（get_forward_msg） |
 | 语音 | ffmpeg 转 16kHz WAV + whisper 转写（openai-whisper / whisper.cpp / 自定义命令）；**非阻塞**：语音消息先以 [语音] 占位进入回合（不阻塞回复），转写完成后以「（语音转写：…）」补递（默认超时 60s）；转写失败/超时保留 [语音] 占位 |
 | 文字图 | t2i 卡片渲染器（@napi-rs/canvas）：标题/粗斜体/删除线/引用/列表/代码块/表格/行内 code 胶囊/彩色 emoji/中文标点禁则；与 Hermes 原版同款数值（800px/26px/禁则集合/右缘 790） |
-| 出站 | 长消息按句号分段（默认 ≤100 字/条）、**>150 字渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji，渲染失败自动回退分段）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、**实时中间消息**（interimMessages：每条中间文本立即发出、实时可见；各自在 `interimRecallMs`（默认 90s）后自动单独撤回；回合结束时先把整轮中间消息渲染成一张 **t2i 小结卡**、立即撤回仍在屏幕上的原文、再发送最终回复——不用回合末合并转发，避免长回合「原文超 2 分钟撤不回+转发卡重复」；`interimRecall: false` 时降级为只发不撤（无小结卡、不撤回））、**宿主「计划书/提问卡」自动中继**（模型调用 exit_plan_mode / ask_user_question 时把计划全文/问题选项发到 QQ）、正在输入提示（set_input_status，仅私聊） |
+| 出站 | 正文 ≤ `textImageThreshold`（默认 150）字符单条发送、**超过阈值渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji；渲染失败、PNG 超 `outboundImageMaxBytes` 或 `<=0` 禁用卡片时回退单条纯文本）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、**实时中间消息**（interimMessages：每条中间文本立即发出、实时可见；各自在 `interimRecallMs`（默认 90s）后自动单独撤回；回合结束时先把整轮中间消息渲染成一张 **t2i 小结卡**、立即撤回仍在屏幕上的原文、再发送最终回复——不用回合末合并转发，避免长回合「原文超 2 分钟撤不回+转发卡重复」；`interimRecall: false` 时降级为只发不撤（无小结卡、不撤回））、**宿主「计划书/提问卡」自动中继**（模型调用 exit_plan_mode / ask_user_question 时把计划全文/问题选项发到 QQ）、正在输入提示（set_input_status，仅私聊） |
 | 命令 | 斜杠命令（仅管理员）：`/new` 开新会话、`/stop` 停止生成、`/model` 查看或切换当前会话模型（`--default` 修改部署默认；无参输出两级序号列表，回复序号选 provider → 再回复序号选模型）、`/workspace` 查看或切换工作区（无参编号列表，回复序号即选）、`/preset` 查看或切换 agent 预设（无参编号列表，回复序号即选）、`/session` 查看可切回历史会话并按序号切回（`/new`、`/workspace`、`/preset` 切换下来的旧会话进列表，可来回切，历史上下文恢复）、`/status` 会话全景、`/retry` 重跑上一条、`/id` 会话标识、`/ver` 版本、`/ocr` 识别最近图片、`/mode` 切换出站模式（跨重启持久化）、`/plan` 计划模式、`/permission` 切换宿主权限预设（QQ 别名 `w`=工作区可写+需审批、`f`=全权+免审批；完整预设名照传，未知名由宿主报错并回显可用列表；无参查看当前与可用列表，序号按 available 顺序）、`/goal` 目标记录（跨重启持久化）、`/help` 帮助；未知斜杠命令默认拦截并提示相近命令（`unknownCommand: passthrough` 改为透传给模型） |
 | 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_napcat_api`（14 个白名单 action）、`qq_group_history`（文件编辑工具 `code_safe_edit` 等已拆至独立插件 dsh-safe-edit，见下文「安全编辑」） |
 | 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计 |
@@ -108,24 +108,34 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `reconnectMaxAttempts` | `100` | 自动重连放弃上限：连续失败达到该次数后停止重连，日志输出上限值与恢复指引；`0` = 无限重连（退避封顶 60s） |
 | `accessToken` | 空 | OneBot token；**reverse 模式必填**，留空插件拒绝启动（fail-closed）；forward 可为空 |
 | `botQQ` | 空 | 机器人 QQ（空=自动学习） |
+| `ignoreSelf` | `true` | 忽略机器人自己发出的消息（防自循环） |
 | `requireMention` | `true` | 群聊需 @ 或回复机器人的消息才响应（回复他人消息不触发；被回复消息无法判定时回落视为提及，fail-open） |
 | `rateLimitPerMinute` | `30` | 每会话每分钟普通消息上限（60s 滑动窗口）：超限跳过处理并限流提示（每窗口至多一条），命令不受限；`0` = 禁用 |
 | `unknownCommand` | `intercept` | 未知斜杠命令处置：`intercept`（默认）拦截并提示相近命令（前缀匹配优先，编辑距离 ≤2 兜底且仅输入长度 ≥4 时启用，至多 3 个候选；无候选提示发 `/help` 或去掉开头 `/` 重发）；`passthrough` 维持旧行为透传给模型。非 `/纯单词` 开头的文本（如路径 `/tmp/x`）不受影响 |
 | `dmPolicy` | `open` | 私聊策略：`open`(仅管理员)/`allowlist`(白名单)/`disabled` |
 | `groupPolicy` | `open` | 群聊策略：`open`(所有人)/`allowlist`/`disabled` |
+| `restrictedMemberPrefix` | `true` | 群聊非管理员消息注入 `[受限用户:仅问答]` 前缀（软限制） |
 | `adminUsers` | `[]` | 管理员 QQ；也可用 `ONEBOT_ALLOWED_USERS` 环境变量。**必须至少设置一个**，否则私聊（dmPolicy=open）与斜杠命令无人可用 |
 | `allowFrom` / `groupAllowFrom` | `[]` | 白名单用户/群 |
 | `interimMessages` | `true` | 工具调用之间的中间文本是否立即发送；`false` 只发最终回复 |
 | `interimRecall` | `true` | 中间消息撤回与回合末小结卡开关；`false` = 只发不撤（降级：无小结卡、不撤回，中间消息留在屏幕上） |
+| `sendErrorNotice` | `true` | 一轮运行出错时向用户发送 ⚠️ 错误提示 |
+| `sensitivePatterns` | `[]` | 出站敏感内容审计正则（内置 `rm -rf`/关机/删库/密钥 等模式；留空用内置默认） |
 | `sttEnabled` | `true` | 语音转写（需 ffmpeg + whisper CLI） |
+| `sttEngine` | `auto` | STT 引擎：`auto`(自动探测 whisper-cli/whisper/mlx_whisper)/`openai`/`whisper-cpp`/`custom` |
 | `sttModel` | `small` | whisper 模型 |
+| `sttCommand` | 空 | `custom` 引擎的程序名/路径 |
+| `sttArgs` | `[]` | `custom` 引擎参数模板，`{file}` 与 `{out}` 会被替换 |
 | `sttTimeoutMs` | `60000` | 语音转写超时（毫秒；v0.4.0 起默认 60s，此前 300s）：超时保留 [语音] 占位；`<=0` 回落内置 60s |
 | `textImageThreshold` | `150` | t2i 卡片阈值：正文长度 ≤ 该值单条发送；> 该值渲染为文字图卡片。渲染失败、PNG 超 `outboundImageMaxBytes` 或 `<=0` 禁用卡片时回退单条纯文本 |
 | `cardFooter` | `dsh` | 卡片页脚品牌（"Powered by <brand>"） |
 | `fontFiles` / `fontFamilies` | `[]` | t2i 字体文件/家族覆盖（Linux 部署必看：需安装 Noto CJK） |
 | `mediaDir` | `<dsh-home>/media/onebot` | 入站媒体/映射文件目录 |
+| `tempTtlHours` | `6` | 入站临时媒体文件保留时长（小时），到期自动清理 |
 | `inboundImageMaxPx` | `2048` | 入站图片长边上限（px）：超过则等比压缩后交给视觉模型（透明 PNG 保留、GIF 不压）；`<=0` 禁用（旧名 `imageMaxSize` deprecated，本版兼容读取） |
 | `outboundImageMaxBytes` | `8388608` | 出站图片大小上限（字节）：t2i 小结卡等出站图片超限时自动回退纯文本（旧名 `maxImageBytes` deprecated，本版兼容读取） |
+| `maxVoiceBytes` | `15728640` | 出站语音大小上限（字节） |
+| `maxFileBytes` | `20971520` | 出站视频/文件大小上限（字节） |
 | `inboundFileMaxBytes` | `20971520` | QQ 入站文件大小上限（字节）：超限文件拒收并提示（旧名 `maxInboundFileBytes` deprecated，本版兼容读取） |
 | `allowPrivateHosts` | `false` | 下载媒体 URL 时允许私网/环回地址（仅跳过私网检查，协议白名单与限长仍生效）；仅本机反代等可信场景开启，公网部署保持 `false` |
 | `agentPreset` | 空 | 会话挂载的 agent preset（留空=默认） |
