@@ -22,6 +22,7 @@ import type { RegistryDeps } from '../src/registry.js'
 import type { BridgeConfig } from '../src/bridge.js'
 import { MediaStore } from '../src/media.js'
 import { Transcriber } from '../src/stt.js'
+import { shortSessionId } from '../src/commands.js'
 
 import { makeCmdHarness, makeEvent, makeHarness } from './helpers/bridge-harness.js'
 
@@ -122,7 +123,7 @@ async function makeRestartBridge(mediaDir: string, opts?: { failResumeIds?: stri
     sessionPersistence: undefined,
     defaultModel: undefined,
     config: {
-      botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+      botQQ: '10002', ignoreSelf: false, requireMention: true,
       interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
       sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
       maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -396,8 +397,12 @@ describe('/session command (bridge harness)', () => {
     await vi.waitFor(() => {
       const text = h.outbound.map(f => JSON.stringify(f.params)).join('\n')
       expect(text).toContain('可切回历史会话：')
-      expect(text).toContain('1. ' + original)
-      expect(text).toContain('退休）')
+      // Preview degradation: this harness has no persistence service, so the
+      // item renders the no-content placeholder and omits the creation time;
+      // the id (≤20 chars) stays verbatim after the retire time.
+      expect(text).toContain('1. （无对话内容）（')
+      expect(text).toContain(' 退休 · ' + original + '）')
+      expect(text).not.toContain(' 建立 ')
       expect(text).toContain('回复 /session <序号> 切回')
     })
     const pending = registryOf(h).getSettings('private:10001').pendingSelection
@@ -439,7 +444,11 @@ describe('/session command (bridge harness)', () => {
     // form rendered (same R2 contract as /workspace|/model|/preset).
     h.sendText('/session')
     await vi.waitFor(() => {
-      expect(h.outbound.some(f => JSON.stringify(f.params).includes('1. ' + s1))).toBe(true)
+      // New item format: preview placeholder (this harness has no persistence
+      // service) + retire time + recognizable id.
+      const text = h.outbound.map(f => JSON.stringify(f.params)).join('\n')
+      expect(text).toContain('1. （无对话内容）（')
+      expect(text).toContain(' 退休 · ' + s1 + '）')
     })
     h.sendText('/session 1')
     await vi.waitFor(() => {
@@ -454,7 +463,10 @@ describe('/session command (bridge harness)', () => {
     // Round trip: /session back to s2.
     h.sendText('/session')
     await vi.waitFor(() => {
-      expect(h.outbound.some(f => JSON.stringify(f.params).includes('1. ' + s2))).toBe(true)
+      // New item format: the retired s2 shows as the preview placeholder +
+      // retire time + recognizable id.
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('1. （无对话内容）（'))).toBe(true)
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes(' 退休 · ' + shortSessionId(s2) + '）'))).toBe(true)
     })
     h.sendText('/session 1')
     await vi.waitFor(() => {

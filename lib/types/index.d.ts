@@ -47,6 +47,29 @@ type Context = CordisContext & {
                 };
             }[];
         }>;
+        /** /session list previews: open a stored session read-only (never takes
+         * write ownership), read the header + a small event prefix, then close. */
+        open(id: string, access: 'read'): Promise<{
+            header: {
+                createdAt?: number;
+            };
+            read(offset?: number, length?: number): Promise<{
+                events: readonly {
+                    type?: string;
+                    data?: {
+                        source?: {
+                            kind?: string;
+                            plugin?: string;
+                        };
+                        content?: readonly {
+                            type?: string;
+                            text?: string;
+                        }[];
+                    };
+                }[];
+            }>;
+            close(): Promise<void>;
+        }>;
     };
     workspaceRegistry: {
         resolveByPath(path: string): Promise<{
@@ -90,7 +113,6 @@ export interface Config {
     /** Forward-mode reconnect attempt limit; 0 = retry forever. */
     reconnectMaxAttempts: number;
     botQQ: string;
-    splitLength: number;
     requireMention: boolean;
     /** Unknown slash-command handling: intercept（默认）=拦截并给建议；passthrough=透传给模型。 */
     unknownCommand: 'intercept' | 'passthrough';

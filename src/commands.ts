@@ -8,6 +8,7 @@
  */
 import type { Agent, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import { SessionId as makeSessionId } from '@deepseek-ai/dsh-session'
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { readFile, readdir, realpath, stat } from 'node:fs/promises'
@@ -15,10 +16,10 @@ import { dirname, join } from 'node:path'
 
 import type { OneBotConnection } from './connection.js'
 import type { MediaRef } from './cq.js'
-import type { ChatId, UserRole } from './chat.js'
+import { RESTRICTED_PREFIX, type ChatId, type UserRole } from './chat.js'
 import type { PendingSelection, SessionSwitchOutcome, SwitchableSession } from './registry.js'
 import { fileToBase64 } from './media.js'
-import type { AgentDefaultModelLike, AgentPresetsLike, BridgeConfig, BridgeDeps, LlmCatalogPort, WorkspaceRegistryLike } from './bridge.js'
+import type { AgentDefaultModelLike, AgentPresetsLike, BridgeConfig, BridgeDeps, LlmCatalogPort, SessionPersistenceLike, SessionPreviewEvent, SessionReadHandleLike, WorkspaceRegistryLike } from './bridge.js'
 import { describeError } from './errors.js'
 
 /** Narrow view of a live chat the command handlers may read or mutate —
@@ -74,6 +75,10 @@ export interface CommandContext {
   switchableSessions(chatId: ChatId): SwitchableSession[]
   /** /session <序号>: switch the chat back to a listed session. */
   switchSession(chatId: ChatId, targetSessionId: string): Promise<SessionSwitchOutcome>
+  /** /session list previews: the persistence port each retired session's
+   * first user input is cold-read through (read handle + small event prefix).
+   * Absent = preview-less items. */
+  sessionPersistence: SessionPersistenceLike | undefined
   pendingSelection(chatId: ChatId): PendingSelection | undefined
   setPendingSelection(chatId: ChatId, value: PendingSelection | undefined): void
   /** Lazy media resolution for the /ocr pending image ref (C6a). */
@@ -704,11 +709,154 @@ async function handlePresetCommand(ctx: CommandContext, chatId: ChatId, arg: str
   ctx.log('info', 'preset switch for ' + chatId + ' -> ' + resolvedId)
   await ctx.sendToChat(chatId, `✅ 预设已切换：${resolvedId}\n下一条消息将重建会话并按新预设运行。`)
 }
+// ------------------------------------------------------------ /session previews
+
+/** /session list-item preview bound, in code points (emoji-safe — see
+ * truncatePreview). */
+export const SESSION_PREVIEW_MAX_CHARS = 40
+
+/** How many leading events of a stored log the preview cold-reads. The first
+ * real user input of a session sits within the first handful of events
+ * (turn/start, the claimed user/message, the surface system message), so a
+ * bounded prefix read keeps a 20-item list cheap where a full inspect would
+ * decode the entire log per item. A log whose prefix holds no user/message
+ * at all degrades to 「（无对话内容）」 like an empty one. */
+const SESSION_PREVIEW_EVENT_PREFIX = 24
+
+/** Item text when the log carries no readable user input. */
+const PREVIEW_NO_CONTENT = '（无对话内容）'
+/** Item text when the stored log is missing, unreadable or corrupt — the
+ * degradation must never break the list or the switch-back flow. */
+const PREVIEW_UNREADABLE = '（内容不可读）'
+
+/** Whether a logged user-message source names a real queued user prompt (the
+ * message a turn claimed) rather than a synthetic agent.inject() context or a
+ * goal continuation round. Direct prompts carry kind 'user'; QQ chats
+ * attribute their own inbound messages to this plugin (platform-source
+ * logging), so plugin 'dsh-onebot' is the chat's real user input too. */
+export function isRealUserMessageSource(source: { kind?: string; plugin?: string } | undefined): boolean {
+  if (source === undefined || typeof source !== 'object') return false
+  if (source.kind === 'user') return true
+  return source.kind === 'plugin' && source.plugin === 'dsh-onebot'
+}
+
+/** Code-point-safe truncation (never splits a surrogate pair — the §3.1
+ * emoji lesson): at most `maxLength` code points, the last one '…' when cut. */
+export function truncatePreview(text: string, maxLength: number): string {
+  if (maxLength <= 0) return ''
+  const chars = Array.from(text)
+  if (chars.length <= maxLength) return text
+  return chars.slice(0, maxLength - 1).join('') + '…'
+}
+
+/** QQ inbound user messages reach the session wrapped in the
+ * <user_message> boundary (chat.ts wrapUserMessage), and inbound.ts may
+ * prepend trusted framework metadata OUTSIDE that boundary: the restricted
+ * member tag and the group prefix line ([HH:MM 昵称(QQ)][@我] —
+ * buildGroupMessagePrefix). Strip that metadata, then return the
+ * human-typed body between the opening tag's `>` and the LAST
+ * `</user_message>`. Anything that is not a complete wrapped message
+ * (different head, missing closer, empty body) comes back unchanged so the
+ * caller's existing preview path applies — an unwrap failure never empties
+ * the preview. */
+function unwrapUserMessageText(text: string): string {
+  let rest = text
+  if (rest.startsWith(RESTRICTED_PREFIX)) rest = rest.slice(RESTRICTED_PREFIX.length)
+  const groupPrefix = /^\[\d{2}:\d{2} .*?\(\d+\)\](?:\[@我\])? /.exec(rest)
+  if (groupPrefix !== null) rest = rest.slice(groupPrefix[0].length)
+  if (!rest.startsWith('<user_message ')) return text
+  const openEnd = rest.indexOf('>')
+  const closeStart = rest.lastIndexOf('</user_message>')
+  if (openEnd < 0 || closeStart < openEnd) return text
+  const body = rest.slice(openEnd + 1, closeStart)
+  return body.trim() === '' ? text : body
+}
+
+/** One-line preview text of one logged user message: every text block
+ * concatenated, whitespace runs (newlines included) collapsed so the result
+ * always stays single-line. Non-text blocks are ignored. A wrapped QQ
+ * inbound message contributes its unwrapped body (unwrapUserMessageText). */
+function userMessagePreviewText(data: unknown): string {
+  const content = (data as { content?: unknown } | null | undefined)?.content
+  if (!Array.isArray(content)) return ''
+  const parts: string[] = []
+  for (const block of content) {
+    if (block !== null && typeof block === 'object'
+      && (block as { type?: unknown }).type === 'text'
+      && typeof (block as { text?: unknown }).text === 'string') {
+      parts.push((block as { text: string }).text)
+    }
+  }
+  return unwrapUserMessageText(parts.join('')).replace(/\s+/g, ' ').trim()
+}
+
+/** The one-line preview of a session's event log (events in log order):
+ * the first REAL user input (queued user prompt — kind 'user', or this
+ * plugin's attributed QQ message) with non-empty text; when the log has
+ * none, the first user/message of ANY source with text (synthetic
+ * agent.inject context / goal continuation fallback); '' when the log
+ * carries no user input at all. */
+export function sessionPreviewFromEvents(events: readonly SessionPreviewEvent[], maxLength: number = SESSION_PREVIEW_MAX_CHARS): string {
+  let fallback = ''
+  for (const event of events) {
+    if (event === null || typeof event !== 'object' || event.type !== 'user/message') continue
+    const text = userMessagePreviewText(event.data)
+    if (text === '') continue
+    const source = (event.data as { source?: { kind?: string; plugin?: string } } | null | undefined)?.source
+    if (isRealUserMessageSource(source)) return truncatePreview(text, maxLength)
+    if (fallback === '') fallback = text
+  }
+  return fallback === '' ? '' : truncatePreview(fallback, maxLength)
+}
+
+/** Shorten a session id for the one-line list while keeping BOTH ends: every
+ * onebot id shares the `onebot-…` head, so head-only truncation (e.g. the
+ * first 12 characters) would render every entry of a chat identically — the
+ * unique tail must survive for the id to stay recognizable. */
+export function shortSessionId(id: string): string {
+  if (id.length <= 20) return id
+  return id.slice(0, 8) + '…' + id.slice(-8)
+}
+
+/** Cold-read one retired session's preview through the persistence port:
+ * open a 'read' handle (never takes write ownership, works beside a live
+ * writer), take the header's createdAt plus a small event prefix, then close
+ * the handle — always, even when the read failed (AsyncDisposable: a leaked
+ * handle pins backend resources). Returns undefined when the log is missing,
+ * unreadable or corrupt; the caller renders 「（内容不可读）」 and neither
+ * the rest of the list nor the switch-back flow is affected. */
+async function sessionPreviewFor(ctx: CommandContext, sessionId: string): Promise<{ createdAt: number | undefined; text: string } | undefined> {
+  const persistence = ctx.sessionPersistence
+  if (persistence === undefined) return { createdAt: undefined, text: '' }
+  let handle: SessionReadHandleLike | undefined
+  try {
+    handle = await persistence.open(makeSessionId(sessionId), 'read')
+    const prefix = await handle.read(0, SESSION_PREVIEW_EVENT_PREFIX)
+    const createdAt = typeof handle.header?.createdAt === 'number' && Number.isFinite(handle.header.createdAt) && handle.header.createdAt > 0
+      ? handle.header.createdAt
+      : undefined
+    return { createdAt, text: sessionPreviewFromEvents(prefix.events) }
+  } catch (error) {
+    ctx.log('warn', 'session preview read failed for ' + sessionId + ' (the list still renders): ' + describeError(error))
+    return undefined
+  } finally {
+    if (handle !== undefined) {
+      try {
+        await handle.close()
+      } catch (closeError) {
+        ctx.log('debug', 'session preview handle close failed for ' + sessionId + ': ' + describeError(closeError))
+      }
+    }
+  }
+}
 
 /** /session: list this chat's switchable retired sessions (the ones /new,
  * /workspace and /preset retired with intact history), or switch the chat back
- * to one by serial number. The numbered list is snapshotted (R2, kind
- * 'session') so a following `/session <序号>` picks without re-listing. */
+ * to one by serial number. Each list item carries a one-line content preview
+ * (the session's first real user input), the creation time and a truncated
+ * id, so the admin can recognize a session without switching back. The
+ * numbered list is snapshotted (R2, kind 'session') so a following
+ * `/session <序号>` picks without re-listing. */
 async function handleSessionCommand(ctx: CommandContext, chatId: ChatId, arg: string): Promise<void> {
   if (arg.trim() === '') {
     const list = ctx.switchableSessions(chatId)
@@ -717,7 +865,17 @@ async function handleSessionCommand(ctx: CommandContext, chatId: ChatId, arg: st
       await ctx.sendToChat(chatId, '当前 session：' + (current ?? '（未建立会话）') + '\n（该会话没有可切回的历史会话）\n用法：/session <序号> 切回；/new、/workspace、/preset 切换下来的旧会话会进入列表。')
       return
     }
-    let out = '当前 session：' + (current ?? '（未建立会话）') + '\n可切回历史会话：\n' + list.map((e, i) => `${i + 1}. ${e.id}（${formatRetiredAt(e.retiredAt)} 退休）`).join('\n')
+    // Each item carries a one-line content preview + creation time so the
+    // admin can recognize the session without switching back. Previews are
+    // fetched per item and any failure degrades that item only — the rest of
+    // the list and the switch-back snapshot (full ids as payloads) are untouched.
+    const lines = await Promise.all(list.map(async (entry, index) => {
+      const preview = await sessionPreviewFor(ctx, entry.id)
+      const text = preview === undefined ? PREVIEW_UNREADABLE : (preview.text !== '' ? preview.text : PREVIEW_NO_CONTENT)
+      const created = preview?.createdAt !== undefined ? formatTimestamp(preview.createdAt) + ' 建立 · ' : ''
+      return `${index + 1}. ${text}（${created}${formatTimestamp(entry.retiredAt)} 退休 · ${shortSessionId(entry.id)}）`
+    }))
+    let out = '当前 session：' + (current ?? '（未建立会话）') + '\n可切回历史会话：\n' + lines.join('\n')
     out += '\n回复 /session <序号> 切回（当前会话会进入列表，可来回切换）。'
     ctx.setPendingSelection(chatId, {
       kind: 'session',
@@ -760,8 +918,9 @@ async function handleSessionCommand(ctx: CommandContext, chatId: ChatId, arg: st
   await ctx.sendToChat(chatId, '❌ 切回历史会话失败：' + outcome.message + '\n已回退：下一条消息将开启全新会话，原会话仍保留在 /session 列表中。')
 }
 
-/** Render a retired-at timestamp as YYYY-MM-DD HH:mm (local time). */
-function formatRetiredAt(ts: number): string {
+/** Render an epoch-ms timestamp as YYYY-MM-DD HH:mm (local time) — the
+ * /session list's retire and creation times share the format. */
+function formatTimestamp(ts: number): string {
   const d = new Date(ts)
   const pad = (n: number): string => String(n).padStart(2, '0')
   return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes())

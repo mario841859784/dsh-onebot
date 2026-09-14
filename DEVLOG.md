@@ -267,6 +267,38 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 全天 | **测试 327→328 全绿**（新增 1 用例钉死本次事故：4 参转发形态——args[2] 为空数组、args[3] 为 AbortSignal、包裹结构正确解包转告（/plan 路径）；适配既有桩：/plan 与 /permission 菜单+别名用例的宿主桩改包裹返回（args 断言补 `[]`、别名命中断言改中文含义标签）、harness 默认桩镜像新宿主（4 参+attachments 数组性检查+包裹返回）、序号用例宿主桩保留旧扁平返回=旧宿主兼容转告回归、bare 菜单/格式漂移回退两用例桩签名同步；全仓 grep 确认 commands.execute 仅 /plan、/permission 两处调用点）；npm test 328/328、npm run build 退出 0（lib/commands.js、lib/types/*.d.ts 随签名同步） |
 | 全天 | **文档核对**——src/prompt.ts 与 README 的 /permission 描述均为命令面/别名/菜单语义，未涉及成功回文措辞，命令面没变，零改动；DEVLOG 本条目 |
 
+### 2026-09-14（/session 列表内容预览 + 建立时间）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **动机与目标**——/session 无参列表原本只显示 `${i+1}. ${id}（退休时间 退休）`，同 chat 的 id 共享 `onebot-…` 头、退休时间相近，管理员无法不切回就认出哪个是哪个会话。目标：每项增加一条「标题/内容预览」与会话建立时间，单行内同时给出预览+两个时间+可辨认 id；切回行为（R2 快照 kind 'session'、payload 完整 id）与失败降级语义不变 |
+| 全天 | **数据获取方案（open+read 前缀，弃 inspect 全量）**——扩展 bridge.ts 的 SessionPersistenceLike 端口：新增 `open(id,'read')` 返回窄化的 SessionReadHandleLike（header + read(offset,length) + close()，结构对齐 dsh-session-persistence 的 SessionHandle；'read' 不开写所有权、可与活跃写入并存）。预览冷读日志前 24 个事件（首个真实用户输入必落在前几个事件内），读完 finally close（AsyncDisposable：泄漏的 read handle 会钉住后端资源）；取 header.createdAt 为建立时间（非法值省略字段）。理由：一次 /session 最多渲染 20 项，inspect 全量会把每个会话的整个日志解码一遍（QQ 会话动辄数千事件），前缀读有界且轻量；index.ts 的 Context.sessionPersistence 声明同步补 open（方法签名语法，结构兼容宿主服务） |
+| 全天 | **预览提取规则**——按日志序扫描 user/message 事件：优先「真实排队用户输入」（source.kind 'user'，或 kind 'plugin' 且 plugin 'dsh-onebot'——本插件入站消息的平台署名即真实用户输入，runtime-context 快照/agent.inject 合成/goal 续跑均排除），取第一条带非空 text 的事件；无真实输入时回退任何来源的第一条 user/message（合成上下文/goal 轮）；提取全部 text 块拼接，\s+ 折叠为单空格保单行，按码点截断 ≤40 字（截断时 39 字+…，emoji 代理对不拆半，§3.1 教训）；无任何 user/message 显示「（无对话内容）」 |
+| 全天 | **渲染与降级**——列表项格式 `N. <预览≤40字>（<建立时间> 建立 · <退休时间> 退休 · <截短id>）`，建立时间取不到则省略该字段；id 截短采用前 8+…+后 8 字符（shortSessionId，≤20 字符原样）——任务书示例「前 12 字符」在同 chat 列表内所有条目完全相同（onebot- 头共享），失去可辨认性，故保留唯一后缀（偏差已记录）；20 项并行取预览，单项 open/read/close 任何失败仅该项降级「（内容不可读）」（warn 日志带 describeError，措辞对齐 recordedPresetFor），其余项与 R2 快照（payload 完整 id）不受影响；handle close 失败仅 debug 不上浮 |
+| 全天 | **测试 328→337 全绿**（新增 tests/session-preview.spec.ts 9 用例：text 块拼接/非文本块忽略/换行折叠、码点截断 40+emoji 不拆半+maxLength 0、source 优先级三例（kind user/插件署名/首条优先）、无真实输入回退合成源、无 text 真实输入跳过与无 user/message 空串、shortSessionId 双端保留与同 chat 唯一性、e2e 两项渲染+建立/退休时间+截短 id+payload 完整 id+句柄全部关闭、单项 open 抛错降级不连坐、read 抛错+close 抛错仍正常渲染且省略建立时间）；session-switch.spec 三处旧格式断言同步新格式；makeCmdHarness 增加 sessionPersistence 可选桩；git 因 dubious ownership 不可用（修复需写全局 git config，越权红线），工作树核验改用 mtime——今日改动均为本任务产出，09-13 晚间他人在途改动未触碰 |
+| 全天 | **版本 0.4.0→0.4.1 + 文档**——README 命令表 /session 行与持久化段落补预览/建立时间/降级说明；DEVLOG 本条目；npm test 全绿、npm run build 退出 0 |
+
+### 2026-09-14（/session 预览剥壳：显示用户正文而非包裹头，v0.4.2）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **缺陷与修复**——真机实证 /session 列表预览显示 `<user_message qq="…" nickname="…` 包裹头而非用户正文：QQ 入站文本经 wrapUserMessage 边界包裹入 session（群聊 inbound.ts 还把 `[受限用户:仅问答] ` 与 `[HH:MM 昵称(QQ)][@我] ` 可信前缀拼在边界外），预览直接拼接 text 块未剥壳。commands.ts 新增 unwrapUserMessageText（在 text 块拼接后、\s+ 折叠与 ≤40 码点截断前执行）：先剥边界外可信前缀，再取首开标签 `>` 之后、最后一个 `</user_message>` 之前的正文；非包裹（严格开头匹配）/有开无闭/空正文一律原样返回走原路径（预览不变空不抛错），折叠与截断复用原逻辑 |
+| 全天 | **边界语义**——只剥拼接在边界外的框架元数据；包裹内用户自贴的同形前缀/标签是数据（src/prompt.ts），永不误删；（内容不可读）/（无对话内容）降级路径不受影响 |
+| 全天 | **测试 337→342 全绿**（session-preview.spec 新增 5 用例：包裹剥壳+剥壳后截断、群前缀/受限前缀+@我 变体与边界内假冒前缀不误删、非包裹与标签样文本原样、无闭合/空正文回退、跨 text 块拼接剥壳）；README 持久化段落补剥壳一句；版本 0.4.1→0.4.2；npm test 全绿、npm run build 退出 0 |
+
+### 2026-09-14（小结卡同文条目修复：中间消息拆多条 QQ 消息后回合末小结卡逐字重复）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **根因（排查报告《报告-dsh-onebot中间消息重复排查-2026-09-14.md》候选 1 定案，采用 §5.1 方案 B）**——src/interim.ts completeInterim 把 1 条占位条目按 sendToChat 返回的每个 QQ message id 原位展开为 N 条、每条都携带完整原文 entry.text，sendInterimSummary 再对 buffer 逐条编号如实渲染 → 拆段/[[qq_forward]] 场景下小结卡相邻 N 条逐字同文；默认 splitLength=100、textImageThreshold=150 下 101–150 字符的中间消息必现且恰 2 条（与真机截图第 5、6 条同文吻合） |
+| 全天 | **修复（2 行 diff）**——①completeInterim 多 id 展开时仅首个 id 的条目携带 entry.text，其余条目 text 置空串：loopBuffer 条目类型 `{ id; text; sentAt }` 与「每条恰 1 个 QQ id」不变，revokeInterim/recallLoopMessages/recallTimers 撤回链路零改动（'forward' 假 id 行为不变）；②sendInterimSummary 先过滤 text.trim()==='' 的条目再编号，编号按过滤后非空条目连续递增（原「先编号后 filter(line!=='')」滤不掉 `"N. "` 孤编号行，一并修复）。直播分段、撤回时机、/stop /retry 清理、inbound residue reset 语义全部不变；src/outbound.ts、src/split.ts、src/commands.ts、src/registry.ts、src/inbound.ts、package.json 未触碰 |
+| 全天 | **验证**——tests/interim.spec.ts 新增 2 回归用例（inline 桩 echo 回增序 message_id；maxImageBytes=500 迫使小结卡走 PNG 超限→sendToChat(body) 文本回退，从出站帧直接断言 body）：①「keeps one summary line when the pipeline splits one interim into two QQ messages」104 字符中间文本拆 2 段——直播 send_msg 恰 2 帧且拼接=原文（分段行为不变）、小结卡 body 恰为 '1. '+原文（原文恰 1 次、编号连续）、delete_msg 恰 2 次且 message_id=直播两 id；②「keeps one summary line when an interim carries a [[qq_forward]] block plus body」——小结卡 forward 节点恰 1 个、body='1. 正文'、delete_msg 恰 2 次（'forward' 假 id+正文 id 都撤回）。红绿：临时还原 completeInterim 单行→两用例均红（失败点=同文/重复节点断言），恢复后绿。全量 vitest 343→345 全绿、tsc --noEmit 0 错、./scripts/build.sh 重建 lib/interim.js 入库（lib/types/interim.d.ts 无 diff） |
+
+### 2026-09-14（splitLength 拆除收尾：方案 B——正文两档化，回退整段单条）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **用户裁决方案 B（彻底删除 splitLength）收尾完成**——前序执行专家中断于 src/outbound.ts 语法半成品（TS1128：原 for-of 分段循环删除时少一个闭合花括号），本会话续完不回退：①补回 sendToChat 缺失的 1 个闭合花括号（该函数唯一改动）；②落地新行为：正文 ≤textImageThreshold 单条发送；>threshold 渲染 t2i 图卡；渲染失败、PNG 超 maxImageBytes 或 threshold≤0 → stripMarkdown 后整段单条 sendMsg（不分段）；多 message id 仅剩 [[qq_forward]] 场景；interim 同日方案 B 修复（completeInterim 仅首条带原文 + 小结卡先滤空再连续编号）原样保留；③tests：interim.spec.ts 104 字符用例改钉新行为（恰 1 次 send_msg=完整原文、turn/end 后恰 1 次 delete_msg 撤回该 live id、小结卡 maxImageBytes=500 文本回退 body 恰为 '1. '+原文，[[qq_forward]] 用例未动），outbound.spec.ts maxImageBytes=500 兜底用例改断单条全文消息（golden「恰一张 t2i 卡」用例不受影响零改动）；④README.md/README.en.md 删 splitLength 表行、textImageThreshold 行改两档描述（≤threshold 单条 → >threshold 图卡，渲染失败/超 outboundImageMaxBytes/禁卡片回退单条纯文本）；⑤兼容性说明：config zod 非 strict，旧用户配置里的 splitLength 被静默忽略；docs/dsh-onebot-architecture.html 为历史定格文档不在清理范围。**验证**——全量 vitest 345→338 全绿（减 7 为前序删除的 splitLongText 分段用例，本会话零新增用例、仅改写断言）；npx tsc --noEmit 退出码 0；./scripts/build.sh 重建入库，本次构建 lib 内容变化 7 文件：lib/index.js、lib/outbound.js、lib/split.js、lib/types/bridge.d.ts、lib/types/index.d.ts、lib/types/outbound.d.ts、lib/types/split.d.ts |
 ---
 ## 3. 关键决策与坑（按价值排序）
 
@@ -488,6 +520,12 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 - **/plan 转发真机 bug（2026-08-19，已修复）**：§3.22 转发上线后 /plan 调用报 `Cannot read properties of undefined (reading 'aborted')`。根因：宿主 `commands.execute` 实现**无条件**读 `signal.aborted`（signal 实为必填契约），§3.22 转发时未传（类型声明为可选，掩盖了该契约）。修复：`handlePlanCommand` 调用处补传 `new AbortController().signal`（QQ 用户发起的 /plan 不受本插件取消逻辑中断）；`BridgeDeps`/`Context` 的 commands.execute 签名 signal 改必填并补 `result` 字段类型；测试同步（转发用例断言补 signal）。验证：tsc 0；vitest 全绿；构建入库（3a42743）
 - **架构图文档三连（2026-09-01，纯文档）**：88ad77c（Archify SVG 自包含化嵌入 README「## 架构」+ 交互式 HTML）→ 9cf1931（SVG 在 GitHub 管线不渲染 → 2x PNG 嵌入，SVG 补 xmlns 保留矢量版）→ 4a86a1a（README.en 英文版 EN SVG 全文翻译 + 重算标签遮罩 + EN PNG）。无代码改动
 - **待上线项状态收口**：§3.18 斜杠命令、§3.22 /plan 转发、§3.23 小结卡均随 8/18~8/19 构建与 8/26 重启在线上（§3.24 上线时 lib 即含全部）；对全部 onebot-private-* 会话日志解压核查：无 aborted 报错、无 recall delete_msg failed、无 turn/end error 残留；小结卡为 t2i 图片（文本不进会话日志）、撤回为插件侧动作，日志无直接痕迹，实测细节未单独记录
+### 3.26 t2i 小结卡标题栏 emoji 豆腐块（2026-09-14，已修复）
+- **症状**：回合末「📋 本轮中间记录」小结卡标题栏里 📋（U+1F4CB）渲染成白色空心豆腐块 □
+- **根因**：src/t2i/index.ts renderTextImage 顶部栏把整行 title 用单次 `card.drawRun(..., familyFor('cjk'), 52, white)` 画成单一 run，绕过逐字符分类——📋 在 Noto Sans CJK SC 里无字形即成豆腐块；正文 emoji 走 drawBodyRuns 一直正常
+- **修复**：标题绘制改走 `card.drawBodyRuns(title, 24, y, 52, COLORS.white)`（canvas.ts 现成逐字符分类路径：emoji 用 'Noto Color Emoji'、ZWJ/FE0F 零宽跳过、ascii+cjk 走 CJK 族，测量=绘制铁律不破坏）；顶部栏几何（fillRoundRect(10,10,780,72,8)）、x=24、字号 52、白色、垂直居中逻辑全不变，1 行 diff
+- **验证**：新增回归 tests/t2i-render.spec.ts「renders the top-bar title emoji in color (no white tofu)」：渲染 `title: '📋 本轮中间记录'` 后对顶部栏做像素判定——统计非白、非顶部栏蓝 #2196f3、非白蓝抗锯齿（蓝通道 ≥240）的墨水像素，无 emoji 对照渲染证明方法本身零假阳性；实测（本机 Noto Color Emoji）：修复前豆腐块 0 px、修后彩色 emoji 1409 px、对照 0 px，阈值取 >1000 / <200；修复前红、修复后绿。vitest 全量 343/343（改动前工作树基线 342 全绿 + 新增 1）、tsc 0 错、./scripts/build.sh 重建 lib 入库
+
 ---
 ## 4. 功能清单（当前状态）
 

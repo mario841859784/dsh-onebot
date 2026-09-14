@@ -35,7 +35,7 @@ describe('outbound pipeline', () => {
     await h.connection.stop()
   }, 60_000)
 
-  it('falls back to text chunks when the card exceeds maxImageBytes', async () => {
+  it('falls back to a single plain text message when the card exceeds maxImageBytes', async () => {
     const h = await makeHarness({ textImageThreshold: 10, maxImageBytes: 500 })
     h.sendText('hi')
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
@@ -46,11 +46,11 @@ describe('outbound pipeline', () => {
     }))
     h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
     await vi.waitFor(() => {
-      expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params.message).includes('分段文本'))).toBe(true)
+      expect(h.outbound.filter(f => f.action === 'send_msg')).toHaveLength(1)
     })
     const textFrame = h.outbound.find(f => f.action === 'send_msg')!
-    const segments = textFrame.params.message as Array<{ type: string }>
-    expect(segments.some(s => s.type === 'text')).toBe(true)
+    const segments = textFrame.params.message as Array<{ type: string; data: { text: string } }>
+    expect(segments.filter(s => s.type === 'text').map(s => s.data.text).join('')).toBe(longText)
     expect(h.outbound.some(f => JSON.stringify(f.params).includes('base64://'))).toBe(false)
     h.client.close()
     await h.bridge.stop()

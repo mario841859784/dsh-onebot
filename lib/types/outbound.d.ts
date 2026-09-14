@@ -1,6 +1,6 @@
 /**
  * Outbound delivery pipeline (M2-D1-PR2): the per-chat serial send chain,
- * sendToChat (sensitive audit → [[qq_forward]] blocks → t2i card / split
+ * sendToChat (sensitive audit → [[qq_forward]] blocks → t2i card / plain
  * text), raw OneBot segment sends, merged forwards, and the M1-B6 offline
  * resend queue (per-chat FIFO, cap 20, TTL 5 min, drained on reconnect).
  * Extracted verbatim from bridge.ts — send order, queueing, TTL/cap and
@@ -51,7 +51,7 @@ export interface OutboundContext {
     /** Bridge log line callback. */
     log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void;
     /** The only config fields the outbound pipeline reads. */
-    config: Pick<BridgeConfig, 'botQQ' | 'sensitivePatterns' | 'splitLength' | 'textImageThreshold' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies'>;
+    config: Pick<BridgeConfig, 'botQQ' | 'sensitivePatterns' | 'textImageThreshold' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies'>;
 }
 /**
  * The outbound pipeline. Owns the B6 pendingSends state; the bridge keeps

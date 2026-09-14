@@ -121,11 +121,10 @@ default). Common options:
 | `allowFrom` / `groupAllowFrom` | `[]` | allowlisted users/groups |
 | `interimMessages` | `true` | send interim text between tool calls immediately; `false` sends only the final reply |
 | `interimRecall` | `true` | interim recall + turn-end summary card switch; `false` = send-only (degraded: no summary card, no recall) |
-| `splitLength` | `100` | text-path split length: ≤ this value sent as one message, beyond it split on punctuation/spaces (customizable) |
 | `sttEnabled` | `true` | voice transcription (needs ffmpeg + whisper CLI) |
 | `sttModel` | `small` | whisper model |
 | `sttTimeoutMs` | `60000` | voice transcription timeout in ms (60s default since v0.4.0, previously 300s): on timeout the `[语音]` placeholder is kept; `<=0` falls back to the built-in 60s |
-| `textImageThreshold` | `150` | t2i card threshold: body length > this renders a text-image card; `<=0` disables the card path. Three tiers (defaults 100/150, both customizable): ≤`splitLength` single message → `splitLength`~`textImageThreshold` split by punctuation → >`textImageThreshold` text-image card |
+| `textImageThreshold` | `150` | t2i card threshold: body length ≤ this is sent as one message; > this renders a text-image card. Render failure, a PNG over `outboundImageMaxBytes`, or `<=0` (card path disabled) falls back to a single plain-text message |
 | `cardFooter` | `dsh` | card footer brand ("Powered by <brand>") |
 | `fontFiles` / `fontFamilies` | `[]` | t2i font file/family overrides (Linux deployments: install Noto CJK, see below) |
 | `mediaDir` | `<dsh-home>/media/onebot` | inbound media / mapping file directory |

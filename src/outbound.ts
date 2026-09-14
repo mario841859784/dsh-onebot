@@ -1,6 +1,6 @@
 /**
  * Outbound delivery pipeline (M2-D1-PR2): the per-chat serial send chain,
- * sendToChat (sensitive audit → [[qq_forward]] blocks → t2i card / split
+ * sendToChat (sensitive audit → [[qq_forward]] blocks → t2i card / plain
  * text), raw OneBot segment sends, merged forwards, and the M1-B6 offline
  * resend queue (per-chat FIFO, cap 20, TTL 5 min, drained on reconnect).
  * Extracted verbatim from bridge.ts — send order, queueing, TTL/cap and
@@ -13,7 +13,7 @@ import type { BridgeConfig } from './bridge.js'
 import type { ChatId } from './chat.js'
 import { splitChatId } from './chat.js'
 import { OneBotActionError, OneBotNotConnectedError } from './connection.js'
-import { extractForwardBlocks, scanSensitive, splitLongText, stripMarkdown } from './split.js'
+import { extractForwardBlocks, scanSensitive, stripMarkdown } from './split.js'
 import { renderTextImage } from './t2i/index.js'
 import { describeError } from './errors.js'
 
@@ -60,7 +60,7 @@ export interface OutboundContext {
   /** Bridge log line callback. */
   log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void
   /** The only config fields the outbound pipeline reads. */
-  config: Pick<BridgeConfig, 'botQQ' | 'sensitivePatterns' | 'splitLength' | 'textImageThreshold' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies'>
+  config: Pick<BridgeConfig, 'botQQ' | 'sensitivePatterns' | 'textImageThreshold' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies'>
 }
 
 /** Queued final replies older than this are dropped at drain time (M1-B6). */
@@ -138,11 +138,8 @@ export class OutboundPipeline {
       if (!sentCard) {
         const plain = stripMarkdown(body)
         if (plain !== '') {
-          const chunks = splitLongText(plain, this.ctx.config.splitLength)
-          for (const chunk of chunks) {
-            const id = await this.sendMsg(chatId, [{ type: 'text', data: { text: chunk } }], options)
-            if (id !== undefined) ids.push(id)
-          }
+          const id = await this.sendMsg(chatId, [{ type: 'text', data: { text: plain } }], options)
+          if (id !== undefined) ids.push(id)
         }
       }
       return ids

@@ -84,7 +84,7 @@ describe('ChatRegistry', () => {
       sessions: sessions as never,
       defaultModel: undefined,
       config: {
-        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
         interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -228,7 +228,7 @@ describe('ChatRegistry', () => {
       workspaceRegistry: workspaceRegistry as never,
       defaultModel: undefined,
       config: {
-        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
         interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -313,7 +313,7 @@ describe('ChatRegistry', () => {
       workspaceRegistry: undefined as never,
       defaultModel: undefined,
       config: {
-        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
         interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -388,7 +388,7 @@ describe('ChatRegistry', () => {
       workspaceRegistry: undefined as never,
       defaultModel: undefined,
       config: {
-        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
         interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -455,7 +455,7 @@ describe('ChatRegistry', () => {
       } as never,
       defaultModel: undefined,
       config: {
-        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
         interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -508,7 +508,7 @@ describe('ChatRegistry', () => {
       } as never,
       defaultModel: undefined,
       config: {
-        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
         interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -554,7 +554,7 @@ describe('ChatRegistry', () => {
       workspaceRegistry: undefined as never,
       defaultModel: undefined,
       config: {
-        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
         interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -616,7 +616,7 @@ describe('ChatRegistry', () => {
       workspaceRegistry: undefined as never,
       defaultModel: undefined,
       config: {
-        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
         interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -685,7 +685,7 @@ describe('ChatRegistry', () => {
       workspaceRegistry: workspaceRegistry as never,
       defaultModel: undefined,
       config: {
-        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
         interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -743,7 +743,7 @@ describe('ChatRegistry', () => {
       agentDefaultModel: undefined,
       defaultModel: undefined,
       config: {
-        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
         interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -784,7 +784,7 @@ describe('ChatRegistry', () => {
       agentDefaultModel: undefined,
       defaultModel: undefined,
       config: {
-        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
         interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir: bridge2Dir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -868,7 +868,7 @@ describe('ChatRegistry', () => {
       agentDefaultModel: undefined,
       defaultModel: () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
       config: {
-        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
         interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir: h.mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,

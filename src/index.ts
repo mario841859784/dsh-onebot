@@ -43,6 +43,13 @@ type Context = CordisContext & {
       meta: { agentPreset?: string; cwd?: string }
       events: readonly { type?: string; data?: { agentPreset?: string } }[]
     }>
+    /** /session list previews: open a stored session read-only (never takes
+     * write ownership), read the header + a small event prefix, then close. */
+    open(id: string, access: 'read'): Promise<{
+      header: { createdAt?: number }
+      read(offset?: number, length?: number): Promise<{ events: readonly { type?: string; data?: { source?: { kind?: string; plugin?: string }; content?: readonly { type?: string; text?: string }[] } }[] }>
+      close(): Promise<void>
+    }>
   }
   workspaceRegistry: {
     resolveByPath(path: string): Promise<{ id: string; path: string; sessionIds: readonly string[]; attachSession(sessionId: string): Promise<void> } | undefined>
@@ -67,7 +74,6 @@ export interface Config {
   /** Forward-mode reconnect attempt limit; 0 = retry forever. */
   reconnectMaxAttempts: number
   botQQ: string
-  splitLength: number
   requireMention: boolean
   /** Unknown slash-command handling: intercept（默认）=拦截并给建议；passthrough=透传给模型。 */
   unknownCommand: 'intercept' | 'passthrough'
@@ -152,8 +158,6 @@ export const Config: z<Config> = z.object({
     .description('forward 模式重连上限：连续失败达到该次数后放弃重连并打印恢复指引；0 = 无限重试（退避间隔封顶 60s）'),
   botQQ: z.string().default('')
     .description('机器人自身 QQ 号；留空则从 meta 事件自动学习'),
-  splitLength: z.number().default(100)
-    .description('长回复分段长度（按句号等标点切分）'),
   requireMention: z.boolean().default(true)
     .description('群聊是否仅在 @机器人（或回复其消息）时响应'),
   unknownCommand: z.union([z.const('intercept'), z.const('passthrough')]).default('intercept')
@@ -372,7 +376,6 @@ export function apply(ctx: Context, config: Config): void {
     config: {
       botQQ: config.botQQ,
       ignoreSelf: config.ignoreSelf,
-      splitLength: config.splitLength,
       requireMention: config.requireMention,
       unknownCommand: config.unknownCommand,
       interimMessages: config.interimMessages,

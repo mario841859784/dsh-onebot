@@ -117,11 +117,10 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `allowFrom` / `groupAllowFrom` | `[]` | 白名单用户/群 |
 | `interimMessages` | `true` | 工具调用之间的中间文本是否立即发送；`false` 只发最终回复 |
 | `interimRecall` | `true` | 中间消息撤回与回合末小结卡开关；`false` = 只发不撤（降级：无小结卡、不撤回，中间消息留在屏幕上） |
-| `splitLength` | `100` | 文本路径分段长度：≤该值单条发送，超出按标点/空格切分为多段（可自定义） |
 | `sttEnabled` | `true` | 语音转写（需 ffmpeg + whisper CLI） |
 | `sttModel` | `small` | whisper 模型 |
 | `sttTimeoutMs` | `60000` | 语音转写超时（毫秒；v0.4.0 起默认 60s，此前 300s）：超时保留 [语音] 占位；`<=0` 回落内置 60s |
-| `textImageThreshold` | `150` | t2i 卡片阈值：正文长度 > 该值渲染为文字图卡片；`<=0` 禁用卡片路径。分段三档（默认 100/150，均可自定义）：≤`splitLength` 单条 → `splitLength`~`textImageThreshold` 标点分段 → >`textImageThreshold` 文字图卡片 |
+| `textImageThreshold` | `150` | t2i 卡片阈值：正文长度 ≤ 该值单条发送；> 该值渲染为文字图卡片。渲染失败、PNG 超 `outboundImageMaxBytes` 或 `<=0` 禁用卡片时回退单条纯文本 |
 | `cardFooter` | `dsh` | 卡片页脚品牌（"Powered by <brand>"） |
 | `fontFiles` / `fontFamilies` | `[]` | t2i 字体文件/家族覆盖（Linux 部署必看：需安装 Noto CJK） |
 | `mediaDir` | `<dsh-home>/media/onebot` | 入站媒体/映射文件目录 |
@@ -165,7 +164,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `/model [--default] <provider> <model>` | 查看或切换当前会话模型；`--default` 修改部署默认。无参输出两级序号列表：回复序号选 provider → 再回复序号选模型并切换当前会话 |
 | `/workspace [路径\|序号\|list]` | 查看或切换工作区；无参输出编号列表（标「← 当前」），回复 `/workspace <序号>` 即切换；`/workspace list` 列出全部记录 |
 | `/preset [id\|序号]` | 查看当前/可用预设（无参编号列表，回复序号即选），或切换 preset（重建会话，新会话 header 记录） |
-| `/session [序号]` | 查看本会话可切回的历史会话（无参编号列表，含退休时间），回复序号切回：当前会话退休进列表、目标会话恢复其历史上下文（含 per-chat 设置），支持来回切换；列表跨重启保留（switchable-sessions.json，每 chat 上限 20 条） |
+| `/session [序号]` | 查看本会话可切回的历史会话（无参编号列表，每项含内容预览、建立时间与退休时间，id 截短显示；日志不可读的项显示「（内容不可读）」且不影响其余项），回复序号切回：当前会话退休进列表、目标会话恢复其历史上下文（含 per-chat 设置），支持来回切换；列表跨重启保留（switchable-sessions.json，每 chat 上限 20 条） |
 | `/status` | 会话全景：chat/session/preset/model/cwd/出站模式/agent/可切回数 状态 |
 | `/retry` | 重跑上一条用户消息（上一轮出错后重试） |
 | `/id` | 只看 chat/session/cwd（排查用） |
@@ -181,7 +180,12 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 写入 header，重启后 resume 按记录恢复；`/mode`、`/goal` 的 per-chat 状态已持久化进映射文件（v0.4.0 起，跨重启
 保留），`/workspace` 的覆盖同样持久化；`/plan` 仍为进程内覆盖，重启回退到默认。
 `/session` 的可切回列表按 chat 持久化在媒体目录的 switchable-sessions.json（读写纪律与 retired-sessions.json
-一致：文件缺失=全新、损坏保留内存、原子写；每 chat 上限 20 条、去重、最新在前）。切换成功后目标会话解除退休
+一致：文件缺失=全新、损坏保留内存、原子写；每 chat 上限 20 条、去重、最新在前）。列表每项渲染一条内容预览
+（该会话事件日志第一条真实用户输入：kind 'user' 或本插件署名的 QQ 消息优先，缺失时回退任何 user/message；
+提取全部 text 块拼接、剥去 QQ 入站的 <user_message> 包裹与拼接在边界外的可信前缀（[受限用户:仅问答] / [HH:MM 昵称(QQ)]，包裹不完整或空正文则原样回退）后换行折叠、按码点截断 ≤40 字，emoji 不拆半；找不到用户输入显示「（无对话内容）」）、
+建立时间（会话 header 的 createdAt，取不到则省略）、退休时间与截短 id（前 8+…+后 8 字符，保留两侧便于辨认）。
+预览经 sessionPersistence 的 read handle 冷读日志前 24 个事件取得（不开写所有权，读完即 close）；单会话日志
+缺失/损坏/读取失败只降级该项为「（内容不可读）」，其余项与切回功能不受影响。切换成功后目标会话解除退休
 标记，重启 resume 与空闲淘汰后的再激活都走常规路径找回它；切回目标 resume 失败时该 id 立即硬退休并移出列表，
 chat 回退到下一条消息新建会话，不会卡死。损坏（碰撞/恢复失败）退休的会话绝不进列表、不可切回。
 序号选择基于命令输出列表的快照，5 分钟内有效（过期提示重新查看）；纯数字参数仅在有对应有效列表时

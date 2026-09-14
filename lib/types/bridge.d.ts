@@ -20,7 +20,6 @@ import type { OutboundSegment, SendOptions } from './outbound.js';
 export interface BridgeConfig {
     botQQ: string;
     ignoreSelf: boolean;
-    splitLength: number;
     requireMention: boolean;
     /** Unknown slash-command handling (R1): 'intercept' (default) consumes the
      * message with a closest-match suggestion or a hint; 'passthrough' restores
@@ -70,6 +69,35 @@ export interface AgentPresetsLike {
         id: string;
     }>;
 }
+/** Structural slice of one logged session event the /session preview reads
+ * — only the preview's fields are named, and the host's SessionEvent (whose
+ * 'user/message' payload is a UserMessage) satisfies it. */
+export interface SessionPreviewEvent {
+    type?: string;
+    data?: {
+        source?: {
+            kind?: string;
+            plugin?: string;
+        };
+        content?: readonly {
+            type?: string;
+            text?: string;
+        }[];
+    };
+}
+/** Narrowed read handle over one stored session (dsh-session-persistence's
+ * `SessionHandle` from `open(id, 'read')`): the /session preview reads the
+ * immutable header plus a small event prefix and then MUST close the handle
+ * (AsyncDisposable — a leaked read handle pins backend resources). */
+export interface SessionReadHandleLike {
+    readonly header: {
+        createdAt?: number;
+    };
+    read(offset?: number, length?: number): Promise<{
+        events: readonly SessionPreviewEvent[];
+    }>;
+    close(): Promise<void>;
+}
 /** Durable session persistence (dsh-session-persistence): cold-read what a session recorded. */
 export interface SessionPersistenceLike {
     inspect(id: SessionId, signal?: AbortSignal): Promise<{
@@ -83,6 +111,9 @@ export interface SessionPersistenceLike {
             };
         }[];
     }>;
+    /** Open an existing stored session for reading: 'read' never takes write
+     * ownership and works while a live writer holds the session. */
+    open(id: SessionId, access: 'read'): Promise<SessionReadHandleLike>;
 }
 /** Workspace registry (dsh-workspace): durable workspace membership. */
 export interface WorkspaceLike {
@@ -153,7 +184,9 @@ export interface BridgeDeps {
             };
         }>;
     } | undefined;
-    /** Durable persistence for cold-reading a session's recorded preset; absent = config/default fallback. */
+    /** Durable persistence for cold reads: the recorded preset at resume and
+     * the /session list's per-item content previews; absent = config/default
+     * fallback and preview-less list items. */
     sessionPersistence: SessionPersistenceLike | undefined;
     workspaceRegistry: WorkspaceRegistryLike | undefined;
     agentDefaultModel: AgentDefaultModelLike | undefined;

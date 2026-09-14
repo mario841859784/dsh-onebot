@@ -41,7 +41,7 @@ describe('interim tracker', () => {
       sessions: sessions as never,
       defaultModel: undefined,
       config: {
-        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
         interimMessages: false, sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -118,7 +118,7 @@ describe('interim tracker', () => {
       } as never,
       defaultModel: undefined,
       config: {
-        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
         interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -232,7 +232,7 @@ describe('interim tracker', () => {
       } as never,
       defaultModel: undefined,
       config: {
-        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
         interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -330,7 +330,7 @@ describe('interim tracker', () => {
       } as never,
       defaultModel: undefined,
       config: {
-        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
         interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -412,7 +412,7 @@ describe('interim tracker', () => {
       } as never,
       defaultModel: undefined,
       config: {
-        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
         interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -540,6 +540,240 @@ describe('interim tracker', () => {
     await h.bridge.stop()
     await h.connection.stop()
   }, 30_000)
+
+  it('sends one 104-char interim as a single QQ message with one recall and a one-line, contiguously numbered summary card', async () => {
+    const ctx = new Context()
+    const sessionIds: string[] = []
+    const captured = { followups: [] as Array<{ text: string; sessionId: string }> }
+    const agents = makeFakeAgents(sessionIds, captured)
+    const sessions = { flush: vi.fn(async () => undefined) }
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
+    const connection = new OneBotConnection({
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
+    })
+    const bridge = new ChatBridge({
+      ctx, connection,
+      media: new MediaStore(join(mediaDir, 'media'), 6),
+      transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
+      agents: agents as never,
+      sessions: sessions as never,
+      agentPresets: { mount: vi.fn(async () => ({ id: 'standard' })) } as never,
+      workspaceRegistry: {
+        resolveByPath: vi.fn(async () => undefined),
+        create: vi.fn(async () => ({ attachSession: vi.fn(async () => undefined) })),
+      } as never,
+      defaultModel: undefined,
+      config: {
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
+        interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
+        sensitivePatterns: [], mediaDir, maxImageBytes: 500,
+        maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
+        textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
+        agentPreset: 'standard', workspacePath: mediaDir,
+      },
+      policy: {
+        dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
+        adminUsers: ['10001'], allowAllUsers: false, requireMention: true,
+      },
+      log: () => undefined,
+    })
+    connection.onMessage = event => {
+      void bridge.handleInbound(event)
+    }
+    bridge.start()
+    connection.start()
+    await vi.waitFor(() => expect(connection.address()).toBeDefined())
+    const address = connection.address()!
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
+    await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
+
+    const textOf = (frame: Record<string, unknown>): string =>
+      ((frame.params as { message?: Array<{ type?: string; data?: { text?: string } }> }).message ?? [])
+        .filter(seg => seg.type === 'text')
+        .map(seg => seg.data?.text ?? '')
+        .join('')
+    const outbound: Array<Record<string, unknown>> = []
+    const echoed: Array<{ action: unknown; id: string }> = []
+    let nextId = 1
+    client.on('message', data => {
+      const frame = JSON.parse(data.toString()) as Record<string, unknown>
+      outbound.push(frame)
+      if (typeof frame.echo === 'string') {
+        const id = String(nextId++)
+        echoed.push({ action: frame.action, id })
+        client.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: id }, echo: frame.echo }))
+      }
+    })
+
+    client.send(JSON.stringify({
+      post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002,
+      message: [{ type: 'text', data: { text: '开始长任务' } }],
+      raw_message: '开始长任务',
+      sender: { user_id: 10001, nickname: '小明' },
+    }))
+    await vi.waitFor(() => expect(captured.followups).toHaveLength(1))
+    const session = { id: sessionIds[0] }
+
+    // One tool-carrying interim of 104 chars: the whole body goes out as one
+    // QQ message (one id), and the pre-fix bug
+    // expanded the single buffer entry into two verbatim-identical summary
+    // lines. maxImageBytes=500 forces the summary card down the PNG-overflow
+    // text fallback so the rendered body is directly assertable.
+    const text = '第一步：已经读取了配置文件并确认了所有参数都符合预期。' +
+      '第二步：正在把改动应用到工作树并且没有遇到任何冲突。' +
+      '第三步：还剩最后的验证步骤就可以提交最终结论了。' +
+      '第四步：所有检查都已完成，等待下一个指令继续推进任务。'
+    ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 1, message: { role: 'assistant', id: 'im-split-1', content: [
+        { type: 'text', text },
+        { type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{}' },
+      ] },
+    }))
+    await vi.waitFor(() => {
+      expect(outbound.filter(f => f.action === 'send_msg')).toHaveLength(1)
+    })
+    // Live send: the full text goes out once, unsplit.
+    expect(outbound.filter(f => f.action === 'send_msg').map(textOf).join('')).toBe(text)
+
+    const at = outbound.length
+    ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    await vi.waitFor(() => {
+      expect(outbound.filter(f => f.action === 'delete_msg')).toHaveLength(1)
+    })
+
+    // Summary body: the full text appears exactly once, numbering stays
+    // contiguous (no orphan "2." line from the empty-text sibling entry).
+    const summary = outbound.slice(at).filter(f => f.action === 'send_msg').map(textOf).join('')
+    expect(summary).toBe('1. ' + text)
+    // Recall intact: the one QQ message of the interim is revoked.
+    const liveIds = echoed.filter(e => e.action === 'send_msg').slice(0, 1).map(e => e.id)
+    expect(outbound.filter(f => f.action === 'delete_msg').map(f => (f.params as { message_id: string }).message_id).sort())
+      .toEqual(liveIds.sort())
+
+    client.close()
+    await bridge.stop()
+    await connection.stop()
+  })
+
+  it('keeps one summary line when an interim carries a [[qq_forward]] block plus body (forward fake id still recalls)', async () => {
+    const ctx = new Context()
+    const sessionIds: string[] = []
+    const captured = { followups: [] as Array<{ text: string; sessionId: string }> }
+    const agents = makeFakeAgents(sessionIds, captured)
+    const sessions = { flush: vi.fn(async () => undefined) }
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
+    const connection = new OneBotConnection({
+      mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3001', accessToken: 'test-token', callTimeoutMs: 3_000,
+    })
+    const bridge = new ChatBridge({
+      ctx, connection,
+      media: new MediaStore(join(mediaDir, 'media'), 6),
+      transcriber: new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
+      agents: agents as never,
+      sessions: sessions as never,
+      agentPresets: { mount: vi.fn(async () => ({ id: 'standard' })) } as never,
+      workspaceRegistry: {
+        resolveByPath: vi.fn(async () => undefined),
+        create: vi.fn(async () => ({ attachSession: vi.fn(async () => undefined) })),
+      } as never,
+      defaultModel: undefined,
+      config: {
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
+        interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
+        sensitivePatterns: [], mediaDir, maxImageBytes: 500,
+        maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
+        textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
+        agentPreset: 'standard', workspacePath: mediaDir,
+      },
+      policy: {
+        dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
+        adminUsers: ['10001'], allowAllUsers: false, requireMention: true,
+      },
+      log: () => undefined,
+    })
+    connection.onMessage = event => {
+      void bridge.handleInbound(event)
+    }
+    bridge.start()
+    connection.start()
+    await vi.waitFor(() => expect(connection.address()).toBeDefined())
+    const address = connection.address()!
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', { headers: { Authorization: 'Bearer test-token' } })
+    await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
+
+    const textOf = (frame: Record<string, unknown>): string =>
+      ((frame.params as { message?: Array<{ type?: string; data?: { text?: string } }> }).message ?? [])
+        .filter(seg => seg.type === 'text')
+        .map(seg => seg.data?.text ?? '')
+        .join('')
+    const nodesOf = (frame: Record<string, unknown>): Array<{ name: string; content: string }> =>
+      ((frame.params as { messages?: Array<{ data?: { name?: string; content?: Array<{ data?: { text?: string } }> } }> }).messages ?? [])
+        .map(node => ({
+          name: node.data?.name ?? '',
+          content: (node.data?.content ?? []).map(seg => seg.data?.text ?? '').join(''),
+        }))
+    const outbound: Array<Record<string, unknown>> = []
+    const echoed: Array<{ action: unknown; id: string }> = []
+    let nextId = 1
+    client.on('message', data => {
+      const frame = JSON.parse(data.toString()) as Record<string, unknown>
+      outbound.push(frame)
+      if (typeof frame.echo === 'string') {
+        const id = String(nextId++)
+        echoed.push({ action: frame.action, id })
+        client.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: id }, echo: frame.echo }))
+      }
+    })
+
+    client.send(JSON.stringify({
+      post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002,
+      message: [{ type: 'text', data: { text: '开始长任务' } }],
+      raw_message: '开始长任务',
+      sender: { user_id: 10001, nickname: '小明' },
+    }))
+    await vi.waitFor(() => expect(captured.followups).toHaveLength(1))
+    const session = { id: sessionIds[0] }
+
+    // A forward block plus body: the pipeline returns the fake 'forward' id
+    // and the real body id, i.e. two buffer entries from one interim.
+    const text = '[[qq_forward]]\n资料卡片\n这是查到的资料内容。[[/qq_forward]]正文结论如下。'
+    ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 1, message: { role: 'assistant', id: 'im-fwd-1', content: [
+        { type: 'text', text },
+        { type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{}' },
+      ] },
+    }))
+    await vi.waitFor(() => {
+      expect(outbound.some(f => f.action === 'send_private_forward_msg')).toBe(true)
+      expect(outbound.filter(f => f.action === 'send_msg')).toHaveLength(1)
+    })
+    // Live behavior unchanged: one forward node + one body message.
+    expect(nodesOf(outbound.find(f => f.action === 'send_private_forward_msg')!))
+      .toEqual([{ name: '资料卡片', content: '这是查到的资料内容。' }])
+    expect(outbound.filter(f => f.action === 'send_msg').map(textOf)).toEqual(['正文结论如下。'])
+
+    const at = outbound.length
+    ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    await vi.waitFor(() => {
+      expect(outbound.filter(f => f.action === 'delete_msg')).toHaveLength(2)
+    })
+
+    // Summary body (PNG-overflow text fallback re-extracts the marker): the
+    // node content appears exactly once and the line numbering stays contiguous.
+    const postFwd = outbound.slice(at).filter(f => f.action === 'send_private_forward_msg')
+    expect(postFwd).toHaveLength(1)
+    expect(nodesOf(postFwd[0]!)).toEqual([{ name: '资料卡片', content: '这是查到的资料内容。' }])
+    const summary = outbound.slice(at).filter(f => f.action === 'send_msg').map(textOf).join('')
+    expect(summary).toBe('1. 正文结论如下。')
+    // Recall intact: the fake forward id and the real body id both revoked.
+    const bodyId = echoed.filter(e => e.action === 'send_msg').slice(0, 1).map(e => e.id)
+    expect(outbound.filter(f => f.action === 'delete_msg').map(f => (f.params as { message_id: string }).message_id).sort())
+      .toEqual([...bodyId, 'forward'].sort())
+
+    client.close()
+    await bridge.stop()
+    await connection.stop()
+  })
 })
 
 describe('interimRecall=false degrade switch (M3-D2b): send-only interims', () => {

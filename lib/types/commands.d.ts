@@ -10,9 +10,9 @@ import type { Agent, ModelSelectionRef } from '@deepseek-ai/dsh-agent';
 import type { SessionId } from '@deepseek-ai/dsh-session';
 import type { OneBotConnection } from './connection.js';
 import type { MediaRef } from './cq.js';
-import type { ChatId, UserRole } from './chat.js';
+import { type ChatId, type UserRole } from './chat.js';
 import type { PendingSelection, SessionSwitchOutcome, SwitchableSession } from './registry.js';
-import type { AgentDefaultModelLike, AgentPresetsLike, BridgeConfig, BridgeDeps, LlmCatalogPort, WorkspaceRegistryLike } from './bridge.js';
+import type { AgentDefaultModelLike, AgentPresetsLike, BridgeConfig, BridgeDeps, LlmCatalogPort, SessionPersistenceLike, SessionPreviewEvent, WorkspaceRegistryLike } from './bridge.js';
 /** Narrow view of a live chat the command handlers may read or mutate —
  * the structural subset of the bridge's internal ChatAgent that the
  * pre-split handlers actually touched. */
@@ -69,6 +69,10 @@ export interface CommandContext {
     switchableSessions(chatId: ChatId): SwitchableSession[];
     /** /session <序号>: switch the chat back to a listed session. */
     switchSession(chatId: ChatId, targetSessionId: string): Promise<SessionSwitchOutcome>;
+    /** /session list previews: the persistence port each retired session's
+     * first user input is cold-read through (read handle + small event prefix).
+     * Absent = preview-less items. */
+    sessionPersistence: SessionPersistenceLike | undefined;
     pendingSelection(chatId: ChatId): PendingSelection | undefined;
     setPendingSelection(chatId: ChatId, value: PendingSelection | undefined): void;
     /** Lazy media resolution for the /ocr pending image ref (C6a). */
@@ -130,3 +134,30 @@ export declare function helpText(): string;
  * @returns true when the message was consumed by a command.
  */
 export declare function tryHandleCommand(ctx: CommandContext, chatId: ChatId, text: string, userId: string): Promise<boolean>;
+/** /session list-item preview bound, in code points (emoji-safe — see
+ * truncatePreview). */
+export declare const SESSION_PREVIEW_MAX_CHARS = 40;
+/** Whether a logged user-message source names a real queued user prompt (the
+ * message a turn claimed) rather than a synthetic agent.inject() context or a
+ * goal continuation round. Direct prompts carry kind 'user'; QQ chats
+ * attribute their own inbound messages to this plugin (platform-source
+ * logging), so plugin 'dsh-onebot' is the chat's real user input too. */
+export declare function isRealUserMessageSource(source: {
+    kind?: string;
+    plugin?: string;
+} | undefined): boolean;
+/** Code-point-safe truncation (never splits a surrogate pair — the §3.1
+ * emoji lesson): at most `maxLength` code points, the last one '…' when cut. */
+export declare function truncatePreview(text: string, maxLength: number): string;
+/** The one-line preview of a session's event log (events in log order):
+ * the first REAL user input (queued user prompt — kind 'user', or this
+ * plugin's attributed QQ message) with non-empty text; when the log has
+ * none, the first user/message of ANY source with text (synthetic
+ * agent.inject context / goal continuation fallback); '' when the log
+ * carries no user input at all. */
+export declare function sessionPreviewFromEvents(events: readonly SessionPreviewEvent[], maxLength?: number): string;
+/** Shorten a session id for the one-line list while keeping BOTH ends: every
+ * onebot id shares the `onebot-…` head, so head-only truncation (e.g. the
+ * first 12 characters) would render every entry of a chat identically — the
+ * unique tail must survive for the id to stay recognizable. */
+export declare function shortSessionId(id: string): string;

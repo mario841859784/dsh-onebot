@@ -111,7 +111,7 @@ export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: st
     workspaceRegistry: undefined as never,
     defaultModel: undefined,
     config: {
-      botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+      botQQ: '10002', ignoreSelf: false, requireMention: true,
       interimMessages: opts?.interimMessages ?? true, sendErrorNotice: true, restrictedMemberPrefix: false,
       sensitivePatterns: [], mediaDir, maxImageBytes: opts?.maxImageBytes ?? 8 * 1024 * 1024,
       maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
@@ -170,6 +170,10 @@ export async function makeCmdHarness(opts?: {
   allowAllUsers?: boolean
   agentDefaultModel?: unknown
   workspaceRegistry?: unknown
+  /** /session list previews: a SessionPersistenceLike stub (inspect + open
+   * read handles). Absent = the bridge sees no persistence service and the
+   * list renders preview-less items. */
+  sessionPersistence?: unknown
 }) {
   const ctx = new Context()
   const sessionIds: string[] = []
@@ -199,11 +203,12 @@ export async function makeCmdHarness(opts?: {
         return { commandId: 'cmd-test', result: { kind: 'success', text: 'Plan mode on. Use /plan off to leave.' } }
       }),
     }) as never,
+    sessionPersistence: (opts?.sessionPersistence ?? undefined) as never,
     workspaceRegistry: (opts?.workspaceRegistry ?? undefined) as never,
     agentDefaultModel: (opts?.agentDefaultModel ?? undefined) as never,
     defaultModel: () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
     config: {
-      botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+      botQQ: '10002', ignoreSelf: false, requireMention: true,
       interimMessages: opts?.interimMessages ?? true,
       ...(opts?.unknownCommand !== undefined ? { unknownCommand: opts.unknownCommand } : {}),
       ...(opts?.interimRecallMs !== undefined ? { interimRecallMs: opts.interimRecallMs } : {}),

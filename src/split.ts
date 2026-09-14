@@ -1,72 +1,9 @@
 /**
- * Outbound text shaping: sentence-boundary splitting, Markdown stripping for
+ * Outbound text shaping: Markdown stripping for
  * QQ, [[qq_forward]] block parsing, and the sensitive-intent audit.
  * Ported from the Hermes onebot_utils.py split/markdown half.
  * @module dsh-onebot/split
  */
-
-/** Sentence-ending punctuation, verbatim from the original _SENTENCE_BOUNDS. */
-const SENTENCE_BOUNDS = new Set(['。', '！', '？', '!', '?', '；', ';', '\n'])
-
-/**
- * Split long text into chunks no longer than splitLength at sentence
- * boundaries (port of the original _split_reply).
- *
- * Each window is scanned BACKWARD for the last sentence boundary, so chunks
- * stay within the limit and end on punctuation. When a window contains no
- * punctuation the cut prefers the last space (keeps words/URLs intact);
- * only as a last resort is the chunk hard-cut at the limit. Boundaries
- * never split a surrogate pair (emoji stay whole).
- * @param text - the full reply text.
- * @param splitLength - maximum chunk length (<= 0 resets to 100).
- * @returns text chunks.
- */
-export function splitLongText(text: string, splitLength: number): string[] {
-  const limit = splitLength > 0 ? splitLength : 100
-  const content = text.trim()
-  if (content === '') return []
-  if (content.length <= limit) return [content]
-
-  const parts: string[] = []
-  let start = 0
-  const n = content.length
-  while (start < n) {
-    const end = Math.min(start + limit, n)
-    if (end >= n) {
-      parts.push(content.slice(start))
-      break
-    }
-    // Backward scan for the last sentence boundary inside the window.
-    let cut = -1
-    for (let i = end - 1; i >= start; i -= 1) {
-      if (SENTENCE_BOUNDS.has(content[i])) {
-        cut = i
-        break
-      }
-    }
-    if (cut < 0) {
-      // No punctuation: prefer the last space so words/URLs survive.
-      let space = -1
-      for (let i = end - 1; i > start; i -= 1) {
-        if (content[i] === ' ') {
-          space = i
-          break
-        }
-      }
-      cut = space > start ? space : end - 1
-    }
-    let cutEnd = cut + 1
-    // Never split a surrogate pair: if the boundary lands between the two
-    // halves (the char before the cut is a high surrogate), move it back.
-    const before = content.charCodeAt(cutEnd - 1)
-    if (before >= 0xD800 && before <= 0xDBFF) {
-      cutEnd -= 1
-    }
-    parts.push(content.slice(start, cutEnd).replace(/[ \t]+$/, ''))
-    start = cutEnd
-  }
-  return parts.filter(p => p.trim() !== '')
-}
 
 /**
  * Strip Markdown into QQ-friendly plain text. QQ does not render Markdown;

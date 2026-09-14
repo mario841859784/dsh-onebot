@@ -98,7 +98,7 @@ describe('mapping-file settings persistence (M3-D4b)', () => {
       agentPresets: undefined as never,
       defaultModel: undefined,
       config: {
-        botQQ: '10002', ignoreSelf: false, splitLength: 100, requireMention: true,
+        botQQ: '10002', ignoreSelf: false, requireMention: true,
         interimMessages: true, sendErrorNotice: true, restrictedMemberPrefix: false,
         sensitivePatterns: [], mediaDir: h.mediaDir, maxImageBytes: 8 * 1024 * 1024,
         maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,

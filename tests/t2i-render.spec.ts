@@ -37,6 +37,28 @@ async function scanRightEdge(png: Buffer): Promise<{ width: number; height: numb
   return { width: img.width, height: img.height, maxX, violations }
 }
 
+/**
+ * Count pixels in the top-bar strip that are neither white, nor top-bar blue
+ * (#2196f3), nor a white↔blue anti-aliasing blend (blue channel ≥ 240): i.e.
+ * color emoji bitmap ink. White title glyphs and their anti-aliasing count 0.
+ */
+async function countTopbarEmojiInk(png: Buffer): Promise<number> {
+  const img = await loadImage(png)
+  const canvas = createCanvas(img.width, img.height)
+  const ctx = canvas.getContext('2d')
+  ctx.drawImage(img, 0, 0)
+  const strip = ctx.getImageData(10, 10, img.width - 20, 72).data
+  let ink = 0
+  for (let i = 0; i < strip.length; i += 4) {
+    const r = strip[i], g = strip[i + 1], b = strip[i + 2]
+    if (r > 245 && g > 245 && b > 245) continue
+    if (Math.abs(r - 33) <= 30 && Math.abs(g - 150) <= 30 && Math.abs(b - 243) <= 30) continue
+    if (b >= 240) continue
+    ink += 1
+  }
+  return ink
+}
+
 /** The dev-doc pressure fixture: long title + text + quote + lists + 4-col table + code. */
 const PRESSURE = [
   '# 这是一个非常非常长的标题用来测试标题换行与右缘表现标题换行与右缘',
@@ -117,6 +139,19 @@ describeFont('renderTextImage', () => {
       if (r > 200 && g > 100 && g < 240 && b < 140) colored += 1
     }
     expect(colored).toBeGreaterThan(50)
+  }, 30_000)
+
+  it('renders the top-bar title emoji in color (no white tofu)', async () => {
+    // Pixel evidence only (OCR is no evidence): in the top-bar strip the only
+    // ink that is neither white nor top-bar blue is the color emoji bitmap —
+    // white CJK glyphs and their white↔blue anti-aliasing (blue ≥ 240) count
+    // 0, so a hollow white tofu also counts ~0. Thresholds calibrated on this
+    // machine: single-run tofu title ≈ 0 ink px, per-char color emoji ≈ 1409;
+    // the no-emoji control proves the method itself detects no ink.
+    const withEmoji = await countTopbarEmojiInk(renderTextImage('内容', { title: '📋 本轮中间记录' }))
+    const withoutEmoji = await countTopbarEmojiInk(renderTextImage('内容', { title: '本轮中间记录' }))
+    expect(withoutEmoji).toBeLessThan(200)
+    expect(withEmoji).toBeGreaterThan(1000)
   }, 30_000)
 
   it('draws the footer brand in klein blue', async () => {
