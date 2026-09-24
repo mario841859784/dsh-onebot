@@ -1,0 +1,16 @@
+# 新建独立测试 profile（2026-09-24T11:18:27+08:00）
+dir: /vol2/@appshare/Harness/.dsh/profiles/e2e-npm-test
+{
+  "name": "dsh-profile-e2e-npm-test",
+  "private": true,
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app"
+      ]
+    }
+  }
+}
+-- .npmrc:
+auto-install-peers=false

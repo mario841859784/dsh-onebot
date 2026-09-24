@@ -1,0 +1,5 @@
+OK   @dsh-external/dsh-onebot | 主入口 exports "." | keys: Config,apply,defaultMediaDir,dshHome,inject,logMetaEvent
+FAIL @dsh-external/dsh-onebot/client | exports "./client" |  window is not defined
+OK   @dsh-external/dsh-onebot/settings-remote | exports "./settings-remote" (N2 新增) | keys: ALL_KEYS,ENTRY_ID,NAMESPACE,OnebotSettingsService,REMOTE_EFFECT,SCHEMA_DEFAULTS
+FAIL @dsh-external/dsh-onebot/package.json | exports "./package.json" | ERR_IMPORT_ATTRIBUTE_MISSING Module "file:///tmp/n3-e2e/install-a/node_modules/@dsh-external/dsh-onebot/package.json" needs an import attribute of "t
+FAIL @dsh-external/dsh-onebot/lib/settings-remote.js | 裸深路径（预期被 exports 挡死） | ERR_PACKAGE_PATH_NOT_EXPORTED Package subpath './lib/settings-remote.js' is not defined by "exports" in /tmp/n3-e2e/install-a/node_modules/@dsh-extern

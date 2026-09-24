@@ -628,3 +628,11 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 ---
 
 *本日志由移植过程会话记录整理，随迭代持续更新。*
+
+## 2026-09-24 npm 包更名并首次发布
+
+- 包名由 `@dsh-external/dsh-onebot` 更名为 `dsh-onebot-qq`（用户裁定，无 scope 名），版本 0.4.4。
+- 更名规范文件：package.json、package-lock.json（name 两处）、README.md、README.en.md、cordis.patch.yml（模板注释）、docs/npm-distribution-design.md。
+- 历史记录保留旧名（当时包名的表述，不做回溯改写）：DEVLOG.md 既有条目、docs/npm-e2e-report.md（e2e 复验记录）、docs/npm-e2e-evidence/*、docs/acceptance-evidence/04-npm-test.log。
+- 验证：npm run build 通过；npm test 30 文件 376 用例全绿；npm pack 清单 56 文件，tarball 名 dsh-onebot-qq-0.4.4.tgz。
+- 发布：npm registry 首次发布 `dsh-onebot-qq@0.4.4`（public，latest）；tarball https://registry.npmjs.org/dsh-onebot-qq/-/dsh-onebot-qq-0.4.4.tgz 。

@@ -1,0 +1,22 @@
+# 测试 profile node_modules 布局（2026-09-24T11:20:37+08:00，pnpm 12.5.1，.npmrc auto-install-peers=false）
+## 顶层 node_modules（仅插件本体）：
+@dsh-external
+## 隐藏 hoist 层 node_modules/.pnpm/node_modules 中的 @deepseek-ai 副本（惰性死重，见设计 §2 注）：
+cordis
+cosmokit
+dsh-agent
+dsh-brand
+dsh-code-runtime
+dsh-invariants
+dsh-llm
+dsh-scope
+dsh-session
+dsh-session-projection
+dsh-system-prompt
+dsh-timeout
+dsh-tools
+dsh-typert-protocol
+dsh-user-approval
+dsh-util-crypto
+dsh-util-values
+schemastery

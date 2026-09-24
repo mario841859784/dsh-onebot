@@ -1,0 +1,35 @@
+// 预加载探针 v4：schemastery + typert-protocol 双包同源归因（只读）
+globalThis.__peerAttribution = async () => {
+  const prof = '/vol2/@appshare/Harness/.dsh/profiles/e2e-npm-test';
+  const hostTree = '/vol2/@appcenter/Harness/server/node_modules';
+  const H = await import('file://' + hostTree + '/@deepseek-ai/schemastery/lib/index.mjs');
+  const C = await import('file:///tmp/n3-e2e/install-a/node_modules/@deepseek-ai/schemastery/lib/index.mjs');
+  const P = await import('file://' + prof + '/node_modules/@dsh-external/dsh-onebot/lib/index.js');
+  const hProto = Object.getPrototypeOf(H.default.object({ x: H.default.string() }));
+  const cProto = Object.getPrototypeOf(C.default.object({ x: C.default.string() }));
+  const pProto = Object.getPrototypeOf(P.Config);
+  // typert-protocol 归因：触发 settings-remote 的 RemoteError，与宿主类比身份
+  const S = await import('file://' + prof + '/node_modules/@dsh-external/dsh-onebot/lib/settings-remote.js');
+  const T = await import('file://' + hostTree + '/@deepseek-ai/dsh-typert-protocol/lib/index.js');
+  let errInfo;
+  try { S.getSettings({ entries: () => [] }, {}); errInfo = { threw: false }; }
+  catch (e) {
+    errInfo = {
+      threw: true,
+      errCode: e.code,
+      errIsHostRemoteError: e.constructor === T.RemoteError,
+      errIsFallback: e.constructor !== T.RemoteError && e.name === 'RemoteError' && !('isDSHRemoteErrorHostClass' in e) && e.constructor.name === 'FallbackRemoteError',
+      errCtorName: e.constructor.name
+    };
+  }
+  return {
+    schemastery: {
+      hostVsCopyNamespace: H === C,
+      hostProtoVsCopyProto: hProto === cProto,
+      pluginConfigProtoIsHostInstance: pProto === hProto,
+      pluginConfigProtoIsPrivateCopy: pProto === cProto
+    },
+    typertProtocol: errInfo,
+    settingsRemoteExportedKeys: Object.keys(S).slice(0, 8)
+  };
+};

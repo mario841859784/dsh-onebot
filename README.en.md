@@ -52,6 +52,43 @@ Last verified: 2026-09-12 (M4 interaction & persistence: unknown-command interce
 
 **Prerequisites**: dsh (≥0.1.5-rc.1) on PATH; NapCat or another OneBot 11 implementation running.
 
+### npm install (published channel — pick this OR the source install below; do not mix)
+
+```sh
+dsh plugin --profile web add dsh-onebot-qq
+```
+
+(or install from the Plugins page in the web UI.) Then:
+
+1. Write two lines into `pnpm-workspace.yaml` in the profile directory
+   `<DSH_HOME>/profiles/web/` (pnpm 12 no longer reads a project-level `.npmrc`, see
+   `docs/npm-e2e-report.md` D1):
+
+   ```yaml
+   autoInstallPeers: false
+   hoist: false
+   ```
+
+   — this stops pnpm from pulling stale standalone `@deepseek-ai/*` copies from the registry.
+   npm/pnpm version difference: this is required for pnpm 12 users only (pnpm 12 no longer
+   reads `.npmrc`); npm users are unaffected — npm's default peer auto-install pulls registry
+   versions that now satisfy the peer range (`docs/npm-e2e-report.md` §1 #2).
+   Runtime peer unification is done by the host's resolver layer: any
+   `@deepseek-ai/*` import declared in the package's peerDependencies is intercepted by the host
+   and redirected to the same instance in the host install tree — no npm overrides needed.
+2. Merge the two `insert` lines from the bundled `cordis.patch.yml` template into the
+   profile-level `<DSH_HOME>/profiles/web/cordis.patch.yml`: main entry
+   `name: 'dsh-onebot-qq'`, host-plane line
+   `name: 'dsh-onebot-qq/settings-remote'`; config overrides must sit on the
+   top-level line with the same id (see the template header for details).
+3. **Never** hand-write any `@deepseek-ai/*` dependency into the profile's package.json — a
+   hand-written copy overrides the host install tree as the interception target, causing a
+   version-skewed dual-package.
+4. If the compatibility gate rejects the install (dsh version outside the peer range), use the
+   official escape hatch `dsh plugin allow-version ... --accept-risk` to opt in explicitly.
+
+### Option 2: install from source (git clone)
+
 ```sh
 git clone <repo> ~/dsh-plugins/dsh-onebot
 cd ~/dsh-plugins/dsh-onebot

@@ -1,0 +1,18 @@
+# N3 偏差取证：peer 拦截未生效，插件加载私有副本（2026-09-24T11:38:24+08:00）
+
+## 现象：进程内 prototype 同一性归因（CDP --import 预加载探针）
+{
+  "hostVsCopyNamespace": false,
+  "hostProtoVsCopyProto": false,
+  "pluginConfigProtoIsHostInstance": false,
+  "pluginConfigProtoIsPrivateCopy": true,
+  "pluginExportedName": "dsh-onebot"
+}
+
+## 根因（dsh-app-boot/lib/index.js routeScoped，profile 层本地候选优先）：
+   .pnpm 隐藏 hoist（hoist-pattern=*）位于插件 realpath 的 node_modules 祖先链内，
+   localPackageCandidate 命中 → ESM 分支无条件 route native → 私有副本；
+   拦截仅在无本地候选时发生（routeScoped 末段）。N1 §2 预估的 routeLinked（kind=linked）
+   只适用于 link-host 式树外符号链接布局，pnpm 布局 realpath 在 profile 目录内 → kind=profile。
+
+## 修正式约束：profile .npmrc 需同时 auto-install-peers=false 与 hoist=false

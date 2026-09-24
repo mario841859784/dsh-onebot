@@ -1,0 +1,21 @@
+# 测试环境清理（2026-09-24T11:48:49+08:00）
+== 停测试实例 ==
+13099/18765 已释放
+== dsh plugin remove（官方通道卸载）==
+Packages: -30
+------------------------------
+
+dependencies:
+- @dsh-external/dsh-onebot file:../../../../../../tmp/n3-e2e/dsh-external-dsh-onebot-0.4.4.tgz
+
+Done in 32ms using pnpm v12.5.1
+remove exit=0
+== 删除测试 profile 目录 ==
+web
+== /tmp 工作区 ==
+ls: cannot access '/tmp/n3-e2e': No such file or directory
+== 残留进程 ==
+1
+== live 终核 ==
+LISTEN 0      511                                            192.168.5.74:8765       0.0.0.0:*    users:(("MainThread",pid=2609953,fd=22))
+ESTAB      0      0                                   192.168.5.74:8765               172.17.0.3:45696 users:(("MainThread",pid=2609953,fd=28))

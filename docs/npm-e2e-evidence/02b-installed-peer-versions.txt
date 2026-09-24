@@ -1,0 +1,38 @@
+== 装入的 @deepseek-ai/* 与 schemastery 版本（默认 peer 自动安装的后果）==
+cordis
+cosmokit
+dsh-agent
+dsh-brand
+dsh-code-runtime
+dsh-invariants
+dsh-llm
+dsh-scope
+dsh-session
+dsh-session-projection
+dsh-system-prompt
+dsh-timeout
+dsh-tools
+dsh-typert-protocol
+dsh-user-approval
+dsh-util-crypto
+dsh-util-values
+schemastery
+cordis 4.0.2
+cosmokit 1.8.5
+dsh-agent 0.1.5-rc.3
+dsh-brand 0.1.5-rc.3
+dsh-code-runtime 0.1.5-rc.3
+dsh-invariants 0.1.5-rc.3
+dsh-llm 0.1.5-rc.3
+dsh-scope 0.1.5-rc.3
+dsh-session-projection 0.1.5-rc.3
+dsh-session 0.1.5-rc.3
+dsh-system-prompt 0.1.5-rc.3
+dsh-timeout 0.1.5-rc.3
+dsh-tools 0.1.5-rc.3
+dsh-typert-protocol 0.1.5-rc.3
+dsh-user-approval 0.1.5-rc.3
+dsh-util-crypto 0.1.5-rc.3
+dsh-util-values 0.1.5-rc.3
+schemastery 3.18.4
+schemastery 3.18.0

@@ -1,0 +1,3 @@
+# 反向验证：裸 Node（无宿主拦截器）从插件 realpath 解析 peer 应失败（2026-09-24T11:48:14+08:00）
+RESOLVE_FAIL: MODULE_NOT_FOUND
+ESM_RESOLVE_FAIL: ERR_MODULE_NOT_FOUND

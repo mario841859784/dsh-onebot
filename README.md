@@ -52,6 +52,39 @@
 
 **前置**：dsh（≥0.1.5-rc.1）在 PATH 上；NapCat 或其他 OneBot 11 实现已运行。
 
+### npm 安装（发布通道，与下方源码安装二选一，勿混装）
+
+```sh
+dsh plugin --profile web add dsh-onebot-qq
+```
+
+（或用 Web 界面的 Plugins 页安装。）随后：
+
+1. 在 profile 目录 `<DSH_HOME>/profiles/web/` 的 `pnpm-workspace.yaml` 中写入两行
+   （实测 pnpm 12 不读项目级 `.npmrc`，见 `docs/npm-e2e-report.md` D1）：
+
+   ```yaml
+   autoInstallPeers: false
+   hoist: false
+   ```
+
+   ——防止 pnpm 自动拉入 registry 上陈旧的 `@deepseek-ai/*` 独立副本。npm/pnpm 版本差异：
+   此配置仅 pnpm 12 用户必须（pnpm 12 已不读 `.npmrc`）；npm 用户无此问题——实测 npm 默认
+   peer 自动安装拉入的 registry 现版本满足 peer 范围（`docs/npm-e2e-report.md` §1 #2）。
+   运行期 peer 统一由宿主解析层完成：插件 import 的 `@deepseek-ai/*`
+   只要声明在该包 peerDependencies 里，就会被宿主拦截并重定向到宿主安装树的同一实例，
+   无需任何 npm override。
+2. 把包内 `cordis.patch.yml` 模板的两行 insert 合并进 profile 层
+   `<DSH_HOME>/profiles/web/cordis.patch.yml`：主条目 `name: 'dsh-onebot-qq'`，
+   host-plane 行 `name: 'dsh-onebot-qq/settings-remote'`；config 覆盖须挂
+   patch 顶层同 id 行（详见模板头注释）。
+3. **不要**在 profile 的 package.json 手写任何 `@deepseek-ai/*` 依赖——手写副本会
+   覆盖宿主安装树成为拦截目标，造成版本错位双包。
+4. 若安装被兼容门拒绝（dsh 版本不在 peer 范围内），按官方口径用
+   `dsh plugin allow-version ... --accept-risk` 显式豁免。
+
+### 方式二：git clone 源码安装
+
 ```sh
 git clone <repo> ~/dsh-plugins/dsh-onebot
 cd ~/dsh-plugins/dsh-onebot

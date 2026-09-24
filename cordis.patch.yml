@@ -27,6 +27,16 @@
 # 目录 = profile 目录（dsh-app-boot/lib/index.js:3519-3527）——住进 profile
 # patch 的行用相对名会解析到错误目录。因此本插件两行都必须写部署副本的绝对
 # 路径 name（现网 dsh-onebot 行已是绝对路径，沿用同一规则）。
+#
+# npm 安装形态（dsh plugin --profile <p> add dsh-onebot-qq）的 name 写法：
+# 插件经 pnpm 装进 profile 的 node_modules 后，裸包名可被宿主直接解析，两行改写为
+#   - id: dsh-onebot
+#     name: 'dsh-onebot-qq'                            # 走 exports "." 主入口
+#   - id: onebot-settings-remote
+#     name: 'dsh-onebot-qq/settings-remote'            # 走 exports "./settings-remote"
+# 裸深路径 'dsh-onebot-qq/lib/settings-remote.js' 会被 exports 表挡死
+# （ERR_PACKAGE_PATH_NOT_EXPORTED）；退路是相对文件名（锚点 = patch 文件所在目录）：
+#     name: './node_modules/dsh-onebot-qq/lib/settings-remote.js'
 - insert:
     # …… 现网 dsh-onebot 主条目（name/config 以现网部署为准，此处示意）……
   - id: dsh-onebot

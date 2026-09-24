@@ -1,0 +1,18 @@
+# N3 真机实测用独立测试 profile（e2e-npm-test）patch 层——不是 live web profile。
+# 按 docs/npm-distribution-design.md §3 定案：npm 布局下裸包名 name（走 exports），
+# 主条目 @dsh-external/dsh-onebot，host-plane 行 @dsh-external/dsh-onebot/settings-remote。
+# config 覆盖挂 patch 顶层同 id 行（端口 18765/127.0.0.1，与 live 8765 隔离）。
+- insert:
+    - id: dsh-onebot
+      name: '@dsh-external/dsh-onebot'
+    - id: onebot-settings-remote
+      name: '@dsh-external/dsh-onebot/settings-remote'
+- id: dsh-onebot
+  config:
+    mode: reverse
+    host: 127.0.0.1
+    port: 18765
+    accessToken: e2e-test-only-token
+    adminUsers:
+      - "0"
+    requireMention: true

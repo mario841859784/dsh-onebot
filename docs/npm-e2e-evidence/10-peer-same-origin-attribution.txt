@@ -1,0 +1,21 @@
+# peer 同源归因（终态，进程内 prototype/类同一性，2026-09-24T11:48:14+08:00）
+方法：dsh 启动时 --import 预加载只读探针（真实 ESM 上下文），inspector Runtime.evaluate 调用 globalThis.__peerAttribution()
+{
+  "schemastery": {
+    "hostVsCopyNamespace": false,
+    "hostProtoVsCopyProto": false,
+    "pluginConfigProtoIsHostInstance": true,
+    "pluginConfigProtoIsPrivateCopy": false
+  },
+  "typertProtocol": {
+    "threw": true,
+    "errCode": "onebot-settings/no-entry",
+    "errIsHostRemoteError": true,
+    "errIsFallback": false,
+    "errCtorName": "RemoteError"
+  },
+  "settingsRemoteExportedKeys": ["ALL_KEYS","ENTRY_ID","NAMESPACE","OnebotSettingsService","REMOTE_EFFECT","SCHEMA_DEFAULTS","SECRET_KEYS","SETTINGS_GROUPS"]
+}
+
+结论：插件 Config schema 由宿主安装树 schemastery 实例构建（私有副本=false）；
+settings-remote 的 RemoteError 即宿主 dsh-typert-protocol 的类（FallbackRemoteError 降级未触发）。

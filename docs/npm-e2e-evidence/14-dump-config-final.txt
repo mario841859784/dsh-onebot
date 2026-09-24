@@ -1,0 +1,8 @@
+# 终态 dump-config：两行 bare-name 可寻址（重装后，2026-09-24T11:48:23+08:00）
+1237:  name: '@dsh-external/dsh-onebot'
+1238-  config:
+1239-    mode: reverse
+1240-    host: 127.0.0.1
+--
+1247:  name: '@dsh-external/dsh-onebot/settings-remote'
+exit=0

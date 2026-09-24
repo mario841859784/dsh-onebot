@@ -1,0 +1,15 @@
+# live web profile baseline 2026-09-24T11:15:13+08:00
+pid: 2609953
+3859804
+LISTEN 0      511                                            192.168.5.74:8765       0.0.0.0:*    users:(("MainThread",pid=2609953,fd=22))
+ESTAB      0      0                                   192.168.5.74:8765               172.17.0.3:45696 users:(("MainThread",pid=2609953,fd=28))
+--- sha256 before
+ac87a4a37763963e113016a805532e3d96d1e3d31039db16409885a540a498dc  /vol2/@appshare/Harness/.dsh/profiles/web/cordis.patch.yml
+b8ab3358365fcacd2f3c25279e1aae4bdbefcee167279119e379d6c56d8a7db5  /vol2/@appshare/Harness/.dsh/profiles/web/package.json
+c300dcf2ebc5f02062d6591268d29d3db6fe45e0cb138f5467276fe2ba06076e  /vol2/@appshare/Harness/.dsh/profiles/web/cordis.yml
+--- node_modules listing
+@tt-a1i
+dsh-better-reasoning-effort
+dsh-expert-orchestrator
+dsh-mcp-connector
+dsh-web-mobile-fix

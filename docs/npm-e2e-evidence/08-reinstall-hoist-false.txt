@@ -1,0 +1,122 @@
+# 重装实验：.npmrc(auto-install-peers=false, hoist=false) + 显式 pnpm config（2026-09-24T11:39:58+08:00）
+-- .npmrc 先落盘：
+auto-install-peers=false
+hoist=false
+== dsh plugin remove ==
+Packages: -50
+--------------------------------------------------
+
+dependencies:
+- @dsh-external/dsh-onebot file:../../../../../../tmp/n3-e2e/dsh-external-dsh-onebot-0.4.4.tgz(@deepseek-ai/cordis@4.0.4)(@deepseek-ai/dsh-agent@0.1.5-rc.3(ed34a3a6e1eda2855f19984561ca48f0))(@deepseek-ai/dsh-llm@0.1.5-rc.3(@deepseek-ai/cordis@4.0.4))(@deepseek-ai/dsh-session@0.1.5-rc.3(@deepseek-ai/cordis@4.0.4)(@deepseek-ai/dsh-scope@0.1.5-rc.3(@deepseek-ai/cordis@4.0.4)(@deepseek-ai/dsh-invariants@0.1.5-rc.3(@deepseek-ai/cordis@4.0.4))))(@deepseek-ai/dsh-system-prompt@0.1.5-rc.3(@deepseek-ai/cordis@4.0.4)(@deepseek-ai/dsh-invariants@0.1.5-rc.3(@deepseek-ai/cordis@4.0.4))(@deepseek-ai/dsh-llm@0.1.5-rc.3(@deepseek-ai/cordis@4.0.4))(@deepseek-ai/dsh-scope@0.1.5-rc.3(@deepseek-ai/cordis@4.0.4)(@deepseek-ai/dsh-invariants@0.1.5-rc.3(@deepseek-ai/cordis@4.0.4))))(@deepseek-ai/dsh-tools@0.1.5-rc.3(8f54d72fd50bf534b3efa4c20c8451e2))(@deepseek-ai/dsh-typert-protocol@0.1.5-rc.3(@deepseek-ai/cordis@4.0.4))(@deepseek-ai/dsh-util-values@0.1.5-rc.3(@deepseek-ai/cordis@4.0.4))(@deepseek-ai/schemastery@3.18.4)(schemastery@3.18.0)
+
+Done in 53ms using pnpm v12.5.1
+remove exit=0
+-- .npmrc 存活？
+-rwx------ 1 Harness Harness 37 Sep 24 11:39 /vol2/@appshare/Harness/.dsh/profiles/e2e-npm-test/.npmrc
+== dsh plugin add（带显式 pnpm config 转发）==
+Error: ERR_PNPM_HOIST_PATTERN_DIFF
+
+  × adding a new package
+  ╰─▶ This modules directory was created using a different hoist-pattern
+      value. Run "pnpm install" to recreate the modules directory.
+
+dsh: plugin command failed; diagnostics: /vol2/@appshare/Harness/.dsh/profiles/e2e-npm-test/.plugin-manager/logs/operation-mCGFJI/pnpm.log
+add exit=1
+-- .npmrc 存活？
+/vol2/@appshare/Harness/.dsh/profiles/e2e-npm-test/.npmrc
+-- 锁文件 settings：
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+-- 顶层 node_modules：
+@dsh-external
+-- per-pkg node_modules：
+@deepseek-ai
+@dsh-external
+@napi-rs
+fontkit
+schemastery
+ws
+-- 隐藏 hoist 层是否存在：
+@deepseek-ai
+@napi-rs
+@standard-schema
+== 清空后按 .npmrc(auto-install-peers=false, hoist=false) 重装 ==
+Progress: resolved 0, reused 1, downloaded 0, added 0
+Packages are hard linked from the content-addressable store to the virtual store.
+  Content-addressable store is at: /vol2/@appdata/Harness/pnpm/store/v11
+  Virtual store is at:             node_modules/.pnpm
+Packages: +40
+++++++++++++++++++++++++++++++++++++++++
+Progress: resolved 40, reused 40, downloaded 0, added 40, done
+[WARN] Issues with peer dependencies found. Run "pnpm peers check" to list them.
+
+dependencies:
++ @dsh-external/dsh-onebot 0.4.4
+
+Done in 216ms using pnpm v12.5.1
+dsh: warning: @dsh-external/dsh-onebot declares no dsh.bundle — installed as a plain dependency, not a profile layer
+add exit=0
+-- .npmrc 存活？
+/vol2/@appshare/Harness/.dsh/profiles/e2e-npm-test/.npmrc
+-- 锁文件 settings：
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+-- 顶层 node_modules：
+@dsh-external
+-- per-pkg node_modules：
+@deepseek-ai
+@dsh-external
+@napi-rs
+fontkit
+schemastery
+ws
+-- 隐藏 hoist 层：
+@deepseek-ai
+@napi-rs
+@standard-schema
+== 改用 pnpm-workspace.yaml（pnpm 12 项目级配置正确位置）==
+autoInstallPeers: false
+hoist: false
+-- pnpm config 验证：
+false
+false
+== 清空重装（pnpm-workspace.yaml 生效版）==
+Progress: resolved 0, reused 1, downloaded 0, added 0
+Packages are hard linked from the content-addressable store to the virtual store.
+  Content-addressable store is at: /vol2/@appdata/Harness/pnpm/store/v11
+  Virtual store is at:             node_modules/.pnpm
+Packages: +20
+++++++++++++++++++++
+Progress: resolved 20, reused 20, downloaded 0, added 20, done
+[WARN] Issues with peer dependencies found. Run "pnpm peers check" to list them.
+
+dependencies:
++ @dsh-external/dsh-onebot 0.4.4
+
+Done in 105ms using pnpm v12.5.1
+add exit=0
+-- 锁文件 settings：
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: false
+  excludeLinksFromLockfile: false
+
+-- 顶层 node_modules：
+@dsh-external
+-- per-pkg node_modules：
+@dsh-external
+@napi-rs
+fontkit
+schemastery
+ws
+-- 隐藏 hoist 层：
+ls: cannot access '/vol2/@appshare/Harness/.dsh/profiles/e2e-npm-test/node_modules/.pnpm/node_modules': No such file or directory
