@@ -170,9 +170,9 @@ export async function makeCmdHarness(opts?: {
   allowAllUsers?: boolean
   agentDefaultModel?: unknown
   workspaceRegistry?: unknown
-  /** /session list previews: a SessionPersistenceLike stub (inspect + open
-   * read handles). Absent = the bridge sees no persistence service and the
-   * list renders preview-less items. */
+  /** /session list previews: a SessionPersistenceLike stub (stat probe +
+   * open read handles). Absent = the bridge sees no persistence service and
+   * the list renders preview-less items. */
   sessionPersistence?: unknown
 }) {
   const ctx = new Context()

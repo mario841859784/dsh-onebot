@@ -1,0 +1,36 @@
+# dsh-onebot cordis.patch.yml 模板（v0.4.3-next T3 · T1 定案 B 路径）
+#
+# 用法：这不是被宿主直接读取的文件——宿主只监视 profile 层
+# <DSH_HOME>/profiles/web/cordis.patch.yml 与 home 层 <DSH_HOME>/cordis.patch.yml
+# （dsh-hmr/lib/index.js:354；仓库模板、部署副本、bundle 自带 patch 均不在监视
+# 范围，T1 §1.1/§1.2 #5）。把下方 insert 行合并进 profile 层 patch 的既有
+# insert 块，并把 <DEPLOY_DIR> 替换为部署副本的绝对路径（本机现网为
+# /vol2/@appshare/Harness/dsh-plugins/dsh-onebot）。
+#
+# 行说明：
+# 1. `dsh-onebot` 主条目——现网部署已存在，保持其 name 与 config 原样，只把
+#    settings-remote 行加进同一 insert 块。绝不能为 settings-remote 再 insert
+#    一次 lib/index.js：同一插件文件二次挂载 = 双实例注册冲突崩溃循环
+#    （T1 §1.2 #8，DEVLOG.md:70 实测事故）。
+#    注意：config 覆盖须挂 patch 文档顶层的同 id 行（insert 块内行 configEditor
+#    不可寻址，设置页写入会被 compose 自检拒绝——T6 实测，v043-next-acceptance.md R1③）。
+# 2. `onebot-settings-remote`——host-plane 行（T3）：挂载 onebotSettings
+#    Typert Remote（lib/settings-remote.js），供 api-gateway 发现路由、设置页
+#    客户端（T4 lib/client.js）读写 dsh-onebot 条目的 config 覆盖行（乐观锁
+#    revision 语义见 docs/settings-page-design.md §3.1）。
+#
+# 锚定与 exports 遮蔽（注释照抄 dsh-expert-orchestrator/cordis.patch.yml 的
+# expert-sources-remote 行，按 T1 §2 定案改为绝对路径 name）：
+# T3/T4 给 package.json 增加 exports 表（含 "./client" 预留项）后，包导出表会
+# 遮蔽 `dsh-onebot/lib/settings-remote.js` 这类裸深路径说明符；宿主只对相对名
+# （./ 或 ../ 开头）做 anchorInsertedPluginNames 锚定，锚点是 patch 文件所在
+# 目录 = profile 目录（dsh-app-boot/lib/index.js:3519-3527）——住进 profile
+# patch 的行用相对名会解析到错误目录。因此本插件两行都必须写部署副本的绝对
+# 路径 name（现网 dsh-onebot 行已是绝对路径，沿用同一规则）。
+- insert:
+    # …… 现网 dsh-onebot 主条目（name/config 以现网部署为准，此处示意）……
+  - id: dsh-onebot
+    name: <DEPLOY_DIR>/lib/index.js
+    # config: { mode: reverse, host: 127.0.0.1, port: 8643, ... }
+  - id: onebot-settings-remote
+    name: <DEPLOY_DIR>/lib/settings-remote.js

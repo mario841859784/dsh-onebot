@@ -1,0 +1,5 @@
+client 19-key schema: ALL PRESENT
+host constants 19-key: ALL PRESENT
+banner: CJS banner OK
+footer: CJS footer OK
+node require() externals: 1 (0 = 无宿主外依赖)

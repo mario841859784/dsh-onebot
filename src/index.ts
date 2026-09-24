@@ -15,17 +15,39 @@ import type ToolRuntime from '@deepseek-ai/dsh-tools'
 import type { AgentRegistry } from '@deepseek-ai/dsh-agent'
 import type { SessionStore } from '@deepseek-ai/dsh-session'
 import type { ModelSelection } from '@deepseek-ai/dsh-agent'
-import z from '@deepseek-ai/schemastery'
+import type Z from '@deepseek-ai/schemastery'
+import type { OneBotEvent } from './connection.js'
+import type { BridgeDeps, WorkspaceRegistryLike } from './bridge.js'
+import type { AccessPolicyConfig } from './chat.js'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import { OneBotConnection } from './connection.js'
-import type { OneBotEvent } from './connection.js'
-import { ChatBridge } from './bridge.js'
-import type { BridgeDeps, WorkspaceRegistryLike } from './bridge.js'
-import { MediaStore, IMAGE_MAX_BYTES, VOICE_MAX_BYTES, MEDIA_MAX_BYTES } from './media.js'
-import { Transcriber } from './stt.js'
-import type { AccessPolicyConfig } from './chat.js'
-import { describeError } from './errors.js'
+// R1 部署加固：peer 依赖解析失败/关键模块缺失时必须显眼报错并 fail-loud，
+// 不能静默不挂载。静态 import 会在本模块任何代码运行之前就以晦涩的
+// ERR_MODULE_NOT_FOUND 失败（宿主侧表现为插件被静默跳过），因此运行时
+// 值依赖改为入口顶部受控动态加载：失败时先输出含「peer/依赖」的显式
+// 错误，再把原错误抛出。
+let z: typeof import('@deepseek-ai/schemastery').default
+let OneBotConnection: typeof import('./connection.js').OneBotConnection
+let ChatBridge: typeof import('./bridge.js').ChatBridge
+let MediaStore: typeof import('./media.js').MediaStore
+let IMAGE_MAX_BYTES: number
+let VOICE_MAX_BYTES: number
+let MEDIA_MAX_BYTES: number
+let Transcriber: typeof import('./stt.js').Transcriber
+let describeError: typeof import('./errors.js').describeError
+
+try {
+  ;({ default: z } = await import('@deepseek-ai/schemastery'))
+  ;({ OneBotConnection } = await import('./connection.js'))
+  ;({ ChatBridge } = await import('./bridge.js'))
+  ;({ MediaStore, IMAGE_MAX_BYTES, VOICE_MAX_BYTES, MEDIA_MAX_BYTES } = await import('./media.js'))
+  ;({ Transcriber } = await import('./stt.js'))
+  ;({ describeError } = await import('./errors.js'))
+} catch (error) {
+  console.error('[dsh-onebot] 挂载失败：peer 依赖解析失败或关键模块缺失 —— 部署副本必须带完整 node_modules 链接集（scripts/link-host.sh 产物），只复制 lib/ 不够。原始错误：' + (error instanceof Error ? error.message : String(error)))
+  throw error
+}
 
 type Context = CordisContext & {
   tools: ToolRuntime
@@ -39,15 +61,15 @@ type Context = CordisContext & {
     mount(agentCtx: unknown, id?: string): Promise<{ id: string }>
   }
   sessionPersistence: {
-    inspect(id: string): Promise<{
-      meta: { agentPreset?: string; cwd?: string }
-      events: readonly { type?: string; data?: { agentPreset?: string } }[]
-    }>
+    /** dsh-session-persistence 0.1.6 `stat`: the stored snapshot, or
+     * undefined when the id owns no durable log (the retired `inspect`
+     * convenience no longer exists on the host service). */
+    stat(id: string): Promise<object | undefined>
     /** /session list previews: open a stored session read-only (never takes
      * write ownership), read the header + a small event prefix, then close. */
     open(id: string, access: 'read'): Promise<{
-      header: { createdAt?: number }
-      read(offset?: number, length?: number): Promise<{ events: readonly { type?: string; data?: { source?: { kind?: string; plugin?: string }; content?: readonly { type?: string; text?: string }[] } }[] }>
+      header: { createdAt?: number; agentPreset?: string }
+      read(offset?: number, length?: number): Promise<{ events: readonly { type?: string; data?: { agentPreset?: string; source?: { kind?: string; plugin?: string }; content?: readonly { type?: string; text?: string }[] } }[] }>
       close(): Promise<void>
     }>
   }
@@ -129,13 +151,16 @@ const ENV = (name: string): string => process.env[name] ?? ''
 
 /** Default media dir: <dsh-home>/media/onebot (dsh-home = $DSH_HOME or ~/.dsh). */
 export function defaultMediaDir(): string {
-  const home = ENV('DSH_HOME') !== '' ? ENV('DSH_HOME') : join(process.env.HOME ?? '/tmp', '.dsh')
+  // os.homedir() reads $HOME first and falls back to the passwd entry — the
+  // systemd service runs without HOME, so `?? '/tmp'` used to resolve to
+  // /tmp/.dsh and preset enumeration hit ENOENT (web log line 14429).
+  const home = ENV('DSH_HOME') !== '' ? ENV('DSH_HOME') : join(homedir() || '/tmp', '.dsh')
   return join(home, 'media', 'onebot')
 }
 
 /** The dsh data home ($DSH_HOME or ~/.dsh); source of the .agent-presets dir. */
 export function dshHome(): string {
-  return ENV('DSH_HOME') !== '' ? ENV('DSH_HOME') : join(process.env.HOME ?? '/tmp', '.dsh')
+  return ENV('DSH_HOME') !== '' ? ENV('DSH_HOME') : join(homedir() || '/tmp', '.dsh')
 }
 
 /** D4a: schema defaults for the renamed fields (referenced by the deprecated-name fallback). */
@@ -143,7 +168,7 @@ const INBOUND_IMAGE_MAX_PX = 2048
 const OUTBOUND_IMAGE_MAX_BYTES = IMAGE_MAX_BYTES
 const INBOUND_FILE_MAX_BYTES = 20 * 1024 * 1024
 
-export const Config: z<Config> = z.object({
+export const Config: Z<Config> = z.object({
   mode: z.union([z.const('reverse'), z.const('forward')]).default('reverse')
     .description('连接模式：reverse = NapCat ws-reverse 拨入（本插件监听端口）；forward = 本插件主动连接 NapCat 的 ws 服务'),
   host: z.string().default('127.0.0.1')

@@ -105,7 +105,7 @@
 | records the deployment default preset on the header when the config leaves it unset | 直调 ensureChat（绕过入站）——registry 内部路径直调是本文件惯例 |
 | resume rejoins the preset a session recorded, over a conflicting config | 直调 loadMapping；断言 warn 日志含两个 preset id |
 | resolveRecordedPreset: newest logged selection wins, else the creation header | 纯函数单测（唯一非 harness 用例） |
-| ensureChat avoids a bare id that still owns a persisted log (stale retiring lost) | sessionPersistence.inspect 桩：可 inspect=有日志 → 立即退休 + 换后缀 id |
+| ensureChat avoids a bare id that still owns a persisted log (stale retiring lost) | sessionPersistence.stat 桩：可 stat=有日志 → 立即退休 + 换后缀 id |
 | resetChat retires the bare derived id alongside the current session id | 直调 resetChat；裸 id 与当前 id 双退休 |
 | loadRetired keeps the current set on a corrupt file and saves atomically | 坏 JSON 不清空集（2026-08-17 回归）；原子写 = tmp+rename、无 .tmp 残留 |
 | onSessionFlush debounces the mapping write; stop() forces the final save (M1-E2) | fake timers；覆写 saveMapping 计数（保留透传真写） |

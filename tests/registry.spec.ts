@@ -372,7 +372,11 @@ describe('ChatRegistry', () => {
       }),
     }
     const sessionPersistence = {
-      inspect: vi.fn(async () => ({ meta: { agentPreset: 'router-flash' }, events: [] })),
+      open: vi.fn(async () => ({
+        header: { agentPreset: 'router-flash' },
+        read: vi.fn(async () => ({ eventState: 'detached' as const, events: [] })),
+        close: vi.fn(async () => undefined),
+      })),
     }
     const bridge = new ChatBridge({
       ctx,
@@ -403,7 +407,7 @@ describe('ChatRegistry', () => {
     })
     await registryOf({ bridge }).loadMapping()
     // The session's own record wins over the conflicting plugin config.
-    expect(sessionPersistence.inspect).toHaveBeenCalled()
+    expect(sessionPersistence.open).toHaveBeenCalled()
     expect(mountedPresets).toEqual(['router-flash'])
     expect(logLines.some(line => line.includes('records preset router-flash') && line.includes('standard'))).toBe(true)
     await bridge.stop()
@@ -429,8 +433,8 @@ describe('ChatRegistry', () => {
     }
     const agents = makeFakeAgents(sessionIds, captured)
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-test-'))
-    const inspect = vi.fn(async (id: string) => {
-      if (id === 'onebot-private-10001') return { meta: {}, events: [] }
+    const stat = vi.fn(async (id: string) => {
+      if (id === 'onebot-private-10001') return { revision: 'test' }
       throw new Error('no such session')
     })
     const agentPresets = {
@@ -448,7 +452,7 @@ describe('ChatRegistry', () => {
       agents: agents as never,
       sessions: { flush: vi.fn(async () => undefined) } as never,
       agentPresets: agentPresets as never,
-      sessionPersistence: { inspect } as never,
+      sessionPersistence: { stat } as never,
       workspaceRegistry: {
         resolveByPath: vi.fn(async () => undefined),
         create: vi.fn(async () => ({ attachSession: vi.fn(async () => undefined) })),
@@ -471,7 +475,7 @@ describe('ChatRegistry', () => {
     await registryOf({ bridge }).ensureChat('private:10001', '小明')
     // The bare id owns a stale log: the chat must NOT reuse it — it retires
     // the bare id and creates on a suffixed id instead of failing later.
-    expect(inspect).toHaveBeenCalled()
+    expect(stat).toHaveBeenCalled()
     expect(sessionIds[0]).toMatch(/^onebot-private-10001-[a-z0-9]+$/)
     expect(sessionIds[0]).not.toBe('onebot-private-10001')
     const retired = registryOf({ bridge }).retiredSessionIds
@@ -500,7 +504,7 @@ describe('ChatRegistry', () => {
         mount: vi.fn(async (_agentCtx: unknown, id?: string) => ({ id: id ?? 'router-flash' })),
       } as never,
       sessionPersistence: {
-        inspect: vi.fn(async () => { throw new Error('no such session') }),
+        stat: vi.fn(async () => { throw new Error('no such session') }),
       } as never,
       workspaceRegistry: {
         resolveByPath: vi.fn(async () => undefined),
@@ -850,7 +854,13 @@ describe('ChatRegistry', () => {
       }
     })
     const mountedPresets: Array<string | undefined> = []
-    const sessionPersistence = { inspect: vi.fn(async () => ({ meta: { agentPreset: 'router-flash' }, events: [] })) }
+    const sessionPersistence = {
+      open: vi.fn(async () => ({
+        header: { agentPreset: 'router-flash' },
+        read: vi.fn(async () => ({ eventState: 'detached' as const, events: [] })),
+        close: vi.fn(async () => undefined),
+      })),
+    }
     const bridge2 = new ChatBridge({
       ctx: new Context(),
       connection: new OneBotConnection({ mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3002', accessToken: 'test-token', callTimeoutMs: 3_000 }),
@@ -890,7 +900,7 @@ describe('ChatRegistry', () => {
     // Model is NOT per-chat persisted: the resume carries the live default selection.
     expect(resume.mock.calls[0][0].agentOptions).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
     // Preset IS backfilled from the session's own durable record, over the config.
-    expect(sessionPersistence.inspect).toHaveBeenCalledTimes(1)
+    expect(sessionPersistence.open).toHaveBeenCalledTimes(1)
     expect(mountedPresets).toEqual(['router-flash'])
     await bridge2.stop()
   }, 30_000)

@@ -16,6 +16,18 @@ cd "$ROOT"
 # Locate the dsh install's node_modules root: via the dsh binary on PATH,
 # else via the npm/npx store pattern (works in restricted shells).
 resolve_dsh_root() {
+  # R1 逃生门: DSH_ROOT explicitly names the host node_modules root (fnOS
+  # app-style hosts ship no dsh binary on PATH). Highest priority — when set
+  # and valid it overrides both auto-resolution paths below; when set but
+  # invalid we fail instead of silently falling back.
+  if [ -n "${DSH_ROOT:-}" ]; then
+    if [ -d "$DSH_ROOT/@deepseek-ai" ]; then
+      echo "$DSH_ROOT"
+      return 0
+    fi
+    echo "build: DSH_ROOT=$DSH_ROOT 下没有 @deepseek-ai/，不是宿主 node_modules 根" >&2
+    return 1
+  fi
   local bin=""
   if command -v dsh >/dev/null 2>&1; then
     bin=$(command -v dsh)

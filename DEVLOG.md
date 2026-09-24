@@ -310,6 +310,32 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 | 时间 | 工作 |
 |---|---|
 | 全天 | **配置表补齐 10 键（用户裁决「全部补齐」）**——双语 README 配置表对照 src/index.ts zod schema 补入一直缺失的 10 个键（动手前复核：10 键在两 README grep 均 0 命中、schema 行内容逐行核实）：`ignoreSelf` 紧随 botQQ 行；`restrictedMemberPrefix` 紧随 groupPolicy 行（群聊权限策略簇）；`sendErrorNotice`+`sensitivePatterns` 紧随 interimRecall 行（出站行为簇：错误提示→出站敏感审计，审计说明含「留空用内置默认」语义）；STT 簇内顺序 Enabled→Engine→Model→Command→Args→TimeoutMs——`sttEngine` 插入 sttEnabled 与 sttModel 之间、`sttCommand`+`sttArgs` 插入 sttModel 与 sttTimeoutMs 之间（custom 引擎专参数后置，含 `{file}`/`{out}` 占位语义）；`tempTtlHours` 紧随 mediaDir 行；`maxVoiceBytes`+`maxFileBytes` 紧随 outboundImageMaxBytes 行（出站大小上限簇）。默认值实取（常量 grep 实算非照抄他行）：tempTtlHours=6、maxVoiceBytes=15728640（src/media.ts:17 VOICE_MAX_BYTES=15*1024*1024）、maxFileBytes=20971520（src/media.ts:18 MEDIA_MAX_BYTES=20*1024*1024）、sttEngine=auto、sttCommand=空串、sttArgs=[]，boolean 键（ignoreSelf/sendErrorNotice/restrictedMemberPrefix）均 true、sensitivePatterns=[]；README.en.md 对称插入同位、中英行语义严格对齐。收尾核验：10 键双语各 ≥1 命中且均落配置表内、双语配置表行数 39/39 差 0、git diff 范围仅 README.md/README.en.md/DEVLOG.md 三文件、未执行 git add/commit/push |
+### 2026-09-17（四存量缺陷修复：dshHome 回退 / 保存竞态 / 宿主接口核对 / preset 记录读取，v0.4.3）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **背景与定性**——四缺陷均为用户 QQ 侧报告的存量问题，全部发生在升级前 rc.2 会话期（web-3079.log 行号证据 14251–14434 < 重启线 14675），与 0.1.6-alpha.1 升级（2026-09-17 20:00）无因果。开工前复核工作树 git status 为空（分支 m0-hardening；git 因 dubious ownership 需 `-c safe.directory` 单次覆盖，不写全局配置） |
+| 全天 | **缺陷 1：dshHome 解析落到 /tmp（preset 枚举 ENOENT）**——证据：日志 14429 行 `preset enumeration failed: ENOENT scandir '/tmp/.dsh/.agent-presets'`。根因：src/index.ts 两处（defaultMediaDir:132、dshHome:138）回退链 `join(process.env.HOME ?? '/tmp', '.dsh')`——dsh-web 由 systemd 启动无 HOME 环境变量 → `/tmp/.dsh`；宿主自身用 os.homedir()（HOME 缺失回退 passwd 条目 → /root）故宿主侧 preset 加载正常。修法：DSH_HOME 优先不变，回退改 `join(homedir() \|\| '/tmp', '.dsh')`（os.homedir() 内部先读 HOME、缺失查 passwd），两处同改 + `import { homedir } from 'node:os'` |
+| 全天 | **缺陷 2：retired-sessions/switchable 保存竞态（ENOENT rename）**——证据：日志 14251/14287/14434 行 `save failed: ENOENT rename '...retired-sessions.json.tmp' -> ...`（mkdir 与 writeFile 均成功，仅 rename 报 ENOENT）。根因：src/registry.ts saveRetired 与 saveSwitchable 两处共用固定 `.tmp` 后缀做「临时写+原子改名」，两个并发保存协程交错时后完成者的 rename 找不到已被前者消费的 tmp。修法：tmp 文件名加每次调用唯一后缀 `.tmp-<Date.now()>-<Math.random 6 位>`，两处同改；rename 成功即消费无需清理，catch 分支保持原样（最小改动） |
+| 全天 | **缺陷 3：/permission 调宿主命令形状核对（只读结论：不改）**——证据：日志 14370/14393/14404 行 `host permission command failed: TypeError: Cannot read properties of undefined (reading 'aborted')`。按任务书先钉死宿主当前签名（0.1.6-alpha.1 静态产物实读）：dsh-commands types/index.d.ts:142 `execute(agent, line, submittedAttachments, signal)`、实现 lib/index.js:327（:332 直读 `signal.aborted`、:353 读 `submittedAttachments.length`）、api-gateway 客户端/服务端两侧均把 signal 落最后一位——**与插件现有 4 参调用（commands.ts:963/:1024，signal 第 4 槽）完全一致**；unwrapCommandResult 的 `{ commandId, result: { kind, text } }` 剥壳与 0.1.6 CommandExecution 形状仍匹配。结论：rc.2 期 TypeError 是宿主当时从别的容器读 aborted 所致，0.1.6 已回归直读信号——插件侧**不改调用**（此时若把第 4 参包成 options 对象反而会让 0.1.6 复现同一崩溃）；现有注释（commands.ts:958-961、1016-1018）描述的正是 0.1.6 行为，保持原样 |
+| 全天 | **缺陷 4：persistence.inspect is not a function（preset 记录读取失败静默回退）**——证据：日志 14394 行附近（且每次 resume 复现）。根因（宿主接口实读钉死）：0.1.6 dsh-session-persistence 的 SessionPersistence 抽象接口仅 `create/open/flush/stat/list`（types/index.d.ts，jsonl 后端 lib/index.js:2323/:2346/:2422/:2455 实现），**无 inspect**；插件 SessionPersistenceLike 声明的 inspect 是旧宿主接口遗迹。修法（按实接口最小改调用，不加 typeof 守卫——守卫会把 preset 恢复永久降级为 config/default）：hasPersistedLog（registry.ts）改 `stat(id) !== undefined`（缺失/读失败都计为无日志，语义不变）；recordedPresetFor 改 `open(id,'read')` → header.agentPreset + 全量 read() 喂原 resolveRecordedPreset（最新 agent-preset/selected 事件优先、header 兜底的语义逐字保留）→ finally close（AsyncDisposable 不泄漏句柄）；bridge.ts SessionPersistenceLike inspect→stat、SessionReadHandleLike.header 与 SessionPreviewEvent.data 补 agentPreset 可选字段（真实 SessionHeader/事件既有字段），index.ts Context.sessionPersistence 声明同步 |
+| 全天 | **测试 338→340 全绿 + 新增回归**——新增 tests/hotfix-043.spec.ts 2 用例：① DSH_HOME+HOME 均删除时 dshHome()/defaultMediaDir() 取 homedir()（passwd 兜底）绝不落 /tmp；② 用 vi.mock 门控 node:fs/promises rename 强制「第二写者先改名」的确定性交错——断言两写者 from（tmp 源）互异、无 `retired-sessions save failed` 日志、最终文件为最后改名者的快照（旧固定 `.tmp` 实现在此交错下必现 ENOENT）。既有测试桩同步（不改语义）：registry.spec 4 处 inspect 桩改 stat/open（断言同步）、session-preview.spec 1 处、bridge-harness 注释、tests/README 对应行；npm run build 退出 0、npm test 340/340 |
+| 全天 | **版本 0.4.2→0.4.3 + 部署**——package.json patch bump；构建后 lib/ 与 package.json 同步 /root/dsh-plugins/dsh-onebot/（复制链非链接；仅覆盖活动文件、.bak-* 原样、属主权限对齐）；`diff -rq 工作区/lib 部署副本/lib`（排除 .bak）须为零；重启由编排者流程收尾（systemctl restart dsh-web） |
+
+### 2026-09-23（构建期类型修复：宿主 MessageSourceMap typings 漂移，module augmentation）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **定性**——npx tsc --noEmit 仅余 2 个 TS2322（src/bridge.ts:444、:589），均为 `source: { kind: 'plugin', plugin: 'dsh-onebot' }` 不满足 MessageSource 联合类型。宿主 @deepseek-ai/dsh-llm 0.1.7-alpha.2 的 MessageSourceMap（lib/types/message.d.ts:101）未声明 `plugin` 成员，但其注释明示 merge-extensible（"each producer declares its own `kind` in its own module"），且宿主 dsh-session-format 运行时真实写入 `{ kind: "plugin", plugin: ... }`——属宿主 typings 漂移，运行时无害，纯声明期问题 |
+| 全天 | **修法（零运行时改动）**——按宿主自身扩展惯例（dsh-agent lib/types/model-selection.d.ts:8-14 的 `declare module '@deepseek-ai/dsh-llm' { interface MessageSourceMap { 'model-selection': ... } }`）新增 src/dsh-llm.d.ts（tsconfig include "src" 自动覆盖）：import + `interface MessageSourceMap { plugin: { kind: 'plugin'; plugin: string } }`，成员形状与宿主运行时写入形状逐字段一致，宿主将来原生加入同形成员时接口合并不冲突。bridge.ts 两处调用点一行未改，无运行时行为变化 |
+| 全天 | **验收**——npx tsc --noEmit 退出 0（0 error）；npm test 340/340 全绿（28 文件，与基线持平、无新增失败）；npm run build（./scripts/build.sh）退出 0，lib/ 产物时间戳晚于 src 改动。不 bump 版本号、不部署、不 commit |
+
+### 2026-09-24（R1 部署体验加固：挂载显式化 / files 误导 / DSH_ROOT 逃生门）
+
+| 时间 | 工作 |
+|---|---|
+| 全天 | **「insert 新增需重启」实测结论（供 T5 文档引用）**——往 cordis.patch.yml 新增 insert 条目（首次挂载/新增插件条目）不会经宿主 HMR 自动加载：宿主 HMR 只重应用既有配置快照、不重新 import 插件 JS。证据：2026-08-18 真机排查条目 KEY 认知「HMR 只重应用配置快照、不重新 require 插件 JS，改 lib 必须重启 dsh（launchd 拉起）」；旁证：同条目 config 改动 1 秒热生效（2026-08-14 挂载条目）vs 重复 insert 条目是重启后的二次加载冲突（2026-08-14 双实例事故）。结论一句话：**改 lib/ 需重启，新增 insert 条目也需重启；只有既有条目的 config 快照改动才热生效** **〔勘误 2026-09-24 评审回炉〕：上句「新增 insert 条目也需重启」与本批次 T1 §1.2 #2 及 0.1.7-alpha.2 宿主源码不符——EntryGroup.update create() 会 import 插件模块，insert 新增/删除均热生效；本轮验收 R1①② 实证（补 host-plane 行未重启宿主即被网关路由）支持新结论。热生效语义以 docs/settings-page-design.md §1.2 矩阵为准，本条目原文保留仅供历史追溯** |
+
 ---
 ## 3. 关键决策与坑（按价值排序）
 

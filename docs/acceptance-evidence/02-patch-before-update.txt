@@ -1,0 +1,5 @@
+    # Remote（api-gateway 发现路由、设置页客户端读写 dsh-onebot 条目 config 覆盖
+    # 行）。锚定：宿主只对 ./ ../ 相对名做 anchorInsertedPluginNames，本行与
+    # dsh-onebot 主条目一致用部署副本绝对路径 name（exports 表会遮蔽裸深路径）。
+    - id: onebot-settings-remote
+      name: '/vol2/@appshare/Harness/dsh-plugins/dsh-onebot/lib/settings-remote.js'

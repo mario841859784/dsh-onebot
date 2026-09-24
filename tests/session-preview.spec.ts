@@ -40,9 +40,9 @@ function fakePersistence(
     closed,
     flags,
     stub: {
-      // The registry's hasPersistedLog uses inspect; a create-path probe must
+      // The registry's hasPersistedLog uses stat; a create-path probe must
       // see "no log" here (a read failure counts as no log).
-      inspect: vi.fn(async () => { throw new Error('no such session') }),
+      stat: vi.fn(async () => { throw new Error('no such session') }),
       open: vi.fn(async (id: string, access: string) => {
         if (access !== 'read') throw new Error('unexpected access: ' + String(access))
         if (flags.failOpenIds.includes(id)) throw new Error('session log corrupt')

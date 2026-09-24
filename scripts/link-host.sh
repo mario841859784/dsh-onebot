@@ -16,6 +16,16 @@ cd "$ROOT"
 # instances the host process loads — a npx-store copy would be a second,
 # physically distinct copy of the same version (dual-package hazard).
 resolve_dsh_root() {
+  # R1 逃生门 (mirrors build.sh): DSH_ROOT explicitly names the host
+  # node_modules root when no dsh binary is on PATH. Highest priority.
+  if [ -n "${DSH_ROOT:-}" ]; then
+    if [ -d "$DSH_ROOT/@deepseek-ai" ]; then
+      echo "$DSH_ROOT"
+      return 0
+    fi
+    echo "link-host: DSH_ROOT=$DSH_ROOT 下没有 @deepseek-ai/，不是宿主 node_modules 根" >&2
+    return 1
+  fi
   local bin=""
   if command -v dsh >/dev/null 2>&1; then
     bin=$(command -v dsh)

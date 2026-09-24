@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-onebot",
-  "version": "0.4.2",
+  "version": "0.4.4",
   "description": "QQ bot channel for dsh via the OneBot 11 protocol (NapCat / Lagrange / LLOneBot / go-cqhttp): reverse- or forward-WebSocket, DM + group chats with mention gating and allowlists, inbound image/voice handling (whisper STT), sentence-boundary splitting for long replies, [[qq_forward]] merged forwards, and a whitelisted NapCat API proxy tool",
   "private": true,
   "type": "module",
@@ -11,6 +11,7 @@
       "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
   "files": [

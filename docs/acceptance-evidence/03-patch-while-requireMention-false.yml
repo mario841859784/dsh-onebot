@@ -1,0 +1,111 @@
+# Your patch layer for this dsh profile, applied after every bundle layer:
+# a top-level YAML array of loader patch entries (id-targeted config
+# overrides, disables, and insert lists; `!!js` expressions allowed).
+- id: ui-settings-general
+  name: "@deepseek-ai/dsh-client-ui-settings-general"
+  config:
+    welcomeNoticeVersion: 2026-08-13.1
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      newapi:
+        displayName: newapi
+        apiKeyEnv: NEWAPI_API_KEY
+        api: openai-completions
+        baseURL: http://192.168.5.74:3000/v1
+        models:
+          - id: glm-5.3-flash
+            name: glm-5.3-flash
+            contextWindow: 1000000
+            maxTokens: 128000
+            input:
+              - text
+              - image
+            reasoningEfforts:
+              low: low
+              high: high
+              max: max
+            compat:
+              supportsDeveloperRole: false
+              supportsReasoningEffort: true
+              thinkingFormat: zai
+              thinkingTokenBudgetField: thinking_token_budget
+          - id: deepseek-v4-flash
+            name: deepseek-v4-flash
+            contextWindow: 1000000
+            maxTokens: 384000
+            input:
+              - text
+            reasoningEfforts:
+              off: none
+              low: low
+              high: high
+              max: max
+            compat:
+              supportsDeveloperRole: false
+              supportsReasoningEffort: true
+              thinkingFormat: deepseek
+              thinkingTokenBudgetField: thinking_token_budget
+          - id: ark-code-latest
+            name: ark-code-latest
+            input:
+              - text
+              - image
+            reasoningEfforts:
+              off: null
+              low: low
+              medium: medium
+              high: high
+            compat:
+              supportsDeveloperRole: false
+              supportsReasoningEffort: true
+              thinkingFormat: openai
+              thinkingTokenBudgetField: thinking_token_budget
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: newapi
+    model: glm-5.3-flash
+    reasoningEffort: high
+- id: agent-preset-registry
+  name: "@deepseek-ai/dsh-agent-preset-registry"
+  config:
+    default: standard
+    selectedDefault: expert-orchestrator
+- id: permission
+  name: "@deepseek-ai/dsh-permission-presets"
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+    defaultPreset: danger-full-access
+- insert:
+    - id: dsh-onebot
+      name: '/vol2/@appshare/Harness/dsh-plugins/dsh-onebot/lib/index.js'
+    # host-plane 行（dsh-onebot v0.4.3-next T3）：挂载 onebotSettings Typert
+    # Remote（api-gateway 发现路由、设置页客户端读写 dsh-onebot 条目 config 覆盖
+    # 行）。锚定：宿主只对 ./ ../ 相对名做 anchorInsertedPluginNames，本行与
+    # dsh-onebot 主条目一致用部署副本绝对路径 name（exports 表会遮蔽裸深路径）。
+    - id: onebot-settings-remote
+      name: '/vol2/@appshare/Harness/dsh-plugins/dsh-onebot/lib/settings-remote.js'
+# 设置页持久层：顶层同 id config 覆盖行（T1 定案「同 id config 覆盖热生效」）。
+# configEditor.edit 只寻址 patch 文档顶层的 id 行（insert 块内行不可寻址，写入
+# 会被 compose 自检拒绝），故 dsh-onebot 的 config 覆盖住顶层行，insert 块只管
+# 挂载。非 insert 覆盖行按 dsh-app-boot applyEntryPatches 语义整键替换 config。
+- id: dsh-onebot
+  config:
+    mode: reverse
+    host: 192.168.5.74
+    port: 8765
+    accessToken: <REDACTED>
+    adminUsers:
+      - "841859784"
+    requireMention: false

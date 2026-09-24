@@ -75,6 +75,7 @@ export interface AgentPresetsLike {
 export interface SessionPreviewEvent {
     type?: string;
     data?: {
+        agentPreset?: string;
         source?: {
             kind?: string;
             plugin?: string;
@@ -92,6 +93,7 @@ export interface SessionPreviewEvent {
 export interface SessionReadHandleLike {
     readonly header: {
         createdAt?: number;
+        agentPreset?: string;
     };
     read(offset?: number, length?: number): Promise<{
         events: readonly SessionPreviewEvent[];
@@ -100,17 +102,10 @@ export interface SessionReadHandleLike {
 }
 /** Durable session persistence (dsh-session-persistence): cold-read what a session recorded. */
 export interface SessionPersistenceLike {
-    inspect(id: SessionId, signal?: AbortSignal): Promise<{
-        meta: {
-            agentPreset?: string;
-        };
-        events: readonly {
-            type?: string;
-            data?: {
-                agentPreset?: string;
-            };
-        }[];
-    }>;
+    /** Existence probe (dsh-session-persistence 0.1.6 `stat`): resolves the
+     * stored snapshot, or undefined when the id owns no durable log. Replaces
+     * the retired host `inspect` convenience. */
+    stat(id: SessionId): Promise<object | undefined>;
     /** Open an existing stored session for reading: 'read' never takes write
      * ownership and works while a live writer holds the session. */
     open(id: SessionId, access: 'read'): Promise<SessionReadHandleLike>;

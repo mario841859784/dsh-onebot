@@ -34,7 +34,7 @@
 | 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_napcat_api`（14 个白名单 action）、`qq_group_history`（文件编辑工具 `code_safe_edit` 等已拆至独立插件 dsh-safe-edit，见下文「安全编辑」） |
 | 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计 |
 | 会话 | 每个 QQ 会话一个持久 Agent（session id 稳定派生），重启后自动 resume；按 `agentPreset`/`workspacePath` 挂载到 preset 与工作区；每轮结束 flush 落盘 |
-| 运维 | 热加载（改 patch 配置/touch 即生效，无需重启 dsh）；临时媒体 TTL 过期清理 |
+| 运维 | 热加载：profile 层 patch 的 **config 覆盖**与 **insert 新增/删除**均热生效——插件 fiber 秒级原地重启（宿主进程不重启；代价：QQ 桥一次秒级重连、在途回合中断）；touch/内容未变不触发任何动作；bundle 自带 patch、仓库模板、部署副本的 patch 文件与根配置 `cordis.yml` 的改动**不**热生效；临时媒体 TTL 过期清理 |
 | 提示词 | 自动注入 QQ 平台说明（纯文本输出、图片/语音标注 `[图片]`/`[语音]` 占位、工具与命令指引、禁宿主交互卡）；按**每个 QQ 会话 agent 自身作用域**注入，Web 会话不可见 |
 
 ## 兼容性
@@ -58,6 +58,21 @@ cd ~/dsh-plugins/dsh-onebot
 npm install --include=dev
 ./scripts/build.sh          # 链接宿主 @deepseek-ai 包 + tsc 编译 src/ → lib/
 ```
+
+> **部署副本必须带完整 node_modules 链接集**（`scripts/link-host.sh` 产物）：`files` 只打包 `lib/`，
+> 但运行时 peer 依赖 `@deepseek-ai/*` 是链接到宿主安装的——只复制 `lib/` 会挂载失败（插件入口会
+> 显式报「peer 依赖解析失败」错误）。宿主无 `dsh` 在 PATH 上（如 fnOS 应用形态）时用逃生门：
+> `DSH_ROOT=<宿主node_modules路径> ./scripts/build.sh`。
+
+**fnOS 应用形态宿主构建**：fnOS 应用中心安装的 dsh 没有 `dsh` CLI 在 PATH 上，`build.sh` 的自动定位
+（PATH 二进制 → npx store）会失败并显式报 `cannot locate the dsh install`。此时用 `DSH_ROOT` 显式指定
+宿主 node_modules 根（该目录下须有 `@deepseek-ai/`，否则报错退出而非静默回退）：
+
+```sh
+DSH_ROOT=<fnOS 应用数据目录>/node_modules ./scripts/build.sh
+```
+
+构建完成后把部署副本（`lib/` + 完整 node_modules 链接集）放到目标位置再挂载；运行副本缺链接集同样会挂载失败（见上方说明）。
 
 挂载到 ~/.dsh/config.yaml（没有就新建）：
 
@@ -145,6 +160,33 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 > ⚠️ **BREAKING（M0 安全加固）**：reverse 模式下 `accessToken` 留空会拒绝启动（fail-closed）；`host` 默认从 `0.0.0.0` 改为 `127.0.0.1`（仅本机监听），跨机部署需显式配置 `host: 0.0.0.0`。
 
 环境变量：`ONEBOT_ALLOWED_USERS`（逗号分隔管理员）、`ONEBOT_ALLOW_ALL_USERS=true`（开发用）。
+
+## 设置页
+
+dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `onebotSettings`，写入 profile 层
+`cordis.patch.yml` 中 `dsh-onebot` 条目的 config 覆盖行——与手改 patch、宿主原生设置页是同一个持久层）。
+
+### 三组 19 键
+
+| 组 | 键 |
+|---|---|
+| connection（连接） | `mode`、`host`、`port`、`url`、`accessToken`、`botQQ` |
+| permissions（权限） | `requireMention`、`adminUsers`、`dmPolicy`、`groupPolicy`、`allowAllUsers`、`allowFrom`、`groupAllowFrom` |
+| behavior（行为） | `interimMessages`、`interimRecall`、`interimRecallMs`、`sendErrorNotice`、`unknownCommand`、`rateLimitPerMinute` |
+
+`accessToken` 在设置页做密码型输入，快照返回侧脱敏（不回显明文）；写入侧仍在 patch 文件明文落盘。
+
+### 与 patch config 的优先级
+
+**schema 默认值 ← bundle/底层 patch（继承层） ← profile 覆盖行（设置页写这里）**；同一层内后写的 patch
+条目胜出。设置页键与手改 patch 是同一层的同一行，不存在两套优先级。三组 19 键之外的键
+（media/STT/性能/`agentPreset` 等低频键）不设 UI，仍在同一行 config 手改 patch。
+
+### 生效方式
+
+每次保存（设置页或手改同一覆盖行）= 插件 fiber 秒级原地重启生效，宿主进程与 Web GUI 不重启；
+代价：QQ 桥一次秒级重连、在途回合中断、频控窗口与中间消息缓冲清零（会话映射/历史不受影响）。
+与当前覆盖行全等的保存是 no-op，不触发重启；写入导致插件激活失败时 patch 文件自动回滚、旧配置继续运行。
 
 ## 会话工作区（workspace）选择
 
@@ -303,6 +345,9 @@ chat 回退到下一条消息新建会话，不会卡死。损坏（碰撞/恢�
 | 文字图中文豆腐块 | Linux 未装 CJK 字体：`apt install fonts-noto-cjk`，并用 `fontFiles` 指定 SC 字体文件 |
 | 崩溃循环 / 工具注册冲突 | 同一插件文件被 insert 两次（双实例）——检查 patch 无重复条目 |
 | 语音一直只有 [语音] 占位、没有转写补递 | ffmpeg 或 whisper 不可用，或转写超时：安装后重启、调大 `sttTimeoutMs`，或 `sttEnabled: false` 关闭 |
+| 插件挂载失败 / peer 依赖解析失败 | 部署副本缺完整 node_modules 链接集：只复制 `lib/` 不够，运行时 peer 依赖 `@deepseek-ai/*` 需经 `scripts/link-host.sh` 链接到宿主安装；插件入口会 fail-loud 显式报「peer 依赖解析失败」，按报错补齐链接集后重启 |
+| `build.sh` 报 `cannot locate the dsh install` | 宿主无 `dsh` 在 PATH（如 fnOS 应用形态）且未找到 npx store：设 `DSH_ROOT=<宿主 node_modules 路径>` 后重跑 `./scripts/build.sh`（该目录下须有 `@deepseek-ai/`，设错路径会显式报错而非静默回退） |
+| 改了设置页 / patch 但不生效 | 按顺序排查：① 确认改的是**被监视的文件**——profile 层 `<DSH_HOME>/profiles/web/cordis.patch.yml` 或 home 层 `<DSH_HOME>/cordis.patch.yml`（仓库 patch 模板、部署副本、bundle 自带 patch 均不被监视，需同步到上述文件）；② 内容须真的变化（touch 同内容文件是 no-op）；③ 看宿主日志有无激活失败——insert 新增条目激活失败（如 peer 缺失）会显式报错、条目失活，等待重启重试；④ 设置页的持久层是 profile 层 `dsh-onebot` 覆盖行，改到别处（如已被宿主废弃改名的 settings.yaml）不会生效 |
 | 日志在哪 | dsh 宿主日志；插件历史根因与修复见 [DEVLOG.md](DEVLOG.md) |
 
 ## 开发记录

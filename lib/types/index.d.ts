@@ -14,7 +14,7 @@ import type ToolRuntime from '@deepseek-ai/dsh-tools';
 import type { AgentRegistry } from '@deepseek-ai/dsh-agent';
 import type { SessionStore } from '@deepseek-ai/dsh-session';
 import type { ModelSelection } from '@deepseek-ai/dsh-agent';
-import z from '@deepseek-ai/schemastery';
+import type Z from '@deepseek-ai/schemastery';
 import type { OneBotEvent } from './connection.js';
 type Context = CordisContext & {
     tools: ToolRuntime;
@@ -35,28 +35,22 @@ type Context = CordisContext & {
         }>;
     };
     sessionPersistence: {
-        inspect(id: string): Promise<{
-            meta: {
-                agentPreset?: string;
-                cwd?: string;
-            };
-            events: readonly {
-                type?: string;
-                data?: {
-                    agentPreset?: string;
-                };
-            }[];
-        }>;
+        /** dsh-session-persistence 0.1.6 `stat`: the stored snapshot, or
+         * undefined when the id owns no durable log (the retired `inspect`
+         * convenience no longer exists on the host service). */
+        stat(id: string): Promise<object | undefined>;
         /** /session list previews: open a stored session read-only (never takes
          * write ownership), read the header + a small event prefix, then close. */
         open(id: string, access: 'read'): Promise<{
             header: {
                 createdAt?: number;
+                agentPreset?: string;
             };
             read(offset?: number, length?: number): Promise<{
                 events: readonly {
                     type?: string;
                     data?: {
+                        agentPreset?: string;
                         source?: {
                             kind?: string;
                             plugin?: string;
@@ -167,7 +161,7 @@ export interface Config {
 export declare function defaultMediaDir(): string;
 /** The dsh data home ($DSH_HOME or ~/.dsh); source of the .agent-presets dir. */
 export declare function dshHome(): string;
-export declare const Config: z<Config>;
+export declare const Config: Z<Config>;
 /** Map deprecated config names onto their renamed fields: a legacy value is
  * honored only while the new name still sits at its schema default (the new
  * name wins when both are configured), each legacy use warns once, and the

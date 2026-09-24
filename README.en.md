@@ -30,11 +30,11 @@ User(QQ) ←→ NapCat ←→ dsh-onebot plugin ←→ dsh Agent (one per chat)
 | Voice | ffmpeg to 16 kHz WAV + whisper transcription (openai-whisper / whisper.cpp / custom command); **non-blocking**: the voice message enters the turn as a `[语音]` placeholder right away, and the transcript follows as a `（语音转写：…）` supplement when done (default timeout 60s); failure keeps the `[语音]` placeholder |
 | Text image | t2i card renderer (@napi-rs/canvas): headings/bold/italic/strikethrough/quotes/lists/code blocks/tables/inline code pills/color emoji/CJK punctuation rules; same numbers as the Hermes original (800px/26px/rules/right edge 790) |
 | Outbound | Body length ≤ `textImageThreshold` (default 150) is sent as one message; **over the threshold renders a t2i text-image card** (AstrBot style: headings/quotes/lists/tables/code blocks/color emoji; render failure, a PNG over `outboundImageMaxBytes`, or `<=0` (card path disabled) falls back to a single plain-text message); Markdown stripped to plain QQ text; `[[qq_forward]]` merged-forward cards (group/private); **live interim messages** (`interimMessages`: each interim text is sent immediately; each is auto-recalled alone after `interimRecallMs` (default 90s); at turn end the whole turn's interims render into one **t2i summary card**, the still-on-screen originals are recalled, then the final reply is sent — no turn-end merged forwarding, avoiding unrecallable >2min originals and duplicate cards on long turns; `interimRecall: false` degrades to send-only: no summary card, no recall); **host plan-book/question-card auto-relay** (when the model calls exit_plan_mode / ask_user_question, the full plan text / question options are sent to QQ), typing indicator (`set_input_status`, private chats only) |
-| Commands | Slash commands (admin only): `/new` fresh session (context cleared, old session kept on disk), `/stop` stop the current generation, `/model` view/switch the current session's model (`--default` changes the deployment default; the bare form renders a two-level numbered list — reply with a number to pick a provider, then a number to pick the model), `/workspace` view/switch workspace (bare form renders a numbered list; reply with a number to switch), `/preset` view/switch agent presets (session rebuilt, recorded in the new session's header; bare form numbered), `/status` session panorama: chat/session/preset/model/cwd/outbound mode/agent status, `/retry` rerun the last user message (retry after a failed turn; refused while a generation is in progress), `/id` chat/session/cwd only (for troubleshooting), `/ver` plugin version + git commit, `/ocr` OCR the latest inbound image of this session (NapCat ocr_image), `/mode` switch this session's outbound mode (per-chat override, persisted across restarts), `/plan` host plan mode (`/plan off` exits directly with no Web approval card), `/goal` record/update the session goal (auto-attached as a reminder each turn, persisted across restarts), `/help` help; unknown slash commands are intercepted by default with close-match suggestions (`unknownCommand: passthrough` restores the fall-through to the model) |
-| Tools | `qq_send_image` (≤9 images, path or URL), `qq_send_voice`, `qq_send_video`, `qq_send_file`, `qq_send_forward`, `qq_napcat_api` (14 allowlisted actions), `qq_group_history` (guarded file editing `code_safe_edit`/`code_safe_rollback`/`code_list_backups` moved to the standalone plugin **dsh-safe-edit** — see README.md → 安全编辑) |
+| Commands | Slash commands (admin only): `/new` fresh session (context cleared, old session kept on disk), `/stop` stop the current generation, `/model` view/switch the current session's model (`--default` changes the deployment default; the bare form renders a two-level numbered list — reply with a number to pick a provider, then a number to pick the model), `/workspace` view/switch workspace (bare form renders a numbered list; reply with a number to switch), `/preset` view/switch agent presets (session rebuilt, recorded in the new session's header; bare form numbered), `/status` session panorama: chat/session/preset/model/cwd/outbound mode/agent status, `/retry` rerun the last user message (retry after a failed turn; refused while a generation is in progress), `/id` chat/session/cwd only (for troubleshooting), `/ver` plugin version + git commit, `/ocr` OCR the latest inbound image of this session (NapCat ocr_image), `/mode` switch this session's outbound mode (per-chat override, persisted across restarts), `/plan` host plan mode (`/plan off` exits directly with no Web approval card; `/plan <text>` enters and processes the text), `/permission` switch the host permission preset (`w` = workspace-writable + approvals, `f` = full access + no approvals; full preset names passed through, unknown names error with the available list; bare form renders the menu), `/goal` record/update the session goal (auto-attached as a reminder each turn, persisted across restarts), `/help` help; unknown slash commands are intercepted by default with close-match suggestions (`unknownCommand: passthrough` restores the fall-through to the model) |
+| Tools | `qq_send_image` (≤9 images, path or URL), `qq_send_voice`, `qq_send_video`, `qq_send_file`, `qq_send_forward`, `qq_napcat_api` (14 allowlisted actions), `qq_group_history` (guarded file editing `code_safe_edit`/`code_safe_rollback`/`code_list_backups` moved to the standalone plugin **dsh-safe-edit** — see Safe editing below) |
 | Permissions | Admin allowlist (`ONEBOT_ALLOWED_USERS`), dm/group policies (open/allowlist/disabled), group @-mention gating, restricted users soft limit (`[受限用户:仅问答]`), outbound sensitive-content auditing |
 | Sessions | One persistent Agent per QQ chat (stable derived session id), auto-resumed after restart; mounted into presets/workspaces via `agentPreset`/`workspacePath`; mapping flushed to disk at the end of every turn |
-| Ops | Hot reload (edit patch config/touch → takes effect, no dsh restart); temp media TTL cleanup |
+| Ops | Hot reload: **config overrides** and **insert additions/removals** in the profile-level patch take effect hot — the plugin fiber restarts in place within seconds (the host process is not restarted; cost: one second-level QQ bridge reconnect, in-flight turns interrupted); touch / no-content-change triggers nothing; changes to the bundle's built-in patch, repo templates, deployment-copy patch files, or the root `cordis.yml` do **not** hot-reload; temp media TTL cleanup |
 | Prompt | Injects QQ platform notes automatically (plain-text output, `[图片]`/`[语音]` placeholders for incoming images/voice, tool & command guidance, host interaction cards banned); injected into **each QQ chat agent's own scope**, invisible to Web sessions |
 
 ## Compatibility
@@ -58,6 +58,24 @@ cd ~/dsh-plugins/dsh-onebot
 npm install --include=dev
 ./scripts/build.sh          # link host @deepseek-ai packages + tsc src/ → lib/
 ```
+
+> **A deployment copy must carry the full node_modules link set** (produced by `scripts/link-host.sh`): `files`
+> packages only `lib/`, but the runtime peer deps `@deepseek-ai/*` are symlinked to the host install — copying
+> `lib/` alone fails to mount (the plugin entry fails loudly with an explicit "peer dependency resolution failed"
+> error). When the host has no `dsh` on PATH (e.g. the fnOS app form), use the escape hatch:
+> `DSH_ROOT=<host node_modules path> ./scripts/build.sh`.
+
+**Building against an fnOS app-form host**: the dsh installed from the fnOS App Center has no `dsh` CLI on PATH,
+so `build.sh`'s auto-discovery (PATH binary → npx store) fails with an explicit `cannot locate the dsh install`.
+Point `DSH_ROOT` at the host node_modules root explicitly (it must contain `@deepseek-ai/`; a wrong path errors
+out instead of silently falling back):
+
+```sh
+DSH_ROOT=<fnOS app data dir>/node_modules ./scripts/build.sh
+```
+
+After building, place the deployment copy (`lib/` + the full node_modules link set) at the target location and
+mount it; a runtime copy missing the link set fails to mount the same way (see above).
 
 Mount it in `~/.dsh/config.yaml` (create it if missing):
 
@@ -150,6 +168,38 @@ default). Common options:
 
 Env vars: `ONEBOT_ALLOWED_USERS` (comma-separated admins), `ONEBOT_ALLOW_ALL_USERS=true` (development).
 
+## Settings page
+
+The dsh Web GUI settings page exposes this plugin's configuration visually (a host-plane Remote
+`onebotSettings` that writes the config override of the `dsh-onebot` entry in the profile-level
+`cordis.patch.yml` — the same persistence layer as a hand-edited patch and the host's native settings page).
+
+### Three groups, 19 keys
+
+| Group | Keys |
+|---|---|
+| connection | `mode`, `host`, `port`, `url`, `accessToken`, `botQQ` |
+| permissions | `requireMention`, `adminUsers`, `dmPolicy`, `groupPolicy`, `allowAllUsers`, `allowFrom`, `groupAllowFrom` |
+| behavior | `interimMessages`, `interimRecall`, `interimRecallMs`, `sendErrorNotice`, `unknownCommand`, `rateLimitPerMinute` |
+
+`accessToken` is a password-style input in the settings page; snapshots redact it on return (no plaintext echo);
+the write side still lands in the patch file as plaintext.
+
+### Priority vs. patch config
+
+**schema defaults ← bundle/base patch (inherited layer) ← profile override line (what the settings page writes)**;
+within the same layer, later patch entries win. Settings-page keys and a hand-edited patch are the same line in
+the same layer — there are no two competing priorities. Keys outside the 19 (media/STT/performance/
+`agentPreset` and other low-frequency keys) get no UI; hand-edit the patch in the same config line.
+
+### How changes take effect
+
+Every save (settings page or a hand edit of the same override line) = the plugin fiber restarts in place within
+seconds; the host process and Web GUI are not restarted. Cost: one second-level QQ bridge reconnect, in-flight
+turns interrupted, rate-limit windows and interim-message buffers cleared (session mappings/history are
+unaffected). A save identical to the current override line is a no-op and triggers no restart; if a write makes
+the plugin fail to activate, the patch file rolls back automatically and the old config keeps running.
+
 ## Session workspace selection
 
 Each QQ session picks its working directory at creation time, in this order (written into the session meta and
@@ -168,14 +218,74 @@ The per-chat `/workspace` override is persisted to the mapping file (chat-sessio
 stays compatible with older files): it survives restarts and failed session resumes, and a `/new` keeps it too —
 as long as the chat uses a non-default directory, `/workspace` and new sessions keep using it after a restart.
 
-Serial-number replies (`/workspace 2`, `/model 3`, `/preset 1`) resolve against a snapshot of the list the command
-just printed and stay valid for 5 minutes (an expired snapshot asks you to list again); a purely numeric argument is
-read as an index only while such a list is live, otherwise the original parameter semantics apply. Unknown slash
-commands are intercepted by default with close-match suggestions — `unknownCommand: passthrough` passes them to
-the model instead.
 Sessions attach to GUI workspaces as follows: a new workspace is auto-created only when the session cwd equals
 the configured `workspacePath` (or the host cwd when unset); legacy sessions carrying a foreign cwd are attached
 only when a workspace already owns that path, never auto-created.
+
+## Slash commands quick reference (admin only)
+
+| Command | Purpose |
+|---|---|
+| `/new` | Start a fresh session (context cleared, old session kept on disk) |
+| `/stop` | Stop the current generation |
+| `/model [--default] <provider> <model>` | View/switch the current session's model; `--default` changes the deployment default. The bare form renders a two-level numbered list: reply with a number to pick a provider, then a number to pick the model |
+| `/workspace [path\|number\|list]` | View/switch workspace; bare form renders a numbered list (current dir marked), reply `/workspace <number>` to switch; `/workspace list` lists all records |
+| `/preset [id\|number]` | View/switch presets (bare form numbered, reply with a number to pick); switching rebuilds the session and records the preset in the new session's header |
+| `/session [number]` | List the switchable historical sessions of this chat (bare form numbered; each entry has a content preview, created and retired timestamps, truncated id; unreadable entries show "(content unreadable)" without affecting the rest). Reply with a number to switch back: the current session retires into the list, the target session is restored with its history (including per-chat settings); you can switch back and forth. The list persists across restarts (switchable-sessions.json, max 20 per chat) |
+| `/status` | Session panorama: chat/session/preset/model/cwd/outbound mode/agent/switchable count |
+| `/retry` | Rerun the last user message (retry after a failed turn) |
+| `/id` | chat/session/cwd only (for troubleshooting) |
+| `/ver` | Plugin version + git commit |
+| `/ocr` | OCR the latest inbound image of this session (NapCat ocr_image) |
+| `/mode [interim\|instant]` | Switch this session's outbound mode (per-chat override, persisted across restarts) |
+| `/plan [off\|text]` | Host plan mode (`/plan` enters; `/plan off` exits directly with no Web approval card; `/plan <text>` enters and processes the text) |
+| `/permission [w\|f\|preset\|number]` | Switch the host permission preset (sandbox mode + approval policy, applies immediately): `w`/`ws`/`write`→workspace-write (workspace-writable + approvals required), `f`/`full`/`danger`→danger-full-access (full read/write, no approvals); full preset names are passed through as-is (unknown names make the host error and list the available ones); bare form renders a Chinese permission menu; numeric indexes resolve against the host's available list in order (not snapshotted) |
+| `/goal [goal\|clear]` | Record/update this session's goal (auto-attached as a reminder each turn, persisted across restarts) |
+| `/help` | Grouped command card (▍sessions/output/queries/actions/other), each entry with usage; error hints always include usage or the next step |
+
+`/preset` switching is an in-process per-chat override (survives `/new`): the next message rebuilds the session
+with the new preset written into the header, and a restart-resume restores it from the record. The per-chat state
+of `/mode` and `/goal` is persisted into the mapping file (since v0.4.0, across restarts), as is the `/workspace`
+override; `/plan` remains an in-process override that falls back to the default on restart.
+The `/session` switchable list persists per chat in the media directory's switchable-sessions.json (same
+read/write discipline as retired-sessions.json: missing file = fresh, corrupted file kept in memory, atomic
+writes; max 20 per chat, deduped, newest first). Each entry renders a content preview (the first real user input
+of that session's event log: kind 'user' or QQ messages authored by this plugin first, falling back to any
+user/message; all text blocks joined, the QQ inbound `<user_message>` wrapper and trusted prefixes outside the
+join boundary (`[受限用户:仅问答]` / `[HH:MM nickname(QQ)]` — incomplete wrappers or empty bodies fall back
+verbatim) stripped, folded to newlines and truncated to ≤40 code points, never splitting an emoji; with no user
+input found it shows "(no conversation content)"), the created time (the session header's createdAt, omitted if
+unavailable), the retired time, and a truncated id (first 8 + … + last 8 chars, keeping both ends recognizable).
+Previews come from a cold read of the first 24 events via sessionPersistence's read handle (no write ownership,
+closed right after reading); a missing/corrupted/unreadable log only degrades that entry to "(content unreadable)",
+the rest and the switch-back feature are unaffected. After a successful switch the target session is un-retired;
+restart-resume and post-eviction reactivation find it through the normal path. If resuming the target fails, its
+id is hard-retired immediately and removed from the list, and the chat falls back to creating a new session on
+the next message — it never gets stuck. Sessions retired due to corruption (collision/resume failure) never
+enter the list and can never be switched back to.
+Serial-number replies resolve against a snapshot of the list the command just printed and stay valid for
+5 minutes (an expired snapshot asks you to list again); a purely numeric argument is read as an index only while
+such a list is live, otherwise the original parameter semantics apply. Exception: `/permission` numeric indexes
+are not snapshotted — they resolve live against the host's available list each time, with out-of-range or
+unparseable values falling back to the usage hint. Unknown slash commands are intercepted by default with
+close-match suggestions; `unknownCommand: passthrough` passes them to the model instead.
+
+## Safe editing (code_safe_edit)
+
+Guarded host-file editing is provided by the **standalone plugin dsh-safe-edit** (`~/dsh-plugins/dsh-safe-edit/`,
+split out of this plugin on 2026-08-18, registered globally across all channels). Three tools; the approach
+draws on [irmia_devkit_open](https://github.com/irmia2026/irmia_devkit_open)'s safe_edit (AGPL-3.0, an
+independent clean TypeScript implementation). Tools and boundaries: see the dsh-safe-edit repo/docs:
+
+- `code_safe_edit`: read → path allowlist → **auto backup** → match (exact → strip line-number prefix →
+  whitespace-aligned / Aider-style) → replace → syntax check (`node --check` for js/cjs/mjs) →
+  **auto-rollback on failure**
+- `code_safe_rollback` / `code_list_backups`
+- Boundaries follow the session sandbox policy: `danger-full-access` unrestricted, `workspace-write` limited to
+  the session workspace, `read-only` denied; with no policy service it falls back to `safeEditRoot`
+  (default `/Users/mario/workspace`)
+- The model may prefer this tool (the `code-safe-edit` skill guides all channels; the QQ platform notes guide
+  built-in read/edit conventions without binding to a specific tool name)
 
 ## dm / group access policies (pick on first setup)
 
@@ -237,7 +347,7 @@ automatically from the system and fixed paths at startup; missing glyphs render 
 - Group messages carry a `[HH:MM nickname(QQ)]` prefix; restricted-user messages carry a `[受限用户:仅问答]`
   prefix (answer only, no file/terminal/config operations).
 - This channel is QQ and the host has no Web interaction cards: do not call `ask_user_question` / `exit_plan_mode` (confirmation cards are Web-only and would stall the conversation); ask and confirm in plain text; in host plan mode, output the plan as plain text and point to `/plan off` to exit.
-- Slash commands are intercepted by the plugin (14 of them, admin only, see `/help`); unknown slash commands are intercepted by default with close-match suggestions, and `unknownCommand: passthrough` passes them to the model; text that does not start with a `/word` token (e.g. a path) still goes to the model normally.
+- Slash commands are intercepted by the plugin (16 of them, admin only, see `/help`); unknown slash commands are intercepted by default with close-match suggestions, and `unknownCommand: passthrough` passes them to the model; text that does not start with a `/word` token (e.g. a path) still goes to the model normally.
 - Edit host files with the built-in read/edit (line-level hash anchors, dsh-better-edit auto-undo); never overwrite whole files with write (it clears the undo history).
 
 ## Uninstall
@@ -278,6 +388,9 @@ Lessons ported from the source DEVLOG:
 | Tofu CJK in text images | Linux without CJK fonts: `apt install fonts-noto-cjk`, and point `fontFiles` at an SC font file |
 | Crash loop / tool registration conflict | The same plugin file inserted twice (double instance); check the patch has no duplicate entries |
 | Voice never gets a transcript (stays `[语音]`) | ffmpeg or whisper unavailable, or transcription timed out: install and restart, raise `sttTimeoutMs`, or set `sttEnabled: false` |
+| Plugin fails to mount / peer dependency resolution failed | The deployment copy lacks the full node_modules link set: copying `lib/` alone is not enough — the runtime peer deps `@deepseek-ai/*` must be linked to the host install via `scripts/link-host.sh`; the plugin entry fails loudly with an explicit error, fix the link set per the message and restart |
+| `build.sh` reports `cannot locate the dsh install` | The host has no `dsh` on PATH (e.g. the fnOS app form) and no npx store was found: set `DSH_ROOT=<host node_modules path>` and re-run `./scripts/build.sh` (the directory must contain `@deepseek-ai/`; a wrong path errors out instead of silently falling back) |
+| Settings-page / patch change doesn't take effect | Troubleshoot in order: ① make sure you edited a **watched file** — the profile-level `<DSH_HOME>/profiles/web/cordis.patch.yml` or the home-level `<DSH_HOME>/cordis.patch.yml` (repo patch templates, deployment copies, and the bundle's built-in patch are not watched; sync your change into one of the above); ② the content must actually change (touching a file with identical content is a no-op); ③ check the host log for activation failures — an insert-added entry that fails to activate (e.g. a missing peer) errors out explicitly and stays inactive until a restart retries it; ④ the settings page's persistence layer is the profile-level `dsh-onebot` override line — editing anywhere else (e.g. settings.yaml, which the host has deprecated and renames away) has no effect |
 | Where are the logs | dsh host logs; historical root causes & fixes in [DEVLOG.md](DEVLOG.md) |
 
 ## Development record

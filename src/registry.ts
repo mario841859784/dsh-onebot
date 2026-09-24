@@ -21,7 +21,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import type { MediaRef } from './cq.js'
 import type { ChatId, UserRole } from './chat.js'
 import { sessionIdForChat } from './chat.js'
-import type { AgentPresetsLike, BridgeConfig, SessionPersistenceLike, WorkspaceRegistryLike } from './bridge.js'
+import type { AgentPresetsLike, BridgeConfig, SessionPersistenceLike, SessionReadHandleLike, WorkspaceRegistryLike } from './bridge.js'
 import { describeError } from './errors.js'
 
 /** The mapping file name inside the media dir. */
@@ -670,8 +670,9 @@ export class ChatRegistry {
     const persistence = this.deps.sessionPersistence
     if (persistence === undefined) return false
     try {
-      await persistence.inspect(id)
-      return true
+      // 0.1.6 `stat` (the retired `inspect` no longer exists): a snapshot means
+      // the id owns a durable log; missing or a read failure counts as no log.
+      return (await persistence.stat(id)) !== undefined
     } catch {
       return false
     }
@@ -723,7 +724,10 @@ export class ChatRegistry {
       await mkdir(this.deps.config.mediaDir, { recursive: true })
       // Atomic write: a temp file + rename never leaves a half-written file
       // that a concurrent/future loadRetired could parse into a broken empty set.
-      const tmpPath = this.retiredPath() + '.tmp'
+      // A UNIQUE tmp suffix per call: two concurrent saves sharing one fixed
+      // `.tmp` name interleave so the later rename finds its tmp already
+      // consumed by the earlier one (ENOENT, web log line 14251).
+      const tmpPath = this.retiredPath() + '.tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
       await writeFile(tmpPath, JSON.stringify(Array.from(this.retiredSessionIds), null, 2), 'utf8')
       await rename(tmpPath, this.retiredPath())
     } catch (error) {
@@ -782,7 +786,8 @@ export class ChatRegistry {
       await mkdir(this.deps.config.mediaDir, { recursive: true })
       const payload: Record<string, SwitchableSession[]> = {}
       for (const [chatId, list] of this.switchableByChat) payload[chatId] = list
-      const tmpPath = this.switchablePath() + '.tmp'
+      // Unique tmp suffix per call — same concurrent-rename race as saveRetired.
+      const tmpPath = this.switchablePath() + '.tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
       await writeFile(tmpPath, JSON.stringify(payload, null, 2), 'utf8')
       await rename(tmpPath, this.switchablePath())
     } catch (error) {
@@ -1005,12 +1010,28 @@ export class ChatRegistry {
   private async recordedPresetFor(sessionId: SessionId): Promise<string | undefined> {
     const persistence = this.deps.sessionPersistence
     if (persistence === undefined) return undefined
+    // 0.1.6 has no `inspect`: read the same record through open('read') — the
+    // immutable header carries the creation preset, the full event log the
+    // newest `agent-preset/selected`. The handle MUST close even on failure
+    // (AsyncDisposable — a leaked read handle pins backend resources).
+    let handle: SessionReadHandleLike | undefined
     try {
-      const inspection = await persistence.inspect(sessionId)
-      return resolveRecordedPreset(inspection)
+      handle = await persistence.open(sessionId, 'read')
+      return resolveRecordedPreset({
+        meta: { agentPreset: handle.header.agentPreset },
+        events: (await handle.read()).events,
+      })
     } catch (error) {
       this.deps.log('warn', 'preset record read failed for ' + sessionId + ' (falling back to config/default): ' + describeError(error))
       return undefined
+    } finally {
+      if (handle !== undefined) {
+        try {
+          await handle.close()
+        } catch {
+          // Best-effort teardown: the read outcome above already decided.
+        }
+      }
     }
   }
 
