@@ -636,3 +636,19 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - 历史记录保留旧名（当时包名的表述，不做回溯改写）：DEVLOG.md 既有条目、docs/npm-e2e-report.md（e2e 复验记录）、docs/npm-e2e-evidence/*、docs/acceptance-evidence/04-npm-test.log。
 - 验证：npm run build 通过；npm test 30 文件 376 用例全绿；npm pack 清单 56 文件，tarball 名 dsh-onebot-qq-0.4.4.tgz。
 - 发布：npm registry 首次发布 `dsh-onebot-qq@0.4.4`（public，latest）；tarball https://registry.npmjs.org/dsh-onebot-qq/-/dsh-onebot-qq-0.4.4.tgz 。
+
+## 2026-09-25 npm 元数据优化（0.4.5）
+
+- package.json：version 0.4.4 → 0.4.5；description 换为精简双语版（中文首句 + 英文短句，dsh-market 卡片与 npm 搜索友好）；新增 keywords（dsh / onebot / onebot11 / qq / qq-bot / napcat / deepseek-harness）。
+- 发版说明：纯元数据优化，无代码改动；lib 产物无变化。
+- 验证：npm run build 通过；npm test 30 文件 376 用例全绿；npm pack 清单 56 文件，tarball 名 dsh-onebot-qq-0.4.5.tgz。
+- 发布：npm registry 发布 `dsh-onebot-qq@0.4.5`（public，latest）；npm view 核验 version/dist-tags/keywords/description 生效。
+
+## 2026-09-25 收录合规修复（0.4.6，awesome-dsh-plugin T1/A1）
+
+- dsh.bundle manifest：package.json 新增 `"dsh": { "bundle": { "patch": "./cordis.patch.yml" }, "client": { "platform": "web" } }`。宿主读取点考证：`dsh.bundle.patch` = dsh-app-boot/lib/index.js:497（bundlePatchFiles：字符串或字符串数组、包相对路径）与 :924（loadProfileDirectory 读 `dsh.bundle`，缺失即报错）；`dsh.client.platform` = dsh-client-modules/lib/index.js:65（parseDshClient：platform 必须为 string，可选 inject/external/immediately）。此前只声明 `dsh.client` 不满足收录 CI 的 dsh.bundle 校验。
+- cordis.patch.yml：由 `<DEPLOY_DIR>` 占位符模板改写为可直接加载的 bundle patch（顶层 YAML 数组 + insert 两行，name 用裸包名 `dsh-onebot-qq` / `dsh-onebot-qq/settings-remote`，走 exports）；手工部署形态（绝对路径 name）移入注释说明。宿主对 bundle patch 直接 loadOverlayPatches（dsh-app-boot/lib/index.js:928），占位符模板不可作为 bundle patch。
+- peer 预发布分支：8 个 `>=0.1.5-rc.1` 形态 @deepseek-ai/* peer 改为 `>=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0`；semver 实测矩阵 10/10（8 版本 true、0.2.0-0/0.2.0 false），旧范围对 0.1.7-alpha.2 = false 的缺陷坐实。矩阵落 docs/semver-matrix.md。cordis/schemastery 无预发布问题未动；`engines.dsh` 同形态属范围外，留作后续事项。
+- 验证：npm run build 通过；npm test 30 文件 376 用例全绿（exit 0）。
+- 发布：npm registry 发布 `dsh-onebot-qq@0.4.6`（public，latest；token 仅经环境变量，.npmrc 引用 `${NPM_TOKEN}`，用后即删）。
+- 同步：部署副本 /vol2/@appshare/Harness/dsh-plugins/dsh-onebot 的 lib（已一致）与 package.json（复制）diff -rq 核验通过。
