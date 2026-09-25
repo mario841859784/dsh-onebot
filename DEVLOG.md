@@ -662,3 +662,10 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - 验证：① manifest rev 更新（9c8122…→936b15…）+ 带 rev 拉 combo bundle 200 且含新 id；② node vm 桩 `__ModuleLoader__` 断言注册 id/导出/inject/Remote package；③ headless Chromium 全链路：设置导航出现「QQ Bot (OneBot)」、面板完整渲染（revision 0、6 分组、监听地址/端口/AccessToken 脱敏快照值来自真实 getSettings RPC）、0 console 错误；④ vitest 30 文件 376 用例全绿。
 - 顺带：部署副本/源码仓 node_modules 内 esbuild 二进制丢执行位（EACCES），chmod +x 修复（备份 zip 解压丢 x-bit 同类坑）。
 - 教训记录：skill devops/fnos-app-inspection references/dsh-plugin-errors.md 新增模式 9。
+
+## 2026-09-25 发布 0.4.7（client id 失配修复发版 + engines.dsh 补预发布分支）
+
+- 根因回顾：0.4.4 包由 `@dsh-external/dsh-onebot` 改名 `dsh-onebot-qq`；0.4.6 起宿主 `dsh.client` 声明后按**包名**下发 client entry 并校验 bundle 注册 id，而 lib/client.js 硬编码旧 id `dsh-onebot` → 永远失配，web 设置面板加载失败。85f23b4 已改 id 与 PLUGIN_ID 为 `dsh-onebot-qq`，tests 同步。
+- 修复内容：lib/client.js id/PLUGIN_ID → `dsh-onebot-qq`（HEAD 已含）；本发版顺带把上轮遗留的 `engines.dsh` 从 `>=0.1.5-rc.1` 补成与 peer 三分支一致的 `>=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0`（semver 实测 0.1.5-rc.x/0.1.6-alpha.x/0.1.7-alpha.x/0.1.7-rc.x 全 true、0.2.0-alpha.1 false，矩阵追加进 docs/semver-matrix.md）。
+- 验证链路：npm run build + npm test 全绿（30 文件 376 用例）→ 发布 `dsh-onebot-qq@0.4.7`（token 仅经环境变量，用后即删）→ registry latest 核验 + tarball 抽查 lib/client.js 含新 id → 部署副本同步 diff -rq 为零。
+- 发版说明：0.4.7 = 0.4.6 修复后的正式发版号（0.4.6 曾被用作 metadata-only 发布占用），内容为 client bundle 注册 id 对齐包名，修复 web 端「Failed to load plugins: dsh-onebot-qq」设置面板失配；另补 engines.dsh 预发布分支。

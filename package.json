@@ -1,6 +1,6 @@
 {
   "name": "dsh-onebot-qq",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "description": "给 dsh 加上 QQ 通道（OneBot 11，兼容 NapCat / Lagrange / LLOneBot）：反向/正向 WS 自动重连、私聊群聊、图片/语音转写、t2i 文字图卡片、合并转发、设置页可视化配置。QQ channel for dsh via OneBot 11.",
   "keywords": [
     "dsh",
@@ -26,6 +26,7 @@
   },
   "files": [
     "lib",
+    "!lib/*.bak-*",
     "cordis.patch.yml"
   ],
   "license": "BSD-3-Clause",
@@ -38,7 +39,7 @@
     "url": "https://github.com/mario841859784/dsh-onebot/issues"
   },
   "engines": {
-    "dsh": ">=0.1.5-rc.1",
+    "dsh": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0",
     "node": ">=22"
   },
   "dsh": {
