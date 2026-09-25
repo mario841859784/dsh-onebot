@@ -1,7 +1,16 @@
 {
   "name": "dsh-onebot-qq",
-  "version": "0.4.4",
-  "description": "QQ bot channel for dsh via the OneBot 11 protocol (NapCat / Lagrange / LLOneBot / go-cqhttp): reverse- or forward-WebSocket, DM + group chats with mention gating and allowlists, inbound image/voice handling (whisper STT), sentence-boundary splitting for long replies, [[qq_forward]] merged forwards, and a whitelisted NapCat API proxy tool",
+  "version": "0.4.6",
+  "description": "给 dsh 加上 QQ 通道（OneBot 11，兼容 NapCat / Lagrange / LLOneBot）：反向/正向 WS 自动重连、私聊群聊、图片/语音转写、t2i 文字图卡片、合并转发、设置页可视化配置。QQ channel for dsh via OneBot 11.",
+  "keywords": [
+    "dsh",
+    "onebot",
+    "onebot11",
+    "qq",
+    "qq-bot",
+    "napcat",
+    "deepseek-harness"
+  ],
   "private": false,
   "type": "module",
   "main": "lib/index.js",
@@ -32,6 +41,14 @@
     "dsh": ">=0.1.5-rc.1",
     "node": ">=22"
   },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
   "dshx": {
     "contributes": {
       "tools": [
@@ -48,14 +65,14 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-agent": ">=0.1.5-rc.1",
-    "@deepseek-ai/dsh-llm": ">=0.1.5-rc.1",
-    "@deepseek-ai/dsh-session": ">=0.1.5-rc.1",
-    "@deepseek-ai/dsh-system-prompt": ">=0.1.5-rc.1",
-    "@deepseek-ai/dsh-tools": ">=0.1.5-rc.1",
-    "@deepseek-ai/dsh-typert-protocol": ">=0.1.5-rc.1",
-    "@deepseek-ai/dsh-util-values": ">=0.1.5-rc.1",
-    "@deepseek-ai/schemastery": ">=0.1.5-rc.1",
+    "@deepseek-ai/dsh-agent": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0",
+    "@deepseek-ai/dsh-llm": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0",
+    "@deepseek-ai/dsh-session": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0",
+    "@deepseek-ai/dsh-system-prompt": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0",
+    "@deepseek-ai/dsh-tools": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0",
+    "@deepseek-ai/dsh-typert-protocol": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0",
+    "@deepseek-ai/dsh-util-values": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0",
+    "@deepseek-ai/schemastery": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0",
     "schemastery": "^3.18.0"
   },
   "dependencies": {

@@ -1,46 +1,32 @@
-# dsh-onebot cordis.patch.yml 模板（v0.4.3-next T3 · T1 定案 B 路径）
+# dsh-onebot cordis.patch.yml —— dsh.bundle.patch（随 npm 包发布，宿主直接加载）
 #
-# 用法：这不是被宿主直接读取的文件——宿主只监视 profile 层
-# <DSH_HOME>/profiles/web/cordis.patch.yml 与 home 层 <DSH_HOME>/cordis.patch.yml
-# （dsh-hmr/lib/index.js:354；仓库模板、部署副本、bundle 自带 patch 均不在监视
-# 范围，T1 §1.1/§1.2 #5）。把下方 insert 行合并进 profile 层 patch 的既有
-# insert 块，并把 <DEPLOY_DIR> 替换为部署副本的绝对路径（本机现网为
-# /vol2/@appshare/Harness/dsh-plugins/dsh-onebot）。
+# 声明：package.json `dsh.bundle.patch = "./cordis.patch.yml"`。
+# 宿主读取点：dsh-app-boot/lib/index.js:497（bundlePatchFiles，patch 为字符串或
+# 字符串数组，包相对路径）、:924-928（loadProfileDirectory 读 dsh.bundle 并
+# loadOverlayPatches 加载本文件）。本文件必须保持「顶层 YAML 数组」形态
+# （parsePatchList 校验，:3546）。
 #
 # 行说明：
-# 1. `dsh-onebot` 主条目——现网部署已存在，保持其 name 与 config 原样，只把
-#    settings-remote 行加进同一 insert 块。绝不能为 settings-remote 再 insert
-#    一次 lib/index.js：同一插件文件二次挂载 = 双实例注册冲突崩溃循环
-#    （T1 §1.2 #8，DEVLOG.md:70 实测事故）。
+# 1. `dsh-onebot` 主条目——挂载插件主入口（exports "."）。name 用裸包名
+#    `dsh-onebot-qq`：插件经 pnpm 装进 profile node_modules 后由运行时解析。
+#    禁止对同一插件文件二次 insert（如再为 settings-remote 挂一次 lib/index.js）：
+#    同一插件文件双实例注册 = 冲突崩溃循环（DEVLOG.md:70 实测事故）。
 #    注意：config 覆盖须挂 patch 文档顶层的同 id 行（insert 块内行 configEditor
 #    不可寻址，设置页写入会被 compose 自检拒绝——T6 实测，v043-next-acceptance.md R1③）。
 # 2. `onebot-settings-remote`——host-plane 行（T3）：挂载 onebotSettings
-#    Typert Remote（lib/settings-remote.js），供 api-gateway 发现路由、设置页
-#    客户端（T4 lib/client.js）读写 dsh-onebot 条目的 config 覆盖行（乐观锁
-#    revision 语义见 docs/settings-page-design.md §3.1）。
+#    Typert Remote（exports "./settings-remote"）。
 #
-# 锚定与 exports 遮蔽（注释照抄 dsh-expert-orchestrator/cordis.patch.yml 的
-# expert-sources-remote 行，按 T1 §2 定案改为绝对路径 name）：
-# T3/T4 给 package.json 增加 exports 表（含 "./client" 预留项）后，包导出表会
-# 遮蔽 `dsh-onebot/lib/settings-remote.js` 这类裸深路径说明符；宿主只对相对名
-# （./ 或 ../ 开头）做 anchorInsertedPluginNames 锚定，锚点是 patch 文件所在
-# 目录 = profile 目录（dsh-app-boot/lib/index.js:3519-3527）——住进 profile
-# patch 的行用相对名会解析到错误目录。因此本插件两行都必须写部署副本的绝对
-# 路径 name（现网 dsh-onebot 行已是绝对路径，沿用同一规则）。
-#
-# npm 安装形态（dsh plugin --profile <p> add dsh-onebot-qq）的 name 写法：
-# 插件经 pnpm 装进 profile 的 node_modules 后，裸包名可被宿主直接解析，两行改写为
+# 手工部署形态（非 bundle，本文件之外）：从部署副本绝对路径挂载时，在
+# profile 层 <DSH_HOME>/profiles/web/cordis.patch.yml 的既有 insert 块加：
 #   - id: dsh-onebot
-#     name: 'dsh-onebot-qq'                            # 走 exports "." 主入口
+#     name: /vol2/@appshare/Harness/dsh-plugins/dsh-onebot/lib/index.js
 #   - id: onebot-settings-remote
-#     name: 'dsh-onebot-qq/settings-remote'            # 走 exports "./settings-remote"
-# 裸深路径 'dsh-onebot-qq/lib/settings-remote.js' 会被 exports 表挡死
-# （ERR_PACKAGE_PATH_NOT_EXPORTED）；退路是相对文件名（锚点 = patch 文件所在目录）：
-#     name: './node_modules/dsh-onebot-qq/lib/settings-remote.js'
+#     name: /vol2/@appshare/Harness/dsh-plugins/dsh-onebot/lib/settings-remote.js
+# （相对名 ./ 开头会按宿主 anchorInsertedPluginNames 锚定到 patch 文件所在目录，
+# 绝对路径 name 不受锚定影响。）
 - insert:
-    # …… 现网 dsh-onebot 主条目（name/config 以现网部署为准，此处示意）……
   - id: dsh-onebot
-    name: <DEPLOY_DIR>/lib/index.js
+    name: 'dsh-onebot-qq'
     # config: { mode: reverse, host: 127.0.0.1, port: 8643, ... }
   - id: onebot-settings-remote
-    name: <DEPLOY_DIR>/lib/settings-remote.js
+    name: 'dsh-onebot-qq/settings-remote'
