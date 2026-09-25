@@ -652,3 +652,13 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - 验证：npm run build 通过；npm test 30 文件 376 用例全绿（exit 0）。
 - 发布：npm registry 发布 `dsh-onebot-qq@0.4.6`（public，latest；token 仅经环境变量，.npmrc 引用 `${NPM_TOKEN}`，用后即删）。
 - 同步：部署副本 /vol2/@appshare/Harness/dsh-plugins/dsh-onebot 的 lib（已一致）与 package.json（复制）diff -rq 核验通过。
+
+## 2026-09-25 修复 client bundle 注册 id 与包名不一致（web 端插件激活失败）
+
+- 症状：dsh 0.1.7-rc.2 web 页面顶部「Failed to load plugins: dsh-onebot-qq」，`client-modules: could not load "dsh-onebot-qq": ... loaded without registering "dsh-onebot-qq" via __ModuleLoader__.load`。宿主侧桥接（reverse WS/OneBot 连接）完全正常，仅 web 设置面板起不来。
+- 根因：包 0.4.4 由 `@dsh-external/dsh-onebot` 改名 `dsh-onebot-qq`；0.4.6 在 package.json 补 `dsh.client.platform` 声明后，宿主（≥0.1.7-rc.2）boot manifest 才开始按**包名**下发 client entry（`dsh-client-modules/lib/index.js`：entry id = package name）。而 lib/client.js 的 CJS 包裹 banner 仍硬编码改名前的 `id: "dsh-onebot"`，浏览器端 `arrive()` 校验「bundle 执行后必须以 manifest id 注册」→ 永远失配。绝对路径 insert 的 loader entry id（`dsh-onebot`）与 client manifest id（包名）是两套命名，前者不影响此校验。
+- 修复：lib/client.js 两处 `dsh-onebot` → `dsh-onebot-qq`（`__ModuleLoader__.load` 的 id 与 `PLUGIN_ID`，Remote `package` 键/样式标签随动）；tests/client-settings.spec.ts 五处断言同步。源码仓与部署副本（/vol2/@appshare/Harness/dsh-plugins/dsh-onebot）diff 一致后同步，部署副本属主 Harness:Harness 600。
+- 生效机制：宿主按文件 mtime/ctime/size 重算 artifact rev，**无需重启**；重开页面即拉新 bundle。
+- 验证：① manifest rev 更新（9c8122…→936b15…）+ 带 rev 拉 combo bundle 200 且含新 id；② node vm 桩 `__ModuleLoader__` 断言注册 id/导出/inject/Remote package；③ headless Chromium 全链路：设置导航出现「QQ Bot (OneBot)」、面板完整渲染（revision 0、6 分组、监听地址/端口/AccessToken 脱敏快照值来自真实 getSettings RPC）、0 console 错误；④ vitest 30 文件 376 用例全绿。
+- 顺带：部署副本/源码仓 node_modules 内 esbuild 二进制丢执行位（EACCES），chmod +x 修复（备份 zip 解压丢 x-bit 同类坑）。
+- 教训记录：skill devops/fnos-app-inspection references/dsh-plugin-errors.md 新增模式 9。
