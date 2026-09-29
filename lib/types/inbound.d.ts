@@ -142,6 +142,16 @@ export declare class InboundPipeline {
     private resolveNasFile;
     /** Write bytes into the media dir under a fresh unpredictable name; returns the path or ''. */
     private writeMediaFile;
-    /** Expand a combined-forward id into "name: content" lines. */
-    expandForward(forwardId: string): Promise<string>;
+    /**
+     * Expand a combined-forward id into "name: content" lines, collecting
+     * embedded image segments into the media list (they flow through the same
+     * buildBody pipeline as inbound media). Failure or an empty expansion no
+     * longer returns a silent placeholder: the resId plus a short reason
+     * (api-error / empty-response / no-text-nodes) stays in the model context
+     * so it can self-serve via the whitelisted get_forward_msg tool.
+     */
+    expandForward(forwardId: string): Promise<{
+        text: string;
+        media: MediaRef[];
+    }>;
 }

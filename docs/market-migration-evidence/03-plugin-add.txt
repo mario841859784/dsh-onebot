@@ -1,0 +1,17 @@
+? Verifying lockfile against supply-chain policies (5 entries)...
+✓ Lockfile passes supply-chain policies (5 entries in 511ms)
+Update available! 12.5.1 → 12.6.0.
+Changelog: https://pnpm.io/v/12.6.0
+To update, run: curl -fsSL https://get.pnpm.io/install.sh | sh -
+Added 1 entry to minimumReleaseAgeExclude in pnpm-workspace.yaml (set minimumReleaseAgeStrict to true to gate these updates with a prompt):
+  dsh-onebot-qq@0.4.7
+Progress: resolved 25, reused 24, downloaded 1, added 0
+Packages: +20
+++++++++++++++++++++
+Progress: resolved 25, reused 24, downloaded 1, added 20, done
+[WARN] Issues with peer dependencies found. Run "pnpm peers check" to list them.
+
+dependencies:
++ dsh-onebot-qq 0.4.7
+
+Done in 4.7s using pnpm v12.5.1

@@ -69,7 +69,7 @@ type Context = CordisContext & {
      * write ownership), read the header + a small event prefix, then close. */
     open(id: string, access: 'read'): Promise<{
       header: { createdAt?: number; agentPreset?: string }
-      read(offset?: number, length?: number): Promise<{ events: readonly { type?: string; data?: { agentPreset?: string; source?: { kind?: string; plugin?: string }; content?: readonly { type?: string; text?: string }[] } }[] }>
+      read(offset?: number, length?: number): Promise<{ events: readonly { type?: string; data?: { agentPreset?: string; source?: { kind?: string }; content?: readonly { type?: string; text?: string }[] } }[] }>
       close(): Promise<void>
     }>
   }

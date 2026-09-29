@@ -1,13 +1,14 @@
-// Host typings drift: @deepseek-ai/dsh-llm 0.1.7-alpha.2 does not yet declare
-// the `plugin` member of MessageSourceMap, but its own runtime writes
-// `{ kind: 'plugin', plugin: string }` sources. Augment the map here following
-// the host's merge-extensible convention (cf. dsh-agent model-selection.d.ts),
-// matching the host runtime shape exactly so a future native member merges
-// without conflict.
+// Host typings drift: @deepseek-ai/dsh-llm does not declare this plugin's own
+// producer-owned message source kind. v4 session format rejects the retired
+// `kind: 'plugin'` wrapper, and the v3→v4 converter maps this plugin's
+// historical `{ kind: 'plugin', plugin: 'dsh-onebot' }` rows to the
+// producer-owned kind `plugin:dsh-onebot` — the same kind this plugin writes
+// going forward. Augment the map here following the host's merge-extensible
+// convention (cf. dsh-agent model-selection.d.ts).
 import '@deepseek-ai/dsh-llm';
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
-    plugin: { kind: 'plugin'; plugin: string };
+    'plugin:dsh-onebot': { kind: 'plugin:dsh-onebot' };
   }
 }

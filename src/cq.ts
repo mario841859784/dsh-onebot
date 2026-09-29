@@ -239,8 +239,9 @@ export function parseMessage(segments: OneBotSegment[] | undefined, raw: string)
         }
         break
       case 'forward':
-        if (seg.data.id !== undefined) {
-          forwardId = seg.data.id
+        // NapCat uses `id`; go-cqhttp-style implementations may use `resId`.
+        if (seg.data.id !== undefined || seg.data.resId !== undefined) {
+          forwardId = seg.data.id ?? seg.data.resId
           textParts.push('[合并转发]')
         }
         break

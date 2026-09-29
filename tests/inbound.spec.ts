@@ -118,6 +118,108 @@ describe('inbound pipeline', () => {
     await h.connection.stop()
   })
 
+  it('expands a forward message through NapCat node format (get_forward_msg with id+message_id)', async () => {
+    const h = await makeHarness()
+    const forwardCalls: Array<Record<string, unknown>> = []
+    const real = h.connection.call.bind(h.connection)
+    h.connection.call = (async (action: string, params: Record<string, unknown>) => {
+      if (action === 'get_forward_msg') {
+        forwardCalls.push(params)
+        return {
+          messages: [
+            { type: 'node', data: { user_id: 10001, nickname: '小明', content: [], message: [{ type: 'text', data: { text: '转发内容' } }] } },
+            { type: 'node', data: { user_id: 20002, nickname: '小红', content: [], message: [] } },
+          ],
+        }
+      }
+      return await real(action, params)
+    }) as never
+    h.client.send(JSON.stringify({
+      post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002,
+      message: [{ type: 'forward', data: { id: 'fwd-1' } }], raw_message: '[CQ:forward,id=fwd-1]',
+      sender: { user_id: 10001, nickname: '小明' },
+    }))
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    expect(forwardCalls).toEqual([{ id: 'fwd-1', message_id: 'fwd-1' }])
+    expect(h.captured.followups[0].text).toContain('[合并转发]\n小明: 转发内容')
+    // A node without text is skipped without breaking the expansion.
+    expect(h.captured.followups[0].text).not.toContain('小红')
+    expect(h.captured.followups[0].text).not.toContain('未知')
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('collects forward-embedded images into the media pipeline and recurses into nested nodes', async () => {
+    const h = await makeHarness()
+    const png = Buffer.from('89504e470d0a1a0a', 'hex').toString('base64')
+    const real = h.connection.call.bind(h.connection)
+    h.connection.call = (async (action: string, params: Record<string, unknown>) => {
+      if (action === 'get_forward_msg') {
+        return {
+          messages: [
+            { type: 'node', data: { user_id: 10001, nickname: '小明', message: [
+              { type: 'text', data: { text: '看谱' } },
+              { type: 'image', data: { file: 'base64://' + png } },
+            ] } },
+            { type: 'node', data: { user_id: 20002, nickname: '小红', message: [
+              { type: 'node', data: { nickname: '小刚', message: [{ type: 'text', data: { text: '嵌套内容' } }] } },
+              { type: 'face', data: { id: '1' } },
+            ] } },
+          ],
+        }
+      }
+      return await real(action, params)
+    }) as never
+    h.client.send(JSON.stringify({
+      post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002,
+      message: [{ type: 'forward', data: { id: 'fwd-img' } }], raw_message: '[CQ:forward,id=fwd-img]',
+      sender: { user_id: 10001, nickname: '小明' },
+    }))
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const text = h.captured.followups[0].text
+    // First line stays the plain marker; the image placeholder is annotated
+    // with a local path by the same buildBody pipeline as inbound media.
+    expect(text).toContain('[合并转发]\n小明: 看谱[图片:')
+    expect(text).toMatch(/\[图片:\S+\.(png|jpg|jpeg|gif|webp)\]/)
+    // Nested node text is not swallowed as '[非文本]'.
+    expect(text).toContain('小刚: 嵌套内容')
+    expect(text).toContain('小红: 😀')
+    expect(text).not.toContain('[非文本]')
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('reports forward expansion failure with the resId so the model can self-serve', async () => {
+    const h = await makeHarness()
+    const real = h.connection.call.bind(h.connection)
+    h.connection.call = (async (action: string, params: Record<string, unknown>) => {
+      if (action === 'get_forward_msg') {
+        if (params.id === 'fwd-err') throw new Error('boom')
+        if (params.id === 'fwd-empty') return { messages: [] }
+        // Nodes exist but none carries text → no-text-nodes.
+        return { messages: [{ type: 'node', data: { user_id: 10001, nickname: '小明', message: [] } }] }
+      }
+      return await real(action, params)
+    }) as never
+    for (const id of ['fwd-err', 'fwd-empty', 'fwd-notext']) {
+      h.client.send(JSON.stringify({
+        post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002,
+        message: [{ type: 'forward', data: { id } }], raw_message: '[CQ:forward,id=' + id + ']',
+        sender: { user_id: 10001, nickname: '小明' },
+      }))
+    }
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(3))
+    const texts = h.captured.followups.map(f => f.text).join('\n')
+    expect(texts).toContain('[合并转发 id=fwd-err 未展开: api-error]')
+    expect(texts).toContain('[合并转发 id=fwd-empty 未展开: empty-response]')
+    expect(texts).toContain('[合并转发 id=fwd-notext 未展开: no-text-nodes]')
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
   it('rate-limits normal messages with one notice per window and lets commands through (M1-B7)', async () => {
     const h = await makeCmdHarness({ rateLimitPerMinute: 2 })
     h.sendText('第一条')

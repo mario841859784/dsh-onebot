@@ -44,6 +44,15 @@ describe('parseMessage', () => {
     expect(parsed.forwardId).toBe('fwd-1')
   })
 
+  it('falls back to resId when a forward segment carries no id', () => {
+    const parsed = parseMessage(
+      [{ type: 'forward', data: { resId: 'res-9' } }],
+      '',
+    )
+    expect(parsed.forwardId).toBe('res-9')
+    expect(parsed.text).toBe('[合并转发]')
+  })
+
   it('handles at and poke segments', () => {
     const parsed = parseMessage(
       [

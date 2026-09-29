@@ -53,7 +53,6 @@ type Context = CordisContext & {
                         agentPreset?: string;
                         source?: {
                             kind?: string;
-                            plugin?: string;
                         };
                         content?: readonly {
                             type?: string;

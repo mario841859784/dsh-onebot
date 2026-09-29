@@ -1,0 +1,17 @@
+Fri Sep 25 22:48:38 CST 2026
+--- FINAL verify matrix ---
+[1] 8765 LISTEN owner:
+LISTEN 0      511                                            192.168.5.74:8765       0.0.0.0:*    users:(("MainThread",pid=3500551,fd=24))
+[2] napcat ESTAB:
+ESTAB      0      0                                   192.168.5.74:8765                  172.17.0.3:44918 users:(("MainThread",pid=3500551,fd=29))
+[3] getSettings:
+{"type":"server-response","rpcId":"final-1","result":{"ok":true,"value":{"revision":0,"entryActive":true,"config":{"mode":"reverse","dmPolicy":"open","groupPolicy":"open","unknownCommand":"intercept","port":8765,"interimRecallMs":90000,"rateLimitPerMinute":30,"requireMention":true,"allowAllUsers":false,"interimMessages":true,"interimRecall":true,"sendErrorNotice":true,"host":"192.168.5.74","url":"ws://127.0.0.1:3001","accessToken":"","botQQ":"","adminUsers":["841859784"],"allowFrom":[],"groupAllowFrom":[]},"secrets":[{"path":["accessToken"],"set":true}],"groups":{"connection":["mode","host","port","url","accessToken","botQQ"],"permissions":["requireMention","adminUsers","dmPolicy","groupPolicy","allowAllUsers","allowFrom","groupAllowFrom"],"behavior":["interimMessages","interimRecall","interimRecallMs","sendErrorNotice","unknownCommand","rateLimitPerMinute"]},"effect":"restart"}}}
+[4] profile node_modules:
+dsh-onebot-qq
+[5] patch abs-path scan (README 免责核验):
+92:# host-plane 行，均指向 dsh-plugins 部署副本）已摘除，由 bundle patch（裸包名
+[6] patch sha256:
+ac2e2f8dc5a331b941f397cafb428bab540d5fec3ef48334f3ee8df539eb028f  /vol2/@appshare/Harness/.dsh/profiles/web/cordis.patch.yml
+[7] host process (no restart):
+    PID     ELAPSED CMD
+3500551       14:29 node /vol2/@appcenter/Harness/server/node_modules/.bin/dsh web --no-open --port 13080

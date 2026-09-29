@@ -94,7 +94,7 @@ export interface SessionPreviewEvent {
   type?: string
   data?: {
     agentPreset?: string
-    source?: { kind?: string; plugin?: string }
+    source?: { kind?: string }
     content?: readonly { type?: string; text?: string }[]
   }
 }
@@ -437,11 +437,11 @@ export class ChatBridge {
     chat.pendingTurnRoles.push(role)
     this.deps.log('info', 'followup from ' + chatId + ': ' + final.slice(0, 120))
     // Plugin-originated user message: the session log attributes QQ inbound
-    // messages to this plugin (the built-in plugin source with form omitted),
-    // keeping them distinguishable from host/web UI inputs.
+    // messages to this plugin's own producer-owned source kind, keeping them
+    // distinguishable from host/web UI inputs.
     chat.agent.followup(createUserMessage({
       content: [{ type: 'text', text: final }],
-      source: { kind: 'plugin', plugin: 'dsh-onebot' },
+      source: { kind: 'plugin:dsh-onebot' },
     }))
     this.startTyping(chat)
   }
@@ -586,7 +586,7 @@ export class ChatBridge {
     }
     chat.agent.steer(createUserMessage({
       content: [{ type: 'text', text: transcriptLabel(text) }],
-      source: { kind: 'plugin', plugin: 'dsh-onebot' },
+      source: { kind: 'plugin:dsh-onebot' },
     }))
   }
 

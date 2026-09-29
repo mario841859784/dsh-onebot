@@ -1,0 +1,6 @@
+Fri Sep 25 22:42:22 CST 2026
+--- after patch edit (manual entries removed) ---
+8765 LISTEN: none (old fiber unmounted)
+    PID     ELAPSED CMD
+3500551       08:14 node /vol2/@appcenter/Harness/server/node_modules/.bin/dsh web --no-open --port 13080
+LISTEN 0      511                                               127.0.0.1:13080      0.0.0.0:*    users:(("MainThread",pid=3500551,fd=21))

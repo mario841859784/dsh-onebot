@@ -1,0 +1,8 @@
+{"at":"2026-09-23T15:37:38.492Z","level":"info","event":"update","detail":"dsh-expert-orchestrator -> dsh-expert-orchestrator@2.5.1 exit=0"}
+{"at":"2026-09-23T15:42:18.110Z","level":"info","event":"install","detail":"dsh-web-mobile-fix: pinned to the registry's latest, 1.0.6, so pnpm's fresh-release hold cannot substitute an older version silently"}
+{"at":"2026-09-23T15:42:22.083Z","level":"warn","event":"install","detail":"dsh-web-mobile-fix: 1.0.6 is younger than this profile's minimumReleaseAge — installing the version pnpm admits instead; the update check will offer 1.0.6 once it is old enough"}
+{"at":"2026-09-23T15:42:23.705Z","level":"warn","event":"install","detail":"a too-young release blocks pnpm's lockfile verification (#39) — retrying once with --config.minimum-release-age=0"}
+{"at":"2026-09-23T15:42:25.382Z","level":"info","event":"hot-mount","detail":"dsh-web-mobile-fix: live"}
+{"at":"2026-09-23T15:42:25.413Z","level":"info","event":"install","detail":"dsh-web-mobile-fix exit=0 hot=true"}
+{"at":"2026-09-25T00:46:20.880Z","level":"info","event":"update","detail":"dsh-expert-orchestrator -> dsh-expert-orchestrator@2.5.2 exit=0"}
+{"at":"2026-09-25T07:34:11.450Z","level":"info","event":"update","detail":"dsh-mcp-connector -> dsh-mcp-connector@0.2.59 exit=0"}

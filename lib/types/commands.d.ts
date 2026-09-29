@@ -141,10 +141,11 @@ export declare const SESSION_PREVIEW_MAX_CHARS = 40;
  * message a turn claimed) rather than a synthetic agent.inject() context or a
  * goal continuation round. Direct prompts carry kind 'user'; QQ chats
  * attribute their own inbound messages to this plugin (platform-source
- * logging), so plugin 'dsh-onebot' is the chat's real user input too. */
+ * logging), so the plugin-owned kind 'plugin:dsh-onebot' — also what the v3→v4
+ * converter maps this plugin's historical rows to — is the chat's real user
+ * input too. */
 export declare function isRealUserMessageSource(source: {
     kind?: string;
-    plugin?: string;
 } | undefined): boolean;
 /** Code-point-safe truncation (never splits a surrogate pair — the §3.1
  * emoji lesson): at most `maxLength` code points, the last one '…' when cut. */

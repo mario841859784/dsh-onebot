@@ -78,7 +78,6 @@ export interface SessionPreviewEvent {
         agentPreset?: string;
         source?: {
             kind?: string;
-            plugin?: string;
         };
         content?: readonly {
             type?: string;

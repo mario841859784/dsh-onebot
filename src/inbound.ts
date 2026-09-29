@@ -235,7 +235,17 @@ export class InboundPipeline {
     }
     let forward = ''
     if (inbound.forwardId !== undefined) {
-      forward = await this.expandForward(inbound.forwardId)
+      const expansion = await this.expandForward(inbound.forwardId)
+      forward = expansion.text
+      if (expansion.media.length > 0) {
+        // Forward-embedded images ride the same buildBody pipeline (their
+        // '[图片]' placeholders are inline in the expansion text). Preserve
+        // the pre-routing /ocr ref so a direct image in the same message
+        // stays the /ocr target.
+        const pending = this.ctx.getSettings(chatId).pendingImageRef
+        forward = await this.ctx.buildBody(expansion.text, expansion.media, chatId)
+        this.ctx.getSettings(chatId).pendingImageRef = pending
+      }
     }
 
     const isAdmin = classifyUserRole(userId, policy.adminUsers) === 'admin'
@@ -463,23 +473,46 @@ export class InboundPipeline {
     }
   }
 
-  /** Expand a combined-forward id into "name: content" lines. */
-  async expandForward(forwardId: string): Promise<string> {
+  /**
+   * Expand a combined-forward id into "name: content" lines, collecting
+   * embedded image segments into the media list (they flow through the same
+   * buildBody pipeline as inbound media). Failure or an empty expansion no
+   * longer returns a silent placeholder: the resId plus a short reason
+   * (api-error / empty-response / no-text-nodes) stays in the model context
+   * so it can self-serve via the whitelisted get_forward_msg tool.
+   */
+  async expandForward(forwardId: string): Promise<{ text: string; media: MediaRef[] }> {
     try {
-      const data = await this.ctx.call('get_forward_msg', { id: forwardId }) as {
-        messages?: Array<{ sender?: { nickname?: string; user_id?: number | string }; content?: unknown }>
+      // NapCat's get_forward_msg accepts `message_id` or `id`; sending both
+      // also covers go-cqhttp-style implementations. Its response nodes are
+      // OneBot node segments: { type: 'node', data: { nickname, user_id,
+      // message: [...] } } — the flat `sender`/`content` shape is kept as a
+      // fallback for other implementations.
+      const data = await this.ctx.call('get_forward_msg', { id: forwardId, message_id: forwardId }) as {
+        messages?: Array<{
+          sender?: { nickname?: string; user_id?: number | string }
+          content?: unknown
+          data?: { nickname?: string; user_id?: number | string; message?: unknown; content?: unknown }
+        }>
       }
+      const nodes = data.messages ?? []
       const lines: string[] = []
-      for (const node of data.messages ?? []) {
-        const name = node.sender?.nickname ?? String(node.sender?.user_id ?? '未知')
-        const text = nodeContentText(node.content)
+      const media: MediaRef[] = []
+      for (const node of nodes) {
+        const nodeData = node.data
+        const name = nodeData?.nickname ?? node.sender?.nickname
+          ?? String(nodeData?.user_id ?? node.sender?.user_id ?? '未知')
+        const text = nodeContentText(nodeData?.message ?? nodeData?.content ?? node.content, name, media, lines)
         if (text !== '') lines.push(name + ': ' + text)
       }
-      if (lines.length === 0) return ''
-      return '[合并转发]\n' + lines.join('\n')
+      if (lines.length === 0) {
+        const reason = nodes.length === 0 ? 'empty-response' : 'no-text-nodes'
+        return { text: '[合并转发 id=' + forwardId + ' 未展开: ' + reason + ']', media }
+      }
+      return { text: '[合并转发]\n' + lines.join('\n'), media }
     } catch (error) {
-      this.ctx.log('debug', 'forward expansion failed: ' + describeError(error))
-      return '[合并转发]'
+      this.ctx.log('info', 'forward expansion failed: resId=' + forwardId + ': ' + describeError(error))
+      return { text: '[合并转发 id=' + forwardId + ' 未展开: api-error]', media: [] }
     }
   }
 }
@@ -496,14 +529,35 @@ function placeholderFor(ref: MediaRef): string {
 
 /**
  * Extract text from a forward-node content (segment array or CQ string).
+ * Image segments are collected into `media` and contribute a '[图片]'
+ * placeholder (annotated by buildBody like inbound media, `name` carries the
+ * owning node's nickname). Nested node segments recurse: their text joins
+ * `lines` as their own "name: text" entry instead of being swallowed as
+ * '[非文本]'.
  */
-function nodeContentText(content: unknown): string {
+function nodeContentText(content: unknown, ownerName: string, media: MediaRef[], lines: string[]): string {
   if (Array.isArray(content)) {
     return content
       .map(seg => {
         const s = seg as { type?: string; data?: Record<string, unknown> }
         if (s?.type === 'text') return String(s.data?.text ?? '')
         if (s?.type === 'face') return '😀'
+        if (s?.type === 'image') {
+          media.push({
+            kind: 'image',
+            url: typeof s.data?.url === 'string' && s.data.url !== '' ? s.data.url : undefined,
+            file: typeof s.data?.file === 'string' && s.data.file !== '' ? s.data.file : undefined,
+            name: ownerName,
+          })
+          return '[图片]'
+        }
+        if (s?.type === 'node' && typeof s.data === 'object' && s.data !== null) {
+          const nested = s.data as { nickname?: string; user_id?: number | string; message?: unknown; content?: unknown }
+          const nestedName = nested.nickname ?? String(nested.user_id ?? ownerName)
+          const nestedText = nodeContentText(nested.message ?? nested.content, nestedName, media, lines)
+          if (nestedText !== '') lines.push(nestedName + ': ' + nestedText)
+          return ''
+        }
         return '[非文本]'
       })
       .join('')

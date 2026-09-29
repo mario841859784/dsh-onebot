@@ -1,0 +1,23 @@
+--- cordis.patch.yml.bak-migrate-20260925	2026-09-25 22:41:25.963915908 +0800
++++ cordis.patch.yml	2026-09-25 22:41:53.885692070 +0800
+@@ -87,15 +87,11 @@
+         sandbox: danger-full-access
+         approval: never
+     defaultPreset: danger-full-access
+-- insert:
+-    - id: dsh-onebot
+-      name: '/vol2/@appshare/Harness/dsh-plugins/dsh-onebot/lib/index.js'
+-    # host-plane 行（dsh-onebot v0.4.3-next T3）：挂载 onebotSettings Typert
+-    # Remote（api-gateway 发现路由、设置页客户端读写 dsh-onebot 条目 config 覆盖
+-    # 行）。锚定：宿主只对 ./ ../ 相对名做 anchorInsertedPluginNames，本行与
+-    # dsh-onebot 主条目一致用部署副本绝对路径 name（exports 表会遮蔽裸深路径）。
+-    - id: onebot-settings-remote
+-      name: '/vol2/@appshare/Harness/dsh-plugins/dsh-onebot/lib/settings-remote.js'
++# dsh-onebot 已迁移为 market/npm 官方安装形态（dsh-onebot-qq@0.4.7，2026-09-25）。
++# insert 块内两条手工绝对路径条目（dsh-onebot 主条目 + onebot-settings-remote
++# host-plane 行，均指向 dsh-plugins 部署副本）已摘除，由 bundle patch（裸包名
++# 两行）接管挂载。部署副本保留不删，作为回滚锚点
++# （cordis.patch.yml.bak-migrate-20260925）。
+ # 设置页持久层：顶层同 id config 覆盖行（T1 定案「同 id config 覆盖热生效」）。
+ # configEditor.edit 只寻址 patch 文档顶层的 id 行（insert 块内行不可寻址，写入
+ # 会被 compose 自检拒绝），故 dsh-onebot 的 config 覆盖住顶层行，insert 块只管

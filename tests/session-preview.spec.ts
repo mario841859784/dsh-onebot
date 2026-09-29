@@ -23,7 +23,7 @@ function userMessage(text: string, source: Record<string, unknown>, extraBlocks:
 }
 
 const SNAPSHOT_SOURCE = { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt', form: 'snapshot' }
-const QQ_SOURCE = { kind: 'plugin', plugin: 'dsh-onebot' }
+const QQ_SOURCE = { kind: 'plugin:dsh-onebot' }
 const GOAL_SOURCE = { kind: 'goal', goalId: 'g1', revision: 1, round: 2 }
 
 /** A fake persistence stub keyed by session id, recording opens/closes.
