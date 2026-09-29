@@ -1,0 +1,11 @@
+ee28ea7 chore(release): 0.5.0 — engines.dsh 与 peer 追加第四分支 >=0.2.0-rc.1 <0.3.0-0
+3af11a7 feat: adapt to dsh 0.2.0 — producer-owned source kind plugin:dsh-onebot 迁移
+2cbf5b5 chore(release): 0.4.7 — client id 失配修复发版 + engines.dsh 补预发布分支
+ee28ea7158b29a495dd882e49959be0d3de78152
+chore(release): 0.5.0 — engines.dsh 与 peer 追加第四分支 >=0.2.0-rc.1 <0.3.0-0
+
+- package.json: version 0.4.9→0.5.0；engines.dsh 与 8 个 @deepseek-ai/* peer 追加第四分支（下限=实测覆盖的 0.2.0-rc.1，排除未实测 0.2.0-alpha.x，<0.3.0-0 挡 0.3.0 线），消除宿主 dsh 0.2.0-rc.1 强豁免运行
+- README.md / README.en.md: 兼容性表 dsh 行同步 0.2.0 线声明
+- docs/semver-matrix.md: 追加 0.5.0 矩阵节（新范围 0.2.0 系 true / 0.3.0-alpha.1 false）
+- DEVLOG.md: 0.5.0 收口记录
+

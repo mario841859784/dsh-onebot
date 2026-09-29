@@ -1,0 +1,9 @@
+Tue Sep 29 12:29:47 CST 2026
+--- 8765 LISTEN ---
+LISTEN 0      511                                            192.168.5.74:8765       0.0.0.0:*    users:(("MainThread",pid=54650,fd=23))
+--- ESTAB ---
+ESTAB      0      0                                   192.168.5.74:8765                   172.17.0.4:41380 users:(("MainThread",pid=54650,fd=33))
+--- 宿主进程（全程未重启）---
+  54650       43:35 /vol2/@appcenter/nodejs_v24/bin/node /vol2/@appcenter/Harness/server/node_modules/.bin/dsh web --no-open --port 13080
+--- 宿主 err.log ERROR 计数 ---
+0
