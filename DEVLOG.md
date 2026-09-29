@@ -669,3 +669,32 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - 修复内容：lib/client.js id/PLUGIN_ID → `dsh-onebot-qq`（HEAD 已含）；本发版顺带把上轮遗留的 `engines.dsh` 从 `>=0.1.5-rc.1` 补成与 peer 三分支一致的 `>=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0`（semver 实测 0.1.5-rc.x/0.1.6-alpha.x/0.1.7-alpha.x/0.1.7-rc.x 全 true、0.2.0-alpha.1 false，矩阵追加进 docs/semver-matrix.md）。
 - 验证链路：npm run build + npm test 全绿（30 文件 376 用例）→ 发布 `dsh-onebot-qq@0.4.7`（token 仅经环境变量，用后即删）→ registry latest 核验 + tarball 抽查 lib/client.js 含新 id → 部署副本同步 diff -rq 为零。
 - 发版说明：0.4.7 = 0.4.6 修复后的正式发版号（0.4.6 曾被用作 metadata-only 发布占用），内容为 client bundle 注册 id 对齐包名，修复 web 端「Failed to load plugins: dsh-onebot-qq」设置面板失配；另补 engines.dsh 预发布分支。
+
+## 2026-09-25 live web profile 迁移：手工部署形态 → market/npm 官方安装形态
+
+- 操作：live patch（.dsh/profiles/web/cordis.patch.yml）摘除 insert 块内两条手工绝对路径条目（dsh-onebot 主条目 + onebot-settings-remote host-plane 行，均指向 dsh-plugins 部署副本）；官方通道 `dsh plugin --profile web add dsh-onebot-qq@0.4.7` 安装（bundle patch 裸包名两行接管挂载）。顶层 dsh-onebot config 覆盖行原样保留（id 不变，bundle 挂载后继续寻址）。
+- 备份：cordis.patch.yml.bak-migrate-20260925（同目录，迁移前 sha256 ac87a4a…）；部署副本保留不删（回滚锚点）。
+- 热操作全程：patch 编辑后 ~2s 旧 fiber 卸载（8765 消失，napcat 30s 重连循环）→ 插件安装 exit 0（fresh-release 由 minimumReleaseAgeExclude 放行，未触发 hold）→ 8765 复 LISTEN（fd 22→24，宿主同进程）→ napcat 172.17.0.3 ESTAB 5s 内恢复（fd 29）→ 全程宿主进程不重启（pid 3500551 连续运行 14+ 分钟覆盖整个迁移窗口；任务书中的 2609953 在任务开始前已不存在——宿主在任务启动前已被其他会话重启过，非本任务操作）。
+- 验证矩阵：① 8765 LISTEN 属主宿主进程；② napcat 反向 ESTAB 恢复；③ onebotSettings/getSettings ok，revision=0 未跳变，host 192.168.5.74 / port 8765 与迁移前一致，accessToken set:true；④ profile node_modules 顶层出现 dsh-onebot-qq@0.4.7，package.json dsh.profile.bundles 含 dsh-onebot-qq；⑤ market 识别实证：GET /dsh-market/api/v1/updates?name=dsh-onebot-qq&force=1 → source npm, installedVersion=latest=0.4.7, updateAvailable=false；log.ndjson 新增 update-blocked 守卫事件（agent 运行中拒绝变更，证明 in-host market 已纳管该包）。CLI 通道安装不写 install/hot-mount 事件（logEvent 仅存在于宿主内 market RPC 路径，源码 dshmarket/src/routes.ts 实证），如实记录；⑥ live patch 无任何绝对路径 name（YAML safe_load 扫描 + grep，仅存说明注释）。headless Chromium 设置页本次未做（本机无 chromium/playwright 可执行，条件不具备）。
+- 证据：docs/market-migration-evidence/（00 基线 sha256/ss、01 迁移前 getSettings、02 卸载记录、03 plugin add 输出、04 market log、05 迁移后 getSettings、06 market updates API、07 守卫事件、08 patch diff、09 终态矩阵）。
+- 备注：进行中的 QQ 桥（8765 反向 WS）累计闪断约 3 分钟（卸载至 napcat 重连成功），无报错残留。
+
+## 2026-09-25 发布 0.4.8（npm 搜索排名优化：keywords/description 文本匹配面拉满）
+
+- 调研结论（实测）：`dsh-onebot-qq` 在 "dsh qq"/"dsh onebot"/"onebot dsh"/"napcat dsh"/"dsh onebot qq" 全部组合未进 npm search 前 25；根因是新包 popularity 沉底（npm 搜索排序 popularity 权重高），短期无法靠元数据根治；竞品（@tencent-connect/dsh-qqbot 等）关键词含 deepseek-harness/qqbot/plugin，占名者 dsh-onebot 占 "dsh onebot" 第 1。可优化项=文本匹配面拉满（title/description/keywords 命中）。
+- 本次优化（仅 package.json 元数据，零代码改动）：① version 0.4.7→0.4.8；② keywords 7→15 词，新增 qqbot、lagrange、llonebot、go-cqhttp、deepseek、harness、bridge、chatbot（保持全部现有词）；③ description 双语微调：中文补 dsh 全称 DeepSeek Harness 与 go-cqhttp、英文段改为 "QQ bot bridge channel plugin for deepseek harness via OneBot 11."（覆盖 deepseek harness/bridge/plugin 搜索词，描述属实不加营销词）。
+- 验证链路：npm run build + npm test 全绿 → 发布 0.4.8（token 仅经环境变量，.npmrc 引用 ${NPM_TOKEN}，用后即删）→ npm view --prefer-online 核验 version/keywords/description 生效 → 部署副本 package.json 同步 diff 核验。
+- 复测（发布后，同日）：五组合 "dsh qq"/"dsh onebot"/"onebot dsh"/"napcat dsh"/"dsh onebot qq" 排位均无变化，仍不进前 20（基线同样未进前 25）——如预期，短期仍受 popularity 沉底压制；本次文本匹配面扩充为长线收益，后续随下载量积累再观察。
+
+## 2026-09-25 发布 0.4.9（description 精简为卡片友好短句版）
+
+- 变更（仅 package.json 元数据）：① version 0.4.8→0.4.9；② description 换为短句版：`给 dsh（DeepSeek Harness）加 QQ 机器人通道：OneBot 11 协议，兼容 NapCat，支持私聊群聊、图片语音、t2i 卡片与设置页配置。QQ bot channel plugin for deepseek harness via OneBot 11.`——0.4.8 版罗列兼容端/功能清单过长，市场卡片展示不友好；关键词搜索面由 keywords 15 词承载（本次不动）。
+- 验证链路：npm run build + npm test 全绿 → 发布 0.4.9（token 仅经环境变量，.npmrc 引用 ${NPM_TOKEN}，用后即删）→ npm view --prefer-online 核验 version/description/keywords → 部署副本 package.json 同步 diff -rq 核验。
+
+## 2026-09-29 收口 0.5.0（新增宿主 0.2.0 支持：engines.dsh 与 peer 追加第四分支）
+
+- 动机：宿主 dsh 0.2.0-rc.1 下 package.json 的 engines.dsh 与 8 个 `>=0.1.5-rc.1` 形态 @deepseek-ai/* peer 上限 `<0.2.0-0` 均不满足（semver 预发布排序中 0.2.0-rc.1 < 0.2.0-0，历史矩阵已实证 0.2.0 系全 false），宿主当前强豁免运行；本轮适配改动（source kind `plugin:dsh-onebot` 迁移、MessageSourceMap declare module 增广等 19 文件）已实测基线：`npx tsc --noEmit` 对实链 0.2.0-rc.1 零错误、`npm test` 全绿，仓库侧版本声明收口到实测覆盖面。
+- 变更清单（仅版本声明与文档，零代码改动）：① version 0.4.9→0.5.0；② engines.dsh 与 8 个 peer（dsh-agent / dsh-llm / dsh-session / dsh-system-prompt / dsh-tools / dsh-typert-protocol / dsh-util-values / @deepseek-ai/schemastery）追加第四分支 `|| >=0.2.0-rc.1 <0.3.0-0`（下限=实测覆盖的 0.2.0-rc.1，排除未实测的 0.2.0-alpha.x；`<0.3.0-0` 挡未来 0.3.0 线）；cordis ^4.0.2 / schemastery ^3.18.0 无预发布问题未动；③ README.md / README.en.md 兼容性表 dsh 行同步 0.2.0 线声明；④ docs/semver-matrix.md 追加 0.5.0 矩阵节；⑤ DEVLOG 本条。dsh.plugin.json engines 为开放下限 `>=0.1.5-rc.1`，无需动。grep `<0.2.0-0`（排除 node_modules）复核：仅剩历史文档记录（DEVLOG 旧条目、semver-matrix 旧矩阵节），无活代码硬编码。
+- semver 矩阵结论（npx semver CLI 实测，semver 非运行时依赖、未新增）：新范围下 0.1.7-rc.2 / 0.2.0-rc.1 / 0.2.0 / 0.2.1 = true，0.2.0-alpha.1 / 0.2.0-beta.1 / 0.3.0-alpha.1 = false；旧范围下 0.2.0 系全 false（失配坐实）。
+- 验证链路：npm run build（lib 与 src 一致，lib/*.bak-20260925 被 files 字段排除、原样保留）→ npx tsc --noEmit 0 错误 → npm test 全绿（30 文件 380 用例）→ git diff 复核无意外漂移，HEAD 仍 2cbf5b5 未 commit。
+- 发版说明：0.5.0 = 新增宿主 0.2.0 支持（版本声明收口；适配代码为同批 19 文件改动）。后续流程（commit → npm 发版 → live 升级）不在本条范围内。

@@ -41,7 +41,7 @@
 
 | 项 | 要求 |
 |---|---|
-| dsh | ≥ 0.1.5-rc.1（`engines.dsh`；@deepseek-ai/* peer 依赖 ≥0.1.5-rc.1，JsonValue 由 dsh-util-values 提供） |
+| dsh | ≥ 0.1.5-rc.1（`engines.dsh`：0.1.5/0.1.6/0.1.7 全线 + 0.2.0 线 ≥0.2.0-rc.1；@deepseek-ai/* peer 依赖同范围，JsonValue 由 dsh-util-values 提供） |
 | Node.js | ≥ 22 |
 | OneBot 11 实现 | NapCat / Lagrange / LLOneBot / go-cqhttp（reverse 或 forward WebSocket） |
 | 可选依赖 | 语音转写需 ffmpeg + whisper CLI；t2i 文字图在 Linux 需 Noto CJK 字体 |

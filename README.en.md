@@ -41,7 +41,7 @@ User(QQ) ←→ NapCat ←→ dsh-onebot plugin ←→ dsh Agent (one per chat)
 
 | Item | Requirement |
 |---|---|
-| dsh | ≥ 0.1.5-rc.1 (`engines.dsh`; all @deepseek-ai/* peer deps ≥0.1.5-rc.1, JsonValue provided by dsh-util-values) |
+| dsh | ≥ 0.1.5-rc.1 (`engines.dsh`: full 0.1.5/0.1.6/0.1.7 lines + 0.2.0 line ≥0.2.0-rc.1; @deepseek-ai/* peer deps same range, JsonValue provided by dsh-util-values) |
 | Node.js | ≥ 22 |
 | OneBot 11 impl | NapCat / Lagrange / LLOneBot / go-cqhttp (reverse or forward WebSocket) |
 | Optional deps | Voice transcription needs ffmpeg + whisper CLI; t2i text images need Noto CJK fonts on Linux |
