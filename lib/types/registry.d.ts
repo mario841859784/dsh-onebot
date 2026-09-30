@@ -240,9 +240,10 @@ export declare class ChatRegistry {
     private mappingPath;
     /** T3 (hole C): make a just-set /workspace override durable even when the
      * chat is not live (before its first message, or after a failed resume).
-     * saveMapping only writes chats/evictedChats, so a settings-only chat would
-     * otherwise be dropped from the mapping on every save. Snapshots the chat
-     * into evictedChats under its mapping session id — or the derived bare id
+     * saveMapping covers chats/evictedChats plus (T3-R2) a settings-only
+     * fallback, so the settings survive either way — the snapshot still pins
+     * the chat's real mapping session id over the derived bare id. Snapshots
+     * the chat into evictedChats under its mapping session id — or the derived bare id
      * when the chat never went live (the resume then fails harmlessly and a
      * fresh session is created with the settings intact). No-op for a live
      * chat: the normal save path covers it. */
