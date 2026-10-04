@@ -159,6 +159,10 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `ignoreSelf` | `true` | 忽略机器人自己发出的消息（防自循环） |
 | `requireMention` | `true` | 群聊需 @ 或回复机器人的消息才响应（回复他人消息不触发；被回复消息无法判定时回落视为提及，fail-open） |
 | `rateLimitPerMinute` | `30` | 每会话每分钟普通消息上限（60s 滑动窗口）：超限跳过处理并限流提示（每窗口至多一条），命令不受限；`0` = 禁用 |
+| `dedupWindowSeconds` | `300` | 入站消息去重窗口（秒，W2-②）：同一会话内相同 message_id 在该窗口内重投（断线重连重放等）只处理第一条，后续静默跳过并记 debug；仅对会触发回复处理的消息事件生效（notice/meta 类不经过此闸）；`0` = 禁用去重 |
+| `actionRatePerMinute` | `20` | 主动写操作每分钟全桥合计上限（W2-③）：约束 qq_send_image/voice/video/file/segments 与 qq_send_forward 等工具发起的主动发送（回合内的被动回复/interim/通知不受此闸，由 rateLimitPerMinute 与离线队列上限约束）；超限拒发并记 warn 与审计；`0` = 禁用分钟限额 |
+| `actionRatePerDay` | `500` | 主动写操作每日（本地自然日）全桥合计上限（W2-③）：口径同 `actionRatePerMinute`；超限拒发并记 warn 与审计，次日自动恢复；`0` = 禁用日限额 |
+| `actionAuditEnabled` | `true` | 主动写审计（W2-③）：每次主动写（成功/失败）与拒发事件追加写一行 JSON 到 `mediaDir/qq-actions.log`（含 ts/chatId/action/ok/reason）；写失败仅 warn 不影响发送 |
 | `unknownCommand` | `intercept` | 未知斜杠命令处置：`intercept`（默认）拦截并提示相近命令（前缀匹配优先，编辑距离 ≤2 兜底且仅输入长度 ≥4 时启用，至多 3 个候选；无候选提示发 `/help` 或去掉开头 `/` 重发）；`passthrough` 维持旧行为透传给模型。非 `/纯单词` 开头的文本（如路径 `/tmp/x`）不受影响 |
 | `dmPolicy` | `open` | 私聊策略：`open`(仅管理员)/`allowlist`(白名单)/`disabled` |
 | `groupPolicy` | `open` | 群聊策略：`open`(所有人)/`allowlist`/`disabled` |
