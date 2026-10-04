@@ -89,6 +89,16 @@ export declare class OneBotConnection {
     private connectedFlag;
     /** Reverse churn guard: timestamps (ms) of recent healthy-socket replacements. */
     private reverseReplaces;
+    /** W2-①: pending EADDRINUSE bind retry timer (reverse mode). */
+    private reverseRetryTimer;
+    /** W2-①: bind failures since the last successful listen (log dedup + takeover count). */
+    private reverseRetryAttempts;
+    /** W2-④: pending self-heal dial timer (forward mode, after the ladder gave up). */
+    private selfHealTimer;
+    /** W2-④: true from a self-heal dial start until it succeeds (routes failures back to self-heal). */
+    private selfHealing;
+    /** W2-④: start timestamps (ms) of self-heal dials within the rolling hour. */
+    private selfHealTimes;
     /** The bot's own QQ id, learned from meta events (or config botQQ). */
     selfId: string;
     constructor(config: ConnectionConfig);
@@ -119,8 +129,36 @@ export declare class OneBotConnection {
      */
     call(action: string, params: Record<string, unknown>): Promise<unknown>;
     private startReverseServer;
+    /**
+     * W2-①: EADDRINUSE is no longer a dead end. ws does not emit 'close' after
+     * a failed bind, so the failed instance would hang on this.server forever —
+     * and the start() reentrancy guard would then block even a manual restart.
+     * This handler (1) closes and detaches the dead instance, (2) logs with
+     * steady-state dedup (first failure + one line per 10 minutes), and
+     * (3) schedules a fixed 15s re-bind until the port is released or stop()
+     * is called. No attempt cap; the timer is unref'd and the retry is never
+     * awaited, so host startup stays unblocked and the loop cannot keep the
+     * process alive on its own.
+     */
+    private scheduleReverseRetry;
     private connectForwardOnce;
     private scheduleReconnect;
+    /**
+     * Failure-path dispatcher: while a self-heal dial is in flight (selfHealing),
+     * failures route back to the self-heal scheduler instead of the ladder, so
+     * the give-up state is not silently rebuilt. Anything else keeps the ladder
+     * semantics untouched.
+     */
+    private scheduleForwardRetry;
+    /**
+     * W2-④: long-period recovery after the reconnect ladder gave up. Dials every
+     * 15s, but a rolling-hour budget of SELF_HEAL_HOURLY_CAP attempts applies;
+     * once exhausted the interval stretches to 60s, so a multi-hour outage dials
+     * at most 15s×budget + 60/hour afterwards instead of hammering the peer.
+     * The ladder state (reconnectAttempts) stays frozen at its give-up value; a
+     * successful dial clears everything (see the 'open' handler).
+     */
+    private scheduleSelfHeal;
     private attachSocket;
     private startHeartbeat;
     private stopHeartbeat;
