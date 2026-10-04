@@ -1,14 +1,3 @@
-/**
- * Outbound delivery pipeline (M2-D1-PR2): the per-chat serial send chain,
- * sendToChat (sensitive audit → [[qq_forward]] blocks → t2i card / plain
- * text), raw OneBot segment sends, merged forwards, and the M1-B6 offline
- * resend queue (per-chat FIFO, cap 20, TTL 5 min, drained on reconnect).
- * Extracted verbatim from bridge.ts — send order, queueing, TTL/cap and
- * fallback behavior are byte-identical; the bridge keeps same-name facade
- * methods so tools.ts, the command table and the interim domain (still
- * bridge-resident) keep working unchanged.
- * @module dsh-onebot/outbound
- */
 import type { BridgeConfig } from './bridge.js';
 import type { ChatId } from './chat.js';
 /** One OneBot message segment for outbound sends. */
@@ -50,9 +39,26 @@ export interface OutboundContext {
     isStopping(): boolean;
     /** Bridge log line callback. */
     log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void;
-    /** The only config fields the outbound pipeline reads. */
-    config: Pick<BridgeConfig, 'botQQ' | 'sensitivePatterns' | 'textImageThreshold' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies'>;
+    /** The only config fields the outbound pipeline reads. The W2-③ write-gate
+     * fields ride as optional intersection members so the bridge's BridgeConfig
+     * type stays untouched (absent → the defaults below). */
+    config: Pick<BridgeConfig, 'botQQ' | 'sensitivePatterns' | 'textImageThreshold' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies'> & Partial<{
+        /** Audit file directory (W2-③: mediaDir/qq-actions.log); absent → no audit. */
+        mediaDir: string;
+        /** W2-③ bridge-wide proactive-write cap per sliding minute; 0 disables. */
+        actionRatePerMinute: number;
+        /** W2-③ bridge-wide proactive-write cap per calendar day; 0 disables. */
+        actionRatePerDay: number;
+        /** W2-③ proactive-write audit switch (default on). */
+        actionAuditEnabled: boolean;
+    }>;
 }
+/** W2-③: default bridge-wide proactive-write caps, aligned with the MIT
+ * competitor's actionRatePerMinute(20) / actionRatePerDay(500). */
+export declare const DEFAULT_ACTION_RATE_PER_MINUTE = 20;
+export declare const DEFAULT_ACTION_RATE_PER_DAY = 500;
+/** W2-③: proactive-write audit file name, appended under mediaDir (jsonl). */
+export declare const ACTION_AUDIT_FILE = "qq-actions.log";
 /**
  * The outbound pipeline. Owns the B6 pendingSends state; the bridge keeps
  * same-name delegating facades and wires the reconnect drain trigger.
@@ -75,6 +81,22 @@ export declare class OutboundPipeline {
     /** Park one queuable send for a chat while disconnected (M1-B6):
      * per-chat FIFO, capped — the oldest entry is dropped beyond the cap. */
     private queuePendingSend;
+    /** Sliding-60s timestamps of allowed proactive writes (bridge-wide). */
+    private writeActionTimes;
+    /** Calendar-day (local) counter of allowed proactive writes. */
+    private writeDayKey;
+    private writeDayCount;
+    /** W2-③: check + consume one proactive-write slot. Returns a non-empty
+     * Chinese rejection reason when the write must be dropped (a warn with the
+     * chatId and the limit name is logged and the rejection is audited);
+     * returns null when allowed (slot consumed). Rejected attempts do not
+     * consume quota. */
+    private writeGateRejectReason;
+    /** W2-③: append one proactive-write (or rejection / send failure) audit
+     * line to mediaDir/qq-actions.log (jsonl: ts/chatId/action/ok/reason).
+     * Fire-and-forget: a write failure only warns and never affects the send
+     * path. No-op when auditing is disabled or no mediaDir is configured. */
+    private auditWrite;
     /** Resend parked final replies oldest-first after a reconnect (M1-B6).
      * Per-chat send chains keep the order; a send that hits a fresh
      * disconnection re-queues itself via the queuable gate. Expired entries
@@ -82,7 +104,8 @@ export declare class OutboundPipeline {
      * onStatus(true) handler (bridge.start). */
     drainPendingSends(): void;
     /**
-     * Send raw OneBot segments (used by the media tools).
+     * Send raw OneBot segments (used by the media tools). W2-③: counts as a
+     * proactive write — subject to the minute/day caps and audited.
      * @param chatId - target chat.
      * @param segments - outbound segments.
      * @returns the sent message id.
@@ -100,9 +123,15 @@ export declare class OutboundPipeline {
     chainTail(chatId: ChatId): Promise<unknown>;
     /** Send one message to a chat and return its message id. */
     sendMsg(chatId: ChatId, segments: OutboundSegment[], options: SendOptions): Promise<string | undefined>;
-    /** Send [[qq_forward]] nodes as a merged-forward message. */
+    /** Send [[qq_forward]] nodes as a merged-forward message (proactive write
+     * from the qq_send_forward tool). W2-③: subject to the minute/day caps
+     * and audited; the passive [[qq_forward]] blocks inside sendToChat bypass
+     * this gate via sendForwardNodes. */
     sendForward(chatId: ChatId, nodes: Array<{
         name: string;
         content: string;
     }>): Promise<void>;
+    /** Ungated merged-forward send (shared by the gated tool path and the
+     * passive [[qq_forward]] blocks inside sendToChat). */
+    private sendForwardNodes;
 }

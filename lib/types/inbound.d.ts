@@ -33,6 +33,10 @@ export interface NormalizedInbound {
     replyId?: string;
     /** OneBot forward id embedded in the message, if any. */
     forwardId?: string;
+    /** W2-②: the event's own message_id, stringified. Absent when the
+     * implementation didn't send one — the pipeline's message_id dedup window
+     * is skipped for those (nothing to key on). */
+    messageId?: string;
     /** Raw sender-controlled nickname (card ?? nickname ?? userId) — NOT yet
      * sanitized; the pipeline's M3-D5 identity whitelist sanitizes it before it
      * reaches the prefix, the boundary attribute or lastNickname. */
@@ -102,8 +106,27 @@ export interface InboundContext {
     sendToChat(chatId: ChatId, text: string): Promise<string[]>;
     /** Bridge log line callback. */
     log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void;
-    /** The only config fields the inbound pipeline reads. */
-    config: Pick<BridgeConfig, 'botQQ' | 'ignoreSelf' | 'requireMention' | 'rateLimitPerMinute' | 'restrictedMemberPrefix' | 'maxInboundFileBytes'>;
+    /** The only config fields the inbound pipeline reads. The W2-② dedup
+     * window rides as an optional intersection member so the bridge's
+     * BridgeConfig type stays untouched (absent → the default window). */
+    config: Pick<BridgeConfig, 'botQQ' | 'ignoreSelf' | 'requireMention' | 'rateLimitPerMinute' | 'restrictedMemberPrefix' | 'maxInboundFileBytes'> & Partial<{
+        /** W2-② (chatId, message_id) dedup window in seconds; 0 disables. */
+        dedupWindowSeconds: number;
+    }>;
+}
+/** W2-②: default (chatId, message_id) dedup window, aligned with the MIT
+ * competitor's dedupWindowSeconds (300s). */
+export declare const DEFAULT_DEDUP_WINDOW_SECONDS = 300;
+/** W2-②: max entries kept in the dedup window map (LRU-evicted beyond this)
+ * so a flood of distinct message_ids cannot grow memory unbounded. */
+export declare const DEDUP_MAX_ENTRIES = 4096;
+/** Constructor tuning knobs for the inbound pipeline (tests inject a fake
+ * clock / a small LRU cap; production uses the defaults). */
+export interface InboundPipelineOptions {
+    /** Dedup window map capacity override (tests); default DEDUP_MAX_ENTRIES. */
+    dedupMaxEntries?: number;
+    /** Clock override for the dedup window (tests); default Date.now. */
+    now?: () => number;
 }
 /**
  * The inbound pipeline: one normalized OneBot event → one agent turn.
@@ -112,8 +135,25 @@ export interface InboundContext {
  */
 export declare class InboundPipeline {
     private readonly ctx;
-    constructor(ctx: InboundContext);
+    /** W2-② dedup knobs (see InboundPipelineOptions). */
+    private readonly dedupMaxEntries;
+    private readonly now;
+    /** W2-② dedup window state: "chatId#messageId" → first-seen epoch ms, in
+     * insertion order (Map) so the oldest entry is the LRU victim. */
+    private readonly seenMessages;
+    constructor(ctx: InboundContext, options?: InboundPipelineOptions);
     processInbound(inbound: NormalizedInbound): Promise<void>;
+    /** W2-②: (chatId, message_id) sliding-window dedup against OneBot
+     * re-delivery (reconnect replay / ws retry). Runs before every other gate
+     * so a redelivered message can neither re-trigger a command nor reset the
+     * loop residue; only events that normalize to processable chat messages
+     * reach this — notice/meta/request events never enter the pipeline (see
+     * docs/m1-characterization/pipeline-hooks.md #1/#3). Events without a
+     * message_id are not deduped (nothing to key on). Window entries live in
+     * an LRU-capped map: hits refresh recency (keeping the first-seen time, so
+     * the window opens at first delivery), the oldest entry is evicted beyond
+     * the cap. Returns true when the delivery must be silently skipped. */
+    private duplicated;
     /** B7: sliding-window inbound rate limit for normal (non-command) messages.
      * Commands consumed by tryHandleCommand never reach this. Returns true when
      * the message must be dropped; at most one notice is sent per window. */

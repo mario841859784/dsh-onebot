@@ -145,6 +145,14 @@ export interface Config {
   chatIdleEvictDays: number
   /** Escape hatch: skip the download private-address check (local reverse proxy). */
   allowPrivateHosts: boolean
+  /** W2-②: inbound (chatId, message_id) dedup window in seconds; 0 disables. */
+  dedupWindowSeconds: number
+  /** W2-③: bridge-wide proactive-write (qq_send_* tools) cap per minute; 0 disables. */
+  actionRatePerMinute: number
+  /** W2-③: bridge-wide proactive-write cap per calendar day; 0 disables. */
+  actionRatePerDay: number
+  /** W2-③: proactive-write audit jsonl (mediaDir/qq-actions.log). */
+  actionAuditEnabled: boolean
 }
 
 const ENV = (name: string): string => process.env[name] ?? ''
@@ -263,6 +271,14 @@ export const Config: Z<Config> = z.object({
     .description('下载 SSRF 防护逃生门：默认拒绝解析到私网/环回/链路本地地址的下载目标（协议仅 http/https、重定向逐跳复检仍生效）；NapCat 文件服务器或反代部署在本机/内网时置 true 跳过私网检查'),
   chatIdleEvictDays: z.number().default(7)
     .description('会话空闲淘汰天数：chat 超过该天数无任何活动时，在下一条入站消息处理前清理其 agent（会话先落盘 flush、映射保留，之后同一 chat 的消息可 resume 恢复原会话）；0 = 禁用'),
+  dedupWindowSeconds: z.number().default(300)
+    .description('入站消息去重窗口（秒，W2-②）：同一会话内相同 message_id 在该窗口内重投（断线重连重放等）只处理第一条，后续静默跳过并记 debug；仅对会触发回复处理的消息事件生效（notice/meta 类不经过此闸）；0 = 禁用去重'),
+  actionRatePerMinute: z.number().default(20)
+    .description('主动写操作每分钟全桥合计上限（W2-③）：约束 qq_send_image/voice/video/file/segments 与 qq_send_forward 等工具发起的主动发送（回合内的被动回复/interim/通知不受此闸，由 rateLimitPerMinute 与离线队列上限约束）；超限拒发并记 warn 与审计；0 = 禁用分钟限额'),
+  actionRatePerDay: z.number().default(500)
+    .description('主动写操作每日（本地自然日）全桥合计上限（W2-③）：口径同 actionRatePerMinute；超限拒发并记 warn 与审计，次日自动恢复；0 = 禁用日限额'),
+  actionAuditEnabled: z.boolean().default(true)
+    .description('主动写审计（W2-③）：每次主动写（成功/失败）与拒发事件追加写一行 JSON 到 mediaDir/qq-actions.log（含 ts/chatId/action/ok/reason）；写失败仅 warn 不影响发送'),
 })
 
 /** D4a: the deprecated config names kept for one release, mapped onto their
@@ -362,6 +378,16 @@ export function apply(ctx: Context, config: Config): void {
   connection.onMeta = (event: OneBotEvent) => {
     logMetaEvent(connection.selfId, event)
   }
+  // W2-②③ gate keys: BridgeConfig (bridge.ts) keeps its declared shape; the
+  // pipelines read them off the runtime object via optional intersection
+  // members (see InboundContext/OutboundContext.config), so the spread here
+  // is the wiring — no bridge.ts change.
+  const gateConfig = {
+    dedupWindowSeconds: config.dedupWindowSeconds,
+    actionRatePerMinute: config.actionRatePerMinute,
+    actionRatePerDay: config.actionRatePerDay,
+    actionAuditEnabled: config.actionAuditEnabled,
+  }
   const bridge = new ChatBridge({
     ctx,
     // M2-C5b: the bridge sees only explicit ports — the session-event feed
@@ -422,6 +448,7 @@ export function apply(ctx: Context, config: Config): void {
       workspacePath: config.workspacePath,
       maxInboundFileBytes: config.inboundFileMaxBytes,
       chatIdleEvictDays: config.chatIdleEvictDays,
+      ...gateConfig,
     },
     policy,
     log,

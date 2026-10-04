@@ -57,6 +57,10 @@ export interface NormalizedInbound {
   replyId?: string
   /** OneBot forward id embedded in the message, if any. */
   forwardId?: string
+  /** W2-②: the event's own message_id, stringified. Absent when the
+   * implementation didn't send one — the pipeline's message_id dedup window
+   * is skipped for those (nothing to key on). */
+  messageId?: string
   /** Raw sender-controlled nickname (card ?? nickname ?? userId) — NOT yet
    * sanitized; the pipeline's M3-D5 identity whitelist sanitizes it before it
    * reaches the prefix, the boundary attribute or lastNickname. */
@@ -80,6 +84,9 @@ export function normalizeOneBot11(event: OneBotEvent): NormalizedInbound | null 
   const chatId = buildChatId(kind, kind === 'private' ? userId : groupId)
   const segments = Array.isArray(event.message) ? event.message as OneBotSegment[] : undefined
   const raw = typeof event.raw_message === 'string' ? event.raw_message : String(event.message ?? '')
+  const messageId = event.message_id === undefined || event.message_id === null
+    ? undefined
+    : String(event.message_id)
   const parsed = parseMessage(segments, raw)
   const sender = event.sender ?? {}
   const nickname = typeof sender.card === 'string' && sender.card !== ''
@@ -98,6 +105,7 @@ export function normalizeOneBot11(event: OneBotEvent): NormalizedInbound | null 
     media: parsed.media,
     replyId: parsed.replyId,
     forwardId: parsed.forwardId,
+    messageId,
     nickname,
   }
 }
@@ -155,8 +163,29 @@ export interface InboundContext {
   sendToChat(chatId: ChatId, text: string): Promise<string[]>
   /** Bridge log line callback. */
   log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void
-  /** The only config fields the inbound pipeline reads. */
-  config: Pick<BridgeConfig, 'botQQ' | 'ignoreSelf' | 'requireMention' | 'rateLimitPerMinute' | 'restrictedMemberPrefix' | 'maxInboundFileBytes'>
+  /** The only config fields the inbound pipeline reads. The W2-② dedup
+   * window rides as an optional intersection member so the bridge's
+   * BridgeConfig type stays untouched (absent → the default window). */
+  config: Pick<BridgeConfig, 'botQQ' | 'ignoreSelf' | 'requireMention' | 'rateLimitPerMinute' | 'restrictedMemberPrefix' | 'maxInboundFileBytes'> & Partial<{
+    /** W2-② (chatId, message_id) dedup window in seconds; 0 disables. */
+    dedupWindowSeconds: number
+  }>
+}
+
+/** W2-②: default (chatId, message_id) dedup window, aligned with the MIT
+ * competitor's dedupWindowSeconds (300s). */
+export const DEFAULT_DEDUP_WINDOW_SECONDS = 300
+/** W2-②: max entries kept in the dedup window map (LRU-evicted beyond this)
+ * so a flood of distinct message_ids cannot grow memory unbounded. */
+export const DEDUP_MAX_ENTRIES = 4096
+
+/** Constructor tuning knobs for the inbound pipeline (tests inject a fake
+ * clock / a small LRU cap; production uses the defaults). */
+export interface InboundPipelineOptions {
+  /** Dedup window map capacity override (tests); default DEDUP_MAX_ENTRIES. */
+  dedupMaxEntries?: number
+  /** Clock override for the dedup window (tests); default Date.now. */
+  now?: () => number
 }
 
 /**
@@ -166,12 +195,21 @@ export interface InboundContext {
  */
 export class InboundPipeline {
   private readonly ctx: InboundContext
+  /** W2-② dedup knobs (see InboundPipelineOptions). */
+  private readonly dedupMaxEntries: number
+  private readonly now: () => number
+  /** W2-② dedup window state: "chatId#messageId" → first-seen epoch ms, in
+   * insertion order (Map) so the oldest entry is the LRU victim. */
+  private readonly seenMessages = new Map<string, number>()
 
-  constructor(ctx: InboundContext) {
+  constructor(ctx: InboundContext, options: InboundPipelineOptions = {}) {
     this.ctx = ctx
+    this.dedupMaxEntries = options.dedupMaxEntries ?? DEDUP_MAX_ENTRIES
+    this.now = options.now ?? Date.now
   }
 
   async processInbound(inbound: NormalizedInbound): Promise<void> {
+    if (this.duplicated(inbound)) return
     const { kind, userId, groupId, chatId } = inbound
     if (this.ctx.config.ignoreSelf && this.ctx.selfId() !== '' && userId === this.ctx.selfId()) {
       return
@@ -266,6 +304,40 @@ export class InboundPipeline {
       }
     }
     await this.ctx.dispatchFollowup(chatId, final, isAdmin ? 'admin' : 'member', nickname)
+  }
+
+  /** W2-②: (chatId, message_id) sliding-window dedup against OneBot
+   * re-delivery (reconnect replay / ws retry). Runs before every other gate
+   * so a redelivered message can neither re-trigger a command nor reset the
+   * loop residue; only events that normalize to processable chat messages
+   * reach this — notice/meta/request events never enter the pipeline (see
+   * docs/m1-characterization/pipeline-hooks.md #1/#3). Events without a
+   * message_id are not deduped (nothing to key on). Window entries live in
+   * an LRU-capped map: hits refresh recency (keeping the first-seen time, so
+   * the window opens at first delivery), the oldest entry is evicted beyond
+   * the cap. Returns true when the delivery must be silently skipped. */
+  private duplicated(inbound: NormalizedInbound): boolean {
+    const windowSeconds = this.ctx.config.dedupWindowSeconds ?? DEFAULT_DEDUP_WINDOW_SECONDS
+    if (windowSeconds <= 0) return false
+    if (inbound.messageId === undefined || inbound.messageId === '') return false
+    const now = this.now()
+    const key = inbound.chatId + '#' + inbound.messageId
+    const seenAt = this.seenMessages.get(key)
+    if (seenAt !== undefined && now - seenAt < windowSeconds * 1000) {
+      this.seenMessages.delete(key)
+      this.seenMessages.set(key, seenAt)
+      this.ctx.log('debug', 'dedup hit in ' + inbound.chatId + ': message_id ' + inbound.messageId
+        + ' redelivered within ' + windowSeconds + 's window, message skipped')
+      return true
+    }
+    this.seenMessages.delete(key)
+    while (this.seenMessages.size >= this.dedupMaxEntries) {
+      const oldest = this.seenMessages.keys().next().value
+      if (oldest === undefined) break
+      this.seenMessages.delete(oldest)
+    }
+    this.seenMessages.set(key, now)
+    return false
   }
 
   /** B7: sliding-window inbound rate limit for normal (non-command) messages.

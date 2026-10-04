@@ -9,6 +9,9 @@
  * bridge-resident) keep working unchanged.
  * @module dsh-onebot/outbound
  */
+import { appendFile, mkdir } from 'node:fs/promises'
+import { join } from 'node:path'
+
 import type { BridgeConfig } from './bridge.js'
 import type { ChatId } from './chat.js'
 import { splitChatId } from './chat.js'
@@ -59,14 +62,32 @@ export interface OutboundContext {
   isStopping(): boolean
   /** Bridge log line callback. */
   log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void
-  /** The only config fields the outbound pipeline reads. */
-  config: Pick<BridgeConfig, 'botQQ' | 'sensitivePatterns' | 'textImageThreshold' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies'>
+  /** The only config fields the outbound pipeline reads. The W2-③ write-gate
+   * fields ride as optional intersection members so the bridge's BridgeConfig
+   * type stays untouched (absent → the defaults below). */
+  config: Pick<BridgeConfig, 'botQQ' | 'sensitivePatterns' | 'textImageThreshold' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies'> & Partial<{
+    /** Audit file directory (W2-③: mediaDir/qq-actions.log); absent → no audit. */
+    mediaDir: string
+    /** W2-③ bridge-wide proactive-write cap per sliding minute; 0 disables. */
+    actionRatePerMinute: number
+    /** W2-③ bridge-wide proactive-write cap per calendar day; 0 disables. */
+    actionRatePerDay: number
+    /** W2-③ proactive-write audit switch (default on). */
+    actionAuditEnabled: boolean
+  }>
 }
 
 /** Queued final replies older than this are dropped at drain time (M1-B6). */
 const PENDING_SEND_TTL_MS = 5 * 60_000
 /** Max queued final replies per chat; the oldest is dropped beyond this (M1-B6). */
 const PENDING_SEND_MAX = 20
+
+/** W2-③: default bridge-wide proactive-write caps, aligned with the MIT
+ * competitor's actionRatePerMinute(20) / actionRatePerDay(500). */
+export const DEFAULT_ACTION_RATE_PER_MINUTE = 20
+export const DEFAULT_ACTION_RATE_PER_DAY = 500
+/** W2-③: proactive-write audit file name, appended under mediaDir (jsonl). */
+export const ACTION_AUDIT_FILE = 'qq-actions.log'
 
 /**
  * The outbound pipeline. Owns the B6 pendingSends state; the bridge keeps
@@ -106,7 +127,9 @@ export class OutboundPipeline {
       const ids: string[] = []
       const { body, nodes } = extractForwardBlocks(text, '助手')
       if (nodes.length > 0) {
-        await this.sendForward(chatId, nodes)
+        // Passive reply path: [[qq_forward]] blocks inside a turn reply are
+        // NOT gated as proactive writes (see the W2-③ 口径 note).
+        await this.sendForwardNodes(chatId, nodes)
         ids.push('forward')
       }
       let sentCard = false
@@ -158,6 +181,70 @@ export class OutboundPipeline {
     this.pendingSends.set(chatId, queue)
   }
 
+  // ── W2-③ proactive-write gate (minute/day caps + audit) ─────────────────
+  // 口径（per outbound.ts structure）：「主动写」= 模型/命令经 qq_* 工具发起、
+  // 不属于某个入站回合回复链的出站写 —— 即 sendSegments（qq_send_image/voice/
+  // video/file/segments）与公开 sendForward（qq_send_forward）。被动回复不受此
+  // 闸：sendToChat 整条链（最终回复/interim/错误与命令通知、[[qq_forward]] 块，
+  // 后者走未设闸的 sendForwardNodes）由入站 rateLimitPerMinute + B6 队列上限
+  // 约束。两类计数都是全桥合计（不分会话）。
+
+  /** Sliding-60s timestamps of allowed proactive writes (bridge-wide). */
+  private writeActionTimes: number[] = []
+  /** Calendar-day (local) counter of allowed proactive writes. */
+  private writeDayKey = ''
+  private writeDayCount = 0
+
+  /** W2-③: check + consume one proactive-write slot. Returns a non-empty
+   * Chinese rejection reason when the write must be dropped (a warn with the
+   * chatId and the limit name is logged and the rejection is audited);
+   * returns null when allowed (slot consumed). Rejected attempts do not
+   * consume quota. */
+  private writeGateRejectReason(chatId: ChatId, action: string): string | null {
+    const perMinute = this.ctx.config.actionRatePerMinute ?? DEFAULT_ACTION_RATE_PER_MINUTE
+    const perDay = this.ctx.config.actionRatePerDay ?? DEFAULT_ACTION_RATE_PER_DAY
+    if (perMinute <= 0 && perDay <= 0) return null
+    const now = Date.now()
+    this.writeActionTimes = this.writeActionTimes.filter(t => now - t < 60_000)
+    const d = new Date(now)
+    const dayKey = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')
+    if (this.writeDayKey !== dayKey) {
+      this.writeDayKey = dayKey
+      this.writeDayCount = 0
+    }
+    if (perMinute > 0 && this.writeActionTimes.length >= perMinute) {
+      const reason = '写操作频率超限：60 秒内主动写已达 ' + perMinute + ' 次上限（actionRatePerMinute=' + perMinute + '），请稍后再试'
+      this.ctx.log('warn', '已拒发主动写操作: chat=' + chatId + ' action=' + action + '，' + reason)
+      this.auditWrite(chatId, action, false, reason)
+      return reason
+    }
+    if (perDay > 0 && this.writeDayCount >= perDay) {
+      const reason = '写操作次数超限：今日主动写已达 ' + perDay + ' 次上限（actionRatePerDay=' + perDay + '），明日自动恢复'
+      this.ctx.log('warn', '已拒发主动写操作: chat=' + chatId + ' action=' + action + '，' + reason)
+      this.auditWrite(chatId, action, false, reason)
+      return reason
+    }
+    this.writeActionTimes.push(now)
+    this.writeDayCount += 1
+    return null
+  }
+
+  /** W2-③: append one proactive-write (or rejection / send failure) audit
+   * line to mediaDir/qq-actions.log (jsonl: ts/chatId/action/ok/reason).
+   * Fire-and-forget: a write failure only warns and never affects the send
+   * path. No-op when auditing is disabled or no mediaDir is configured. */
+  private auditWrite(chatId: ChatId, action: string, ok: boolean, reason: string): void {
+    if (this.ctx.config.actionAuditEnabled === false) return
+    const dir = this.ctx.config.mediaDir
+    if (dir === undefined || dir === '') return
+    const line = JSON.stringify({ ts: Date.now(), chatId, action, ok, reason }) + '\n'
+    void mkdir(dir, { recursive: true })
+      .then(() => appendFile(join(dir, ACTION_AUDIT_FILE), line, 'utf8'))
+      .catch(error => {
+        this.ctx.log('warn', '写操作审计写入失败: ' + describeError(error))
+      })
+  }
+
   /** Resend parked final replies oldest-first after a reconnect (M1-B6).
    * Per-chat send chains keep the order; a send that hits a fresh
    * disconnection re-queues itself via the queuable gate. Expired entries
@@ -181,13 +268,25 @@ export class OutboundPipeline {
   }
 
   /**
-   * Send raw OneBot segments (used by the media tools).
+   * Send raw OneBot segments (used by the media tools). W2-③: counts as a
+   * proactive write — subject to the minute/day caps and audited.
    * @param chatId - target chat.
    * @param segments - outbound segments.
    * @returns the sent message id.
    */
   sendSegments(chatId: ChatId, segments: OutboundSegment[]): Promise<string | undefined> {
-    return this.enqueue(chatId, () => this.sendMsg(chatId, segments, {}))
+    return this.enqueue(chatId, async () => {
+      const reject = this.writeGateRejectReason(chatId, 'send_msg')
+      if (reject !== null) throw new OneBotActionError(reject)
+      try {
+        const id = await this.sendMsg(chatId, segments, {})
+        this.auditWrite(chatId, 'send_msg', true, '发送成功')
+        return id
+      } catch (error) {
+        this.auditWrite(chatId, 'send_msg', false, '发送失败: ' + describeError(error))
+        throw error
+      }
+    })
   }
 
   /** B8d: per-chat send chains owned by the pipeline (decoupled from the
@@ -235,8 +334,25 @@ export class OutboundPipeline {
     return data.message_id !== undefined ? String(data.message_id) : undefined
   }
 
-  /** Send [[qq_forward]] nodes as a merged-forward message. */
+  /** Send [[qq_forward]] nodes as a merged-forward message (proactive write
+   * from the qq_send_forward tool). W2-③: subject to the minute/day caps
+   * and audited; the passive [[qq_forward]] blocks inside sendToChat bypass
+   * this gate via sendForwardNodes. */
   async sendForward(chatId: ChatId, nodes: Array<{ name: string; content: string }>): Promise<void> {
+    const reject = this.writeGateRejectReason(chatId, 'send_forward_msg')
+    if (reject !== null) throw new OneBotActionError(reject)
+    try {
+      await this.sendForwardNodes(chatId, nodes)
+      this.auditWrite(chatId, 'send_forward_msg', true, '发送成功')
+    } catch (error) {
+      this.auditWrite(chatId, 'send_forward_msg', false, '发送失败: ' + describeError(error))
+      throw error
+    }
+  }
+
+  /** Ungated merged-forward send (shared by the gated tool path and the
+   * passive [[qq_forward]] blocks inside sendToChat). */
+  private async sendForwardNodes(chatId: ChatId, nodes: Array<{ name: string; content: string }>): Promise<void> {
     const ref = splitChatId(chatId)
     const target = Number(ref.target)
     if (!Number.isFinite(target)) throw new OneBotActionError('invalid chat target: ' + chatId)

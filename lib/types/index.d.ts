@@ -155,6 +155,14 @@ export interface Config {
     chatIdleEvictDays: number;
     /** Escape hatch: skip the download private-address check (local reverse proxy). */
     allowPrivateHosts: boolean;
+    /** W2-②: inbound (chatId, message_id) dedup window in seconds; 0 disables. */
+    dedupWindowSeconds: number;
+    /** W2-③: bridge-wide proactive-write (qq_send_* tools) cap per minute; 0 disables. */
+    actionRatePerMinute: number;
+    /** W2-③: bridge-wide proactive-write cap per calendar day; 0 disables. */
+    actionRatePerDay: number;
+    /** W2-③: proactive-write audit jsonl (mediaDir/qq-actions.log). */
+    actionAuditEnabled: boolean;
 }
 /** Default media dir: <dsh-home>/media/onebot (dsh-home = $DSH_HOME or ~/.dsh). */
 export declare function defaultMediaDir(): string;

@@ -9,7 +9,8 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 
-import { normalizeOneBot11 } from '../src/inbound.js'
+import { InboundPipeline, normalizeOneBot11 } from '../src/inbound.js'
+import type { NormalizedInbound } from '../src/inbound.js'
 
 import { makeCmdHarness, makeEvent, makeHarness } from './helpers/bridge-harness.js'
 
@@ -292,6 +293,7 @@ describe('normalizeOneBot11', () => {
         "groupId": "",
         "kind": "private",
         "media": [],
+        "messageId": undefined,
         "nickname": "小明",
         "raw": "你好",
         "replyId": undefined,
@@ -322,6 +324,7 @@ describe('normalizeOneBot11', () => {
         "groupId": "888",
         "kind": "group",
         "media": [],
+        "messageId": undefined,
         "nickname": "群名片",
         "raw": "[CQ:at,qq=10002]帮我看",
         "replyId": undefined,
@@ -362,6 +365,7 @@ describe('normalizeOneBot11', () => {
         "groupId": "888",
         "kind": "group",
         "media": [],
+        "messageId": undefined,
         "nickname": "小明",
         "raw": "[CQ:reply,id=555][CQ:at,qq=10002]这条什么意思",
         "replyId": 555,
@@ -411,6 +415,7 @@ describe('normalizeOneBot11', () => {
             "url": "https://gchat.qpic.cn/img?a=1",
           },
         ],
+        "messageId": undefined,
         "nickname": "小明",
         "raw": "[CQ:image,url=https://gchat.qpic.cn/img?a=1]",
         "replyId": undefined,
@@ -449,6 +454,7 @@ describe('normalizeOneBot11', () => {
             "url": undefined,
           },
         ],
+        "messageId": undefined,
         "nickname": "小明",
         "raw": "[CQ:file,file_id=ABC123,name=报告.pdf]",
         "replyId": undefined,
@@ -486,6 +492,7 @@ describe('normalizeOneBot11', () => {
             "url": "https://gchat.qpic.cn/voice.mp3",
           },
         ],
+        "messageId": undefined,
         "nickname": "小明",
         "raw": "[CQ:record,url=...]",
         "replyId": undefined,
@@ -524,6 +531,7 @@ describe('normalizeOneBot11', () => {
             "url": undefined,
           },
         ],
+        "messageId": undefined,
         "nickname": "小明",
         "raw": "[CQ:image,file=base64://...]",
         "replyId": undefined,
@@ -560,6 +568,7 @@ describe('normalizeOneBot11', () => {
             "url": undefined,
           },
         ],
+        "messageId": undefined,
         "nickname": "小明",
         "raw": "[CQ:image,file=abc.jpg]看图",
         "replyId": undefined,
@@ -705,5 +714,136 @@ describe('M3-D5 prompt-injection isolation', () => {
     h.client.close()
     await h.bridge.stop()
     await h.connection.stop()
+  })
+})
+
+describe('inbound message_id dedup (W2-②)', () => {
+  /** Minimal InboundPipeline harness: every gate passes through except the
+   * dedup window, dispatches are captured, logs are recorded verbatim. */
+  const makeDedupHarness = (opts?: {
+    dedupWindowSeconds?: number
+    dedupMaxEntries?: number
+    now?: () => number
+  }) => {
+    const dispatched: string[] = []
+    const logs: string[] = []
+    const pipeline = new InboundPipeline({
+      call: async () => undefined,
+      selfId: () => '10002',
+      policy: { dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [], adminUsers: [], allowAllUsers: true, requireMention: false },
+      getChat: () => ({ loopBuffer: [], loopPending: null, dispatchTimes: [], rateLimitNoticeAt: undefined }),
+      getSettings: () => ({}) as never,
+      sweepIdleChats: async () => undefined,
+      media: { cleanupExpired: async () => undefined } as never,
+      transcriber: { enabled: false, transcribe: async () => '' } as never,
+      steerTranscript: () => undefined,
+      tryHandleCommand: async () => false,
+      buildBody: async (text: string) => text,
+      expandQuote: async () => '',
+      dispatchFollowup: async (_chatId, text) => { dispatched.push(text) },
+      sendToChat: async () => [],
+      log: (level, message) => { logs.push(level + ':' + message) },
+      config: {
+        botQQ: '10002', ignoreSelf: false, requireMention: false, rateLimitPerMinute: 0,
+        restrictedMemberPrefix: false, maxInboundFileBytes: 0,
+        ...(opts?.dedupWindowSeconds !== undefined ? { dedupWindowSeconds: opts.dedupWindowSeconds } : {}),
+      },
+    }, { dedupMaxEntries: opts?.dedupMaxEntries, now: opts?.now })
+    return { pipeline, dispatched, logs }
+  }
+
+  const dm = (messageId: string | undefined, text = '你好'): NormalizedInbound => normalizeOneBot11({
+    post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002,
+    ...(messageId !== undefined ? { message_id: messageId } : {}),
+    message: [{ type: 'text', data: { text } }], raw_message: text,
+    sender: { user_id: 10001, nickname: '小明' },
+  })!
+
+  it('processes a redelivered (chatId, messageId) once inside the window and skips the rest silently', async () => {
+    const { pipeline, dispatched, logs } = makeDedupHarness()
+    await pipeline.processInbound(dm('1001'))
+    await pipeline.processInbound(dm('1001'))
+    await pipeline.processInbound(dm('1001'))
+    expect(dispatched).toHaveLength(1)
+    const hits = logs.filter(l => l.startsWith('debug:dedup hit'))
+    expect(hits).toHaveLength(2)
+    expect(hits[0]).toContain('private:10001')
+    expect(hits[0]).toContain('1001')
+    expect(hits[0]).toContain('skipped')
+    // A different message_id in the same chat still goes through.
+    await pipeline.processInbound(dm('1002'))
+    expect(dispatched).toHaveLength(2)
+  })
+
+  it('keys the window on (chatId, messageId) — the same id in another chat is a different message', async () => {
+    const { pipeline, dispatched } = makeDedupHarness()
+    await pipeline.processInbound(dm('3001'))
+    // Same message_id, different chat: no dedup.
+    const other = normalizeOneBot11({
+      post_type: 'message', message_type: 'group', user_id: 10001, group_id: 888, self_id: 10002,
+      message_id: 3001,
+      message: [{ type: 'text', data: { text: '你好' } }], raw_message: '你好',
+      sender: { user_id: 10001, nickname: '小明' },
+    })!
+    await pipeline.processInbound(other)
+    expect(dispatched).toHaveLength(2)
+  })
+
+  it('lets a message through again after the window expires', async () => {
+    let now = 1_000_000
+    const { pipeline, dispatched } = makeDedupHarness({ now: () => now })
+    await pipeline.processInbound(dm('2001'))
+    // 299s later: still inside the 300s window.
+    now += 299_000
+    await pipeline.processInbound(dm('2001'))
+    expect(dispatched).toHaveLength(1)
+    // Past 300s: the entry expired, the redelivery is processed again.
+    now += 2_000
+    await pipeline.processInbound(dm('2001'))
+    expect(dispatched).toHaveLength(2)
+  })
+
+  it('evicts the oldest entry beyond the LRU cap', async () => {
+    const { pipeline, dispatched } = makeDedupHarness({ dedupMaxEntries: 2 })
+    await pipeline.processInbound(dm('a'))
+    await pipeline.processInbound(dm('b'))
+    expect(dispatched).toHaveLength(2)
+    // 'c' evicts 'a' (insertion order = LRU order); 'b' stays cached.
+    await pipeline.processInbound(dm('c'))
+    expect(dispatched).toHaveLength(3)
+    // 'a' was evicted → reprocessed (and evicts 'b'); 'b' → reprocessed too
+    // (evicting 'c').
+    await pipeline.processInbound(dm('a'))
+    await pipeline.processInbound(dm('b'))
+    expect(dispatched).toHaveLength(5)
+    // 'c' was evicted by the 'b' re-insertion → processed again (evicts 'a').
+    await pipeline.processInbound(dm('c'))
+    expect(dispatched).toHaveLength(6)
+    // 'b' is still cached and inside the window → skipped.
+    await pipeline.processInbound(dm('b'))
+    expect(dispatched).toHaveLength(6)
+  })
+
+  it('dedupWindowSeconds 0 disables dedup and events without a message_id are never deduped', async () => {
+    const disabled = makeDedupHarness({ dedupWindowSeconds: 0 })
+    for (let i = 0; i < 3; i++) await disabled.pipeline.processInbound(dm('9001'))
+    expect(disabled.dispatched).toHaveLength(3)
+    expect(disabled.logs.some(l => l.includes('dedup hit'))).toBe(false)
+
+    const enabled = makeDedupHarness()
+    // No message_id → nothing to key on → every delivery is processed.
+    await enabled.pipeline.processInbound(dm(undefined))
+    await enabled.pipeline.processInbound(dm(undefined))
+    expect(enabled.dispatched).toHaveLength(2)
+    expect(enabled.logs.some(l => l.includes('dedup hit'))).toBe(false)
+  })
+
+  it('never gates notice/meta events — they normalize to null and cannot reach the pipeline', () => {
+    expect(normalizeOneBot11({
+      post_type: 'notice', notice_type: 'recall', user_id: 10001, self_id: 10002, message_id: 5,
+    })).toBeNull()
+    expect(normalizeOneBot11({
+      post_type: 'meta_event', meta_event_type: 'heartbeat', self_id: 10002, message_id: 6,
+    })).toBeNull()
   })
 })
