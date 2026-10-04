@@ -10,12 +10,18 @@
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { OneBotActionError, OneBotNotConnectedError } from '../src/connection.js'
 import { ACTION_AUDIT_FILE, OutboundPipeline } from '../src/outbound.js'
 
 import { inboundAndDisconnect, makeCmdHarness, makeEvent, makeHarness, reconnect, sentTexts } from './helpers/bridge-harness.js'
+
+// Test isolation (0.6.0 flake hygiene): a test failing mid-way must never leak
+// fake timers into the rest of the file (mirrors connection.spec.ts).
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 describe('outbound pipeline', () => {
   it('renders a t2i card for long replies (image segment)', async () => {
@@ -155,9 +161,16 @@ describe('outbound pipeline', () => {
       turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '过期回复' }] },
     }))
     h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
-    // Let the settle-loop microtask park the final BEFORE the clock jump, or it
-    // would queue with a fresh (post-jump) timestamp and never expire.
-    await new Promise(resolve => setTimeout(resolve, 50))
+    // Deterministic isolation fix (0.6.0 flake): wait until the settle loop has
+    // actually PARKED the final itself before jumping the clock — the former
+    // fixed 50ms sleep raced the park; a park landing after the jump stamped a
+    // post-jump sentAt and the entry then never expired (resent, test failed).
+    // The queue holds the summary card too, so match the final's text, not a
+    // count.
+    const parkedTexts = (): string[] =>
+      ((h.bridge as unknown as { outbound: { pendingSends: Map<string, Array<{ text: string }>> } }).outbound)
+        .pendingSends.get('private:10001')?.map(item => item.text) ?? []
+    await vi.waitFor(() => expect(parkedTexts().some(t => t.includes('过期回复'))).toBe(true))
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
       vi.advanceTimersByTime(5 * 60_000 + 1_000)
@@ -237,7 +250,10 @@ describe('outbound pipeline', () => {
 
 describe('outbound proactive-write gate (W2-③)', () => {
   /** Minimal OutboundPipeline harness: a connected fake transport capturing
-   * every send action, config limits injected per test, optional audit dir. */
+   * every send action, config limits injected per test, optional audit dir.
+   * Isolation (0.6.0 flake hygiene): the pipeline gets a monotonic injected
+   * clock instead of the wall clock, so gate windows can never be perturbed
+   * by real-time minute/day boundaries or worker clock jumps. */
   const makeGateHarness = (opts?: {
     actionRatePerMinute?: number
     actionRatePerDay?: number
@@ -245,6 +261,7 @@ describe('outbound proactive-write gate (W2-③)', () => {
   }) => {
     const sent: Array<{ action: string; params: Record<string, unknown> }> = []
     const logs: string[] = []
+    let clock = 1_700_000_000_000
     const pipeline = new OutboundPipeline({
       getChat: () => ({ lastNickname: '' }),
       connected: () => true,
@@ -262,7 +279,7 @@ describe('outbound proactive-write gate (W2-③)', () => {
         ...(opts?.actionRatePerDay !== undefined ? { actionRatePerDay: opts.actionRatePerDay } : {}),
         ...(opts?.mediaDir !== undefined ? { mediaDir: opts.mediaDir } : {}),
       },
-    })
+    }, { now: () => (clock += 25) })
     return { pipeline, sent, logs }
   }
 

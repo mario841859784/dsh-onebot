@@ -95,6 +95,12 @@ export interface CommandContext {
   commands: BridgeDeps['commands']
   connection: OneBotConnection
   dshHome: string | undefined
+  /** W1/T5 /healthcheck: render the health summary (absent = the bridge has
+   * no health wiring — the command replies with a hint instead). */
+  healthReport?: (() => Promise<string>) | undefined
+  /** W1/T5 /healthcheck export: pack the redacted diagnostics archive,
+   * returning its path. */
+  exportDiagnostics?: (() => Promise<string>) | undefined
   /** The only config fields the commands read. */
   config: Pick<BridgeConfig, 'interimMessages' | 'maxImageBytes' | 'unknownCommand'>
 }
@@ -130,6 +136,7 @@ export const COMMANDS: CommandDefinition[] = [
   { name: 'preset', adminOnly: true, group: '会话', help: '[id|序号] 查看/切换 agent 预设', handler: (ctx, chatId, arg) => handlePresetCommand(ctx, chatId, arg) },
   { name: 'session', adminOnly: true, group: '会话', help: '[序号] 查看/切回历史会话', handler: (ctx, chatId, arg) => handleSessionCommand(ctx, chatId, arg) },
   { name: 'status', adminOnly: true, group: '查询', help: '会话全景', handler: (ctx, chatId) => handleStatusCommand(ctx, chatId) },
+  { name: 'healthcheck', adminOnly: true, group: '查询', help: '[export] 运行体检（export 导出脱敏诊断包）', handler: (ctx, chatId, arg) => handleHealthcheckCommand(ctx, chatId, arg) },
   { name: 'retry', adminOnly: true, group: '操作', help: '重跑上一条', handler: (ctx, chatId) => handleRetryCommand(ctx, chatId) },
   { name: 'id', adminOnly: true, group: '查询', help: '会话标识（session/chat）', handler: (ctx, chatId) => handleIdCommand(ctx, chatId) },
   { name: 'ver', adminOnly: true, group: '查询', help: '插件版本', handler: (ctx, chatId) => handleVerCommand(ctx, chatId) },
@@ -570,6 +577,39 @@ async function handleStatusCommand(ctx: CommandContext, chatId: ChatId): Promise
     '出站     : ' + modeLabel + '\n' +
     'agent   : ' + agentState + '\n' +
     '可切回   : ' + switchableCount + ' 条历史会话（/session 查看列表）')
+}
+
+/** W1/T5 /healthcheck: render the health summary, or pack the redacted
+ * diagnostics archive with the `export` argument. Failures are reported to
+ * the chat as a ⚠️ line, never thrown past the router. */
+async function handleHealthcheckCommand(ctx: CommandContext, chatId: ChatId, arg: string): Promise<void> {
+  const sub = arg.trim().toLowerCase()
+  if (sub === 'export') {
+    if (ctx.exportDiagnostics === undefined) {
+      await ctx.sendToChat(chatId, '⚠️ 诊断包导出未启用（health 模块未接线）。')
+      return
+    }
+    try {
+      const archive = await ctx.exportDiagnostics()
+      await ctx.sendToChat(chatId, '📦 诊断包已导出（token/accessToken 已强制脱敏）：\n' + archive)
+    } catch (error) {
+      await ctx.sendToChat(chatId, '⚠️ 诊断包导出失败：' + describeError(error))
+    }
+    return
+  }
+  if (sub !== '') {
+    await ctx.sendToChat(chatId, '用法：/healthcheck（体检摘要）或 /healthcheck export（导出脱敏诊断包）。')
+    return
+  }
+  if (ctx.healthReport === undefined) {
+    await ctx.sendToChat(chatId, '⚠️ 体检未启用（health 模块未接线）。')
+    return
+  }
+  try {
+    await ctx.sendToChat(chatId, await ctx.healthReport())
+  } catch (error) {
+    await ctx.sendToChat(chatId, '⚠️ 体检失败：' + describeError(error))
+  }
 }
 
 /** /mode: per-chat outbound-mode override (interim vs instant). */

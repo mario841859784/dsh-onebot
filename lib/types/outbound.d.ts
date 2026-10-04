@@ -1,5 +1,6 @@
 import type { BridgeConfig } from './bridge.js';
 import type { ChatId } from './chat.js';
+import type { TraceStage } from './trace.js';
 /** One OneBot message segment for outbound sends. */
 export interface OutboundSegment {
     type: string;
@@ -33,12 +34,23 @@ export interface OutboundContext {
     connected(): boolean;
     /** The connection's own QQ id (forward-node uin). */
     selfId(): string;
-    /** Raw OneBot action invocation (send_msg / send_*_forward_msg). */
-    call(action: string, params: Record<string, unknown>): Promise<unknown>;
+    /** Raw OneBot action invocation (send_msg / send_*_forward_msg). W1/T5:
+     * the target chatId rides along when known so the bridge's inject dry-run
+     * guard can attribute the call to a chat's injected round. */
+    call(action: string, params: Record<string, unknown>, chatId?: ChatId): Promise<unknown>;
     /** Bridge stop flag: the B6 drain must never run while stopping. */
     isStopping(): boolean;
     /** Bridge log line callback. */
     log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void;
+    /** W1: emit one outbound/queue decision event for a chat. The bridge owns
+     * the traceId resolution (chat-level association table; unmapped proactive
+     * writes mint a fresh id) — absent = tracing off, zero cost. */
+    trace?: (chatId: ChatId, event: {
+        stage: TraceStage;
+        ok?: boolean;
+        reason?: string;
+        data?: Record<string, unknown>;
+    }) => void;
     /** The only config fields the outbound pipeline reads. The W2-③ write-gate
      * fields ride as optional intersection members so the bridge's BridgeConfig
      * type stays untouched (absent → the defaults below). */
@@ -65,10 +77,15 @@ export declare const ACTION_AUDIT_FILE = "qq-actions.log";
  */
 export declare class OutboundPipeline {
     private readonly ctx;
+    /** Clock override (tests); behavior-affecting timestamps (send chains,
+     * offline queue, write gate) all read it — never the wall clock directly. */
+    private readonly now;
     /** Per-chat FIFO of model final replies parked while disconnected; drained
      * oldest-first on reconnect (M1-B6). */
     private readonly pendingSends;
-    constructor(ctx: OutboundContext);
+    constructor(ctx: OutboundContext, options?: {
+        now?: () => number;
+    });
     /**
      * Send plain text to a chat with the full outbound pipeline (forward
      * blocks, Markdown strip, sentence splitting).
@@ -86,6 +103,16 @@ export declare class OutboundPipeline {
     /** Calendar-day (local) counter of allowed proactive writes. */
     private writeDayKey;
     private writeDayCount;
+    /** Serialized audit-append chain (order discipline, see auditWrite). */
+    private auditChain;
+    /** W1/T5 health snapshot: the write gate's current usage against its
+     * limits (minute sliding window pruned at read time; day counter). */
+    writeGateStats(): {
+        minuteUsed: number;
+        minuteLimit: number;
+        dayUsed: number;
+        dayLimit: number;
+    };
     /** W2-③: check + consume one proactive-write slot. Returns a non-empty
      * Chinese rejection reason when the write must be dropped (a warn with the
      * chatId and the limit name is logged and the rejection is audited);
@@ -95,7 +122,9 @@ export declare class OutboundPipeline {
     /** W2-③: append one proactive-write (or rejection / send failure) audit
      * line to mediaDir/qq-actions.log (jsonl: ts/chatId/action/ok/reason).
      * Fire-and-forget: a write failure only warns and never affects the send
-     * path. No-op when auditing is disabled or no mediaDir is configured. */
+     * path. Writes are chained so lines land in call order even when the fs
+     * thread pool completes them out of schedule. No-op when auditing is
+     * disabled or no mediaDir is configured. */
     private auditWrite;
     /** Resend parked final replies oldest-first after a reconnect (M1-B6).
      * Per-chat send chains keep the order; a send that hits a fresh

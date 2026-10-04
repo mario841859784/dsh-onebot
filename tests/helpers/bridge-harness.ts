@@ -18,6 +18,9 @@ import { OneBotConnection } from '../../src/connection.js'
 import { ChatBridge } from '../../src/bridge.js'
 import { MediaStore } from '../../src/media.js'
 import { Transcriber } from '../../src/stt.js'
+import { TraceSink } from '../../src/trace.js'
+import { InboundRecorder } from '../../src/record.js'
+import { InjectChannel } from '../../src/inject.js'
 
 /** A fake agent handle for the bridge. */
 export function makeFakeAgents(
@@ -90,7 +93,7 @@ export function makeFakeAgents(
 }
 
 /** Full bridge + WS harness: inbound via real WebSocket, outbound captured. */
-export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber }) {
+export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel }) {
   const ctx = new Context()
   const sessionIds: string[] = []
   const captured = { followups: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[] }
@@ -111,12 +114,17 @@ export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: st
     workspaceRegistry: undefined as never,
     defaultModel: undefined,
     config: {
-      botQQ: '10002', ignoreSelf: false, requireMention: true,
+      botQQ: '10002', ignoreSelf: opts?.ignoreSelf ?? false, requireMention: true,
       interimMessages: opts?.interimMessages ?? true, sendErrorNotice: true, restrictedMemberPrefix: false,
       sensitivePatterns: [], mediaDir, maxImageBytes: opts?.maxImageBytes ?? 8 * 1024 * 1024,
       maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
       textImageThreshold: opts?.textImageThreshold ?? 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
       agentPreset: 'standard', workspacePath: mediaDir,
+      // W1: optional decision-trace sink (absent = tracing off).
+      trace: opts?.trace,
+      // W1/T5: optional recorder / inject channel (absent = feature off).
+      recorder: opts?.recorder,
+      inject: opts?.inject,
     },
     policy: {
       dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],

@@ -19,6 +19,8 @@ import { OneBotActionError, OneBotNotConnectedError } from './connection.js'
 import { extractForwardBlocks, scanSensitive, stripMarkdown } from './split.js'
 import { renderTextImage } from './t2i/index.js'
 import { describeError } from './errors.js'
+import { TRACE_REASONS } from './trace.js'
+import type { TraceStage } from './trace.js'
 
 /** One OneBot message segment for outbound sends. */
 export interface OutboundSegment {
@@ -56,12 +58,18 @@ export interface OutboundContext {
   connected(): boolean
   /** The connection's own QQ id (forward-node uin). */
   selfId(): string
-  /** Raw OneBot action invocation (send_msg / send_*_forward_msg). */
-  call(action: string, params: Record<string, unknown>): Promise<unknown>
+  /** Raw OneBot action invocation (send_msg / send_*_forward_msg). W1/T5:
+   * the target chatId rides along when known so the bridge's inject dry-run
+   * guard can attribute the call to a chat's injected round. */
+  call(action: string, params: Record<string, unknown>, chatId?: ChatId): Promise<unknown>
   /** Bridge stop flag: the B6 drain must never run while stopping. */
   isStopping(): boolean
   /** Bridge log line callback. */
   log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void
+  /** W1: emit one outbound/queue decision event for a chat. The bridge owns
+   * the traceId resolution (chat-level association table; unmapped proactive
+   * writes mint a fresh id) — absent = tracing off, zero cost. */
+  trace?: (chatId: ChatId, event: { stage: TraceStage; ok?: boolean; reason?: string; data?: Record<string, unknown> }) => void
   /** The only config fields the outbound pipeline reads. The W2-③ write-gate
    * fields ride as optional intersection members so the bridge's BridgeConfig
    * type stays untouched (absent → the defaults below). */
@@ -95,12 +103,19 @@ export const ACTION_AUDIT_FILE = 'qq-actions.log'
  */
 export class OutboundPipeline {
   private readonly ctx: OutboundContext
+  /** Clock override (tests); behavior-affecting timestamps (send chains,
+   * offline queue, write gate) all read it — never the wall clock directly. */
+  private readonly now: () => number
   /** Per-chat FIFO of model final replies parked while disconnected; drained
    * oldest-first on reconnect (M1-B6). */
   private readonly pendingSends = new Map<ChatId, Array<{ text: string; sentAt: number }>>()
 
-  constructor(ctx: OutboundContext) {
+  constructor(ctx: OutboundContext, options: { now?: () => number } = {}) {
     this.ctx = ctx
+    // Lazy default: read Date.now through a wrapper so an injected clock is
+    // optional and callers without one keep the dynamic global lookup (fake
+    // timers in tests must keep influencing the wall-clock path).
+    this.now = options.now ?? (() => Date.now())
   }
 
   /**
@@ -115,14 +130,19 @@ export class OutboundPipeline {
     return this.enqueue(chatId, async () => {
       if (!this.ctx.connected()) {
         if (options.queuable === true) {
+          // pipeline-hooks.md #23: the park used to be silent.
+          this.ctx.log('debug', '连接断开，回复已排队等待重连补发: ' + chatId)
+          this.ctx.trace?.(chatId, { stage: 'queue', ok: true, reason: TRACE_REASONS.outboundQueued })
           this.queuePendingSend(chatId, text)
           return []
         }
+        this.ctx.trace?.(chatId, { stage: 'outbound', ok: false, reason: TRACE_REASONS.outboundNotConnected })
         throw new OneBotNotConnectedError()
       }
       const hits = scanSensitive(text, this.ctx.config.sensitivePatterns)
       if (hits.length > 0) {
         this.ctx.log('warn', 'sensitive outbound audit for ' + chatId + ': ' + hits.join(', '))
+        this.ctx.trace?.(chatId, { stage: 'outbound', ok: true, reason: TRACE_REASONS.outboundSensitive, data: { hits: hits.slice(0, 5) } })
       }
       const ids: string[] = []
       const { body, nodes } = extractForwardBlocks(text, '助手')
@@ -153,9 +173,11 @@ export class OutboundPipeline {
             sentCard = true
           } else {
             this.ctx.log('warn', 't2i card PNG exceeds maxImageBytes; falling back to text')
+            this.ctx.trace?.(chatId, { stage: 'outbound', ok: false, reason: TRACE_REASONS.outboundCardTooLarge })
           }
         } catch (error) {
           this.ctx.log('warn', 't2i render failed, falling back to text: ' + describeError(error))
+          this.ctx.trace?.(chatId, { stage: 'outbound', ok: false, reason: '文字图卡片渲染失败，已降级为文本: ' + describeError(error) })
         }
       }
       if (!sentCard) {
@@ -163,8 +185,13 @@ export class OutboundPipeline {
         if (plain !== '') {
           const id = await this.sendMsg(chatId, [{ type: 'text', data: { text: plain } }], options)
           if (id !== undefined) ids.push(id)
+        } else {
+          // pipeline-hooks.md #30: the empty-body skip used to be silent.
+          this.ctx.log('debug', '正文为空，未发送: ' + chatId)
+          this.ctx.trace?.(chatId, { stage: 'outbound', ok: false, reason: TRACE_REASONS.outboundEmptyText })
         }
       }
+      this.ctx.trace?.(chatId, { stage: 'outbound', ok: true, reason: '回复已发送', data: { segments: ids.length } })
       return ids
     })
   }
@@ -176,8 +203,9 @@ export class OutboundPipeline {
     if (queue.length >= PENDING_SEND_MAX) {
       queue.shift()
       this.ctx.log('warn', 'pending send queue full for ' + chatId + ', dropped oldest')
+      this.ctx.trace?.(chatId, { stage: 'queue', ok: false, reason: TRACE_REASONS.queueFull })
     }
-    queue.push({ text, sentAt: Date.now() })
+    queue.push({ text, sentAt: this.now() })
     this.pendingSends.set(chatId, queue)
   }
 
@@ -194,6 +222,23 @@ export class OutboundPipeline {
   /** Calendar-day (local) counter of allowed proactive writes. */
   private writeDayKey = ''
   private writeDayCount = 0
+  /** Serialized audit-append chain (order discipline, see auditWrite). */
+  private auditChain: Promise<void> = Promise.resolve()
+
+  /** W1/T5 health snapshot: the write gate's current usage against its
+   * limits (minute sliding window pruned at read time; day counter). */
+  writeGateStats(): { minuteUsed: number; minuteLimit: number; dayUsed: number; dayLimit: number } {
+    const perMinute = this.ctx.config.actionRatePerMinute ?? DEFAULT_ACTION_RATE_PER_MINUTE
+    const perDay = this.ctx.config.actionRatePerDay ?? DEFAULT_ACTION_RATE_PER_DAY
+    const now = this.now()
+    const minuteUsed = perMinute > 0
+      ? this.writeActionTimes.filter(t => now - t < 60_000).length
+      : 0
+    const d = new Date(now)
+    const dayKey = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')
+    const dayUsed = perDay > 0 && this.writeDayKey === dayKey ? this.writeDayCount : 0
+    return { minuteUsed, minuteLimit: perMinute, dayUsed, dayLimit: perDay }
+  }
 
   /** W2-③: check + consume one proactive-write slot. Returns a non-empty
    * Chinese rejection reason when the write must be dropped (a warn with the
@@ -204,7 +249,7 @@ export class OutboundPipeline {
     const perMinute = this.ctx.config.actionRatePerMinute ?? DEFAULT_ACTION_RATE_PER_MINUTE
     const perDay = this.ctx.config.actionRatePerDay ?? DEFAULT_ACTION_RATE_PER_DAY
     if (perMinute <= 0 && perDay <= 0) return null
-    const now = Date.now()
+    const now = this.now()
     this.writeActionTimes = this.writeActionTimes.filter(t => now - t < 60_000)
     const d = new Date(now)
     const dayKey = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')
@@ -216,12 +261,14 @@ export class OutboundPipeline {
       const reason = '写操作频率超限：60 秒内主动写已达 ' + perMinute + ' 次上限（actionRatePerMinute=' + perMinute + '），请稍后再试'
       this.ctx.log('warn', '已拒发主动写操作: chat=' + chatId + ' action=' + action + '，' + reason)
       this.auditWrite(chatId, action, false, reason)
+      this.ctx.trace?.(chatId, { stage: 'outbound', ok: false, reason })
       return reason
     }
     if (perDay > 0 && this.writeDayCount >= perDay) {
       const reason = '写操作次数超限：今日主动写已达 ' + perDay + ' 次上限（actionRatePerDay=' + perDay + '），明日自动恢复'
       this.ctx.log('warn', '已拒发主动写操作: chat=' + chatId + ' action=' + action + '，' + reason)
       this.auditWrite(chatId, action, false, reason)
+      this.ctx.trace?.(chatId, { stage: 'outbound', ok: false, reason })
       return reason
     }
     this.writeActionTimes.push(now)
@@ -232,17 +279,20 @@ export class OutboundPipeline {
   /** W2-③: append one proactive-write (or rejection / send failure) audit
    * line to mediaDir/qq-actions.log (jsonl: ts/chatId/action/ok/reason).
    * Fire-and-forget: a write failure only warns and never affects the send
-   * path. No-op when auditing is disabled or no mediaDir is configured. */
+   * path. Writes are chained so lines land in call order even when the fs
+   * thread pool completes them out of schedule. No-op when auditing is
+   * disabled or no mediaDir is configured. */
   private auditWrite(chatId: ChatId, action: string, ok: boolean, reason: string): void {
     if (this.ctx.config.actionAuditEnabled === false) return
     const dir = this.ctx.config.mediaDir
     if (dir === undefined || dir === '') return
-    const line = JSON.stringify({ ts: Date.now(), chatId, action, ok, reason }) + '\n'
-    void mkdir(dir, { recursive: true })
-      .then(() => appendFile(join(dir, ACTION_AUDIT_FILE), line, 'utf8'))
-      .catch(error => {
-        this.ctx.log('warn', '写操作审计写入失败: ' + describeError(error))
-      })
+    const line = JSON.stringify({ ts: this.now(), chatId, action, ok, reason }) + '\n'
+    this.auditChain = this.auditChain.then(async () => {
+      await mkdir(dir, { recursive: true })
+      await appendFile(join(dir, ACTION_AUDIT_FILE), line, 'utf8')
+    }).catch(error => {
+      this.ctx.log('warn', '写操作审计写入失败: ' + describeError(error))
+    })
   }
 
   /** Resend parked final replies oldest-first after a reconnect (M1-B6).
@@ -252,17 +302,24 @@ export class OutboundPipeline {
    * onStatus(true) handler (bridge.start). */
   drainPendingSends(): void {
     if (this.ctx.isStopping()) return
-    const now = Date.now()
+    const now = this.now()
     const batch: Array<{ chatId: ChatId; text: string }> = []
     for (const [chatId, queue] of this.pendingSends) {
       this.pendingSends.delete(chatId)
       for (const item of queue) {
-        if (now - item.sentAt < PENDING_SEND_TTL_MS) batch.push({ chatId, text: item.text })
+        if (now - item.sentAt < PENDING_SEND_TTL_MS) {
+          batch.push({ chatId, text: item.text })
+        } else {
+          // pipeline-hooks.md #25: the TTL drop used to be silent.
+          this.ctx.log('debug', '排队回复超过 5 分钟未送达，已丢弃: ' + chatId)
+          this.ctx.trace?.(chatId, { stage: 'queue', ok: false, reason: TRACE_REASONS.queueTtlExpired })
+        }
       }
     }
     for (const { chatId, text } of batch) {
       void this.sendToChat(chatId, text, { queuable: true }).catch((error: unknown) => {
         this.ctx.log('warn', 'queued resend failed: ' + describeError(error))
+        this.ctx.trace?.(chatId, { stage: 'queue', ok: false, reason: '排队回复补发失败: ' + describeError(error) })
       })
     }
   }
@@ -284,6 +341,7 @@ export class OutboundPipeline {
         return id
       } catch (error) {
         this.auditWrite(chatId, 'send_msg', false, '发送失败: ' + describeError(error))
+        this.ctx.trace?.(chatId, { stage: 'outbound', ok: false, reason: '主动写发送失败: ' + describeError(error) })
         throw error
       }
     })
@@ -330,7 +388,7 @@ export class OutboundPipeline {
     if (options.replyTo !== undefined) {
       params.message = [{ type: 'reply', data: { id: options.replyTo } }, ...segments]
     }
-    const data = await this.ctx.call('send_msg', params) as { message_id?: number | string }
+    const data = await this.ctx.call('send_msg', params, chatId) as { message_id?: number | string }
     return data.message_id !== undefined ? String(data.message_id) : undefined
   }
 
@@ -346,6 +404,7 @@ export class OutboundPipeline {
       this.auditWrite(chatId, 'send_forward_msg', true, '发送成功')
     } catch (error) {
       this.auditWrite(chatId, 'send_forward_msg', false, '发送失败: ' + describeError(error))
+      this.ctx.trace?.(chatId, { stage: 'outbound', ok: false, reason: '主动写发送失败: ' + describeError(error) })
       throw error
     }
   }
@@ -365,9 +424,9 @@ export class OutboundPipeline {
       },
     }))
     if (ref.kind === 'group') {
-      await this.ctx.call('send_forward_msg', { group_id: target, messages })
+      await this.ctx.call('send_forward_msg', { group_id: target, messages }, chatId)
     } else {
-      await this.ctx.call('send_private_forward_msg', { user_id: target, messages })
+      await this.ctx.call('send_private_forward_msg', { user_id: target, messages }, chatId)
     }
   }
 }

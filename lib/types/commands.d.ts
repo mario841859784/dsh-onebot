@@ -89,6 +89,12 @@ export interface CommandContext {
     commands: BridgeDeps['commands'];
     connection: OneBotConnection;
     dshHome: string | undefined;
+    /** W1/T5 /healthcheck: render the health summary (absent = the bridge has
+     * no health wiring — the command replies with a hint instead). */
+    healthReport?: (() => Promise<string>) | undefined;
+    /** W1/T5 /healthcheck export: pack the redacted diagnostics archive,
+     * returning its path. */
+    exportDiagnostics?: (() => Promise<string>) | undefined;
     /** The only config fields the commands read. */
     config: Pick<BridgeConfig, 'interimMessages' | 'maxImageBytes' | 'unknownCommand'>;
 }

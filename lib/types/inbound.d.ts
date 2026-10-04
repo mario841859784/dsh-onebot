@@ -142,6 +142,9 @@ export declare class InboundPipeline {
      * insertion order (Map) so the oldest entry is the LRU victim. */
     private readonly seenMessages;
     constructor(ctx: InboundContext, options?: InboundPipelineOptions);
+    /** W1/T5 health snapshot: how many message_ids are currently held in the
+     * dedup window (LRU-capped; see DEDUP_MAX_ENTRIES). */
+    get dedupWindowEntries(): number;
     processInbound(inbound: NormalizedInbound): Promise<void>;
     /** W2-②: (chatId, message_id) sliding-window dedup against OneBot
      * re-delivery (reconnect replay / ws retry). Runs before every other gate

@@ -28,6 +28,7 @@ import {
 import type { BridgeConfig } from './bridge.js'
 import type { ChatSettings } from './registry.js'
 import { describeError } from './errors.js'
+import { currentTrace, TRACE_REASONS } from './trace.js'
 
 /**
  * The neutral shape normalizeOneBot11 extracts from one OneBot 11 message
@@ -208,21 +209,32 @@ export class InboundPipeline {
     this.now = options.now ?? Date.now
   }
 
+  /** W1/T5 health snapshot: how many message_ids are currently held in the
+   * dedup window (LRU-capped; see DEDUP_MAX_ENTRIES). */
+  get dedupWindowEntries(): number {
+    return this.seenMessages.size
+  }
+
   async processInbound(inbound: NormalizedInbound): Promise<void> {
     if (this.duplicated(inbound)) return
     const { kind, userId, groupId, chatId } = inbound
     if (this.ctx.config.ignoreSelf && this.ctx.selfId() !== '' && userId === this.ctx.selfId()) {
+      // pipeline-hooks.md #5: this drop used to be fully silent.
+      this.ctx.log('debug', '机器人自己的消息已忽略: ' + chatId)
+      currentTrace()?.emit('self', { ok: false, reason: TRACE_REASONS.inboundSelf })
       return
     }
     const policy = this.ctx.policy
     if (kind === 'private') {
       if (!dmAllowed(userId, policy)) {
         this.ctx.log('debug', 'ignoring DM from non-allowed user ' + userId)
+        currentTrace()?.emit('whitelist', { ok: false, reason: TRACE_REASONS.inboundDmBlocked })
         return
       }
     } else {
       if (!groupAllowed(groupId, policy)) {
         this.ctx.log('debug', 'ignoring group message from non-allowed group ' + groupId)
+        currentTrace()?.emit('whitelist', { ok: false, reason: TRACE_REASONS.inboundGroupBlocked })
         return
       }
     }
@@ -230,6 +242,7 @@ export class InboundPipeline {
     const mentioned = detectMention(inbound.segments, inbound.raw, this.ctx.selfId(), this.ctx.config.botQQ)
     if (kind === 'group' && this.ctx.config.requireMention && !mentioned) {
       this.ctx.log('debug', 'ignoring unmentioned group message in ' + groupId)
+      currentTrace()?.emit('mention', { ok: false, reason: TRACE_REASONS.inboundUnmentioned })
       return
     }
 
@@ -262,6 +275,7 @@ export class InboundPipeline {
       if (ref.kind === 'image') this.ctx.getSettings(chatId).pendingImageRef = ref
     }
     if (await this.ctx.tryHandleCommand(chatId, inbound.text, userId)) {
+      currentTrace()?.emit('command', { ok: true, reason: TRACE_REASONS.inboundCommand })
       return
     }
 
@@ -295,7 +309,12 @@ export class InboundPipeline {
     // stay pure data. The framework-generated group prefix and
     // RESTRICTED_PREFIX remain outside — the only trusted metadata.
     const content = [forward, quote, body].filter(part => part !== '').join('\n')
-    if (content.trim() === '') return
+    if (content.trim() === '') {
+      // pipeline-hooks.md #17: this drop used to be fully silent.
+      this.ctx.log('debug', '消息展开后无有效文本内容，已丢弃: ' + chatId)
+      currentTrace()?.emit('dispatch', { ok: false, reason: TRACE_REASONS.inboundEmptyContent })
+      return
+    }
     let final = wrapUserMessage(content, userId, nickname)
     if (kind === 'group') {
       final = buildGroupMessagePrefix(nickname, userId, mentioned) + final
@@ -328,6 +347,7 @@ export class InboundPipeline {
       this.seenMessages.set(key, seenAt)
       this.ctx.log('debug', 'dedup hit in ' + inbound.chatId + ': message_id ' + inbound.messageId
         + ' redelivered within ' + windowSeconds + 's window, message skipped')
+      currentTrace()?.emit('dedup', { ok: false, reason: TRACE_REASONS.inboundDedup })
       return true
     }
     this.seenMessages.delete(key)
@@ -354,9 +374,15 @@ export class InboundPipeline {
       chat.dispatchTimes.push(now)
       return false
     }
+    // pipeline-hooks.md #16: the drop decision itself used to be silent (only
+    // the user-facing notice text existed).
+    currentTrace()?.emit('ratelimit', { ok: false, reason: TRACE_REASONS.inboundRateLimited })
     if (chat.rateLimitNoticeAt === undefined || now - chat.rateLimitNoticeAt >= 60_000) {
       chat.rateLimitNoticeAt = now
-      void this.ctx.sendToChat(chatId, '⏳ 消息太频繁，请稍后再试。').catch(() => undefined)
+      void this.ctx.sendToChat(chatId, '⏳ 消息太频繁，请稍后再试。').catch((error: unknown) => {
+        this.ctx.log('debug', '限流提示发送失败: ' + describeError(error))
+        currentTrace()?.emit('ratelimit', { ok: false, reason: TRACE_REASONS.inboundRateNoticeFailed })
+      })
     }
     return true
   }
@@ -378,6 +404,11 @@ export class InboundPipeline {
       const annotation = await this.resolveMediaRef(ref, chatId)
       if (idx >= 0 && annotation !== '') {
         out = out.slice(0, idx) + annotation + out.slice(idx + placeholder.length)
+      } else if (idx >= 0) {
+        // pipeline-hooks.md #10: a failed resolution used to leave the
+        // placeholder silently unresolved.
+        this.ctx.log('debug', '媒体解析失败，占位符保留原文: ' + placeholder)
+        currentTrace()?.emit('media', { ok: false, reason: TRACE_REASONS.mediaResolveFailed })
       }
     }
     return out
@@ -430,10 +461,15 @@ export class InboundPipeline {
   private async transcribeLater(path: string, chatId: ChatId): Promise<void> {
     try {
       const text = await this.ctx.transcriber.transcribe(path)
-      if (transcriptLabel(text) === '') return
+      if (transcriptLabel(text) === '') {
+        this.ctx.log('debug', '语音转写结果为空: ' + path)
+        currentTrace()?.emit('transcribe', { ok: false, reason: TRACE_REASONS.sttEmpty })
+        return
+      }
       this.ctx.steerTranscript(chatId, text)
     } catch (error) {
       this.ctx.log('warn', 'STT failed: ' + describeError(error))
+      currentTrace()?.emit('transcribe', { ok: false, reason: '语音转写失败: ' + describeError(error) })
     }
   }
 
@@ -453,6 +489,7 @@ export class InboundPipeline {
       return '[引用]' + (name !== '' ? name + ': ' : '') + text
     } catch (error) {
       this.ctx.log('debug', 'quote expansion failed: ' + describeError(error))
+      currentTrace()?.emit('quote', { ok: false, reason: '引用消息展开失败，已降级为空引用: ' + describeError(error) })
       return ''
     }
   }
@@ -504,6 +541,7 @@ export class InboundPipeline {
       const size = Number(data.file_size ?? 0)
       if (this.ctx.config.maxInboundFileBytes > 0 && size > this.ctx.config.maxInboundFileBytes) {
         this.ctx.log('warn', 'qq file too large (' + size + 'B), skipping fetch')
+        currentTrace()?.emit('media', { ok: false, reason: TRACE_REASONS.nasFileTooLarge })
         return ''
       }
       if (data.base64 !== undefined && data.base64 !== '') {
@@ -526,6 +564,7 @@ export class InboundPipeline {
       this.ctx.log('debug', 'get_file base64/url path failed: ' + describeError(error))
     }
     this.ctx.log('warn', 'qq file fetch failed: no direct link / base64 / http url available for ' + fid)
+    currentTrace()?.emit('media', { ok: false, reason: TRACE_REASONS.nasFileFailed })
     return ''
   }
 
@@ -579,11 +618,13 @@ export class InboundPipeline {
       }
       if (lines.length === 0) {
         const reason = nodes.length === 0 ? 'empty-response' : 'no-text-nodes'
+        currentTrace()?.emit('forward', { ok: false, reason: '合并转发未展开: ' + reason })
         return { text: '[合并转发 id=' + forwardId + ' 未展开: ' + reason + ']', media }
       }
       return { text: '[合并转发]\n' + lines.join('\n'), media }
     } catch (error) {
       this.ctx.log('info', 'forward expansion failed: resId=' + forwardId + ': ' + describeError(error))
+      currentTrace()?.emit('forward', { ok: false, reason: '合并转发展开失败: ' + describeError(error) })
       return { text: '[合并转发 id=' + forwardId + ' 未展开: api-error]', media: [] }
     }
   }

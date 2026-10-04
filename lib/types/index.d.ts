@@ -163,6 +163,21 @@ export interface Config {
     actionRatePerDay: number;
     /** W2-③: proactive-write audit jsonl (mediaDir/qq-actions.log). */
     actionAuditEnabled: boolean;
+    /** W1: decision-trace jsonl (mediaDir/qq-trace.jsonl); default off — zero
+     * file, zero behavior difference vs 0.6.0. */
+    traceEnabled: boolean;
+    /** W1: trace level; 'warn' records only ok:false (rejected/failed/dropped) events. */
+    traceLevel: 'debug' | 'warn';
+    /** W1/T5: record every inbound event into mediaDir/qq-inbox.jsonl (default off). */
+    recordInbound: boolean;
+    /** W1/T5: mask 6+ digit runs (QQ/group numbers) in the recording (default off). */
+    inboxRedact: boolean;
+    /** W1/T5 (DEBUG-ONLY): enable the qq-inject.jsonl injection channel (default off). */
+    injectEnabled: boolean;
+    /** W1/T5: intercept all outbound writes of injected rounds (default true). */
+    injectDryRun: boolean;
+    /** W1/T5: inject queue poll interval in ms (min 500). */
+    injectIntervalMs: number;
 }
 /** Default media dir: <dsh-home>/media/onebot (dsh-home = $DSH_HOME or ~/.dsh). */
 export declare function defaultMediaDir(): string;

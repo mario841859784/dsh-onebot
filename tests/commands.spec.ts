@@ -651,13 +651,13 @@ describe('commands', () => {
     await h.connection.stop()
   }, 60_000)
 
-  it('command table registers exactly the 16 routed commands, one row each, and /help renders the grouped card from the table (D1-PR1)', () => {
+  it('command table registers exactly the 17 routed commands, one row each, and /help renders the grouped card from the table (D1-PR1)', () => {
     // Row order = the /help line order inside each group; the router matches
     // by name so ordering is routing-neutral. Adding a command is exactly one
     // row here (group + usage-style help) — /help picks it up for free.
-    expect(COMMANDS.map(c => c.name)).toEqual(['new', 'stop', 'model', 'workspace', 'preset', 'session', 'status', 'retry', 'id', 'ver', 'ocr', 'mode', 'plan', 'permission', 'goal', 'help'])
-    expect(COMMANDS).toHaveLength(16)
-    expect(new Set(COMMANDS.map(c => c.name)).size).toBe(16)
+    expect(COMMANDS.map(c => c.name)).toEqual(['new', 'stop', 'model', 'workspace', 'preset', 'session', 'status', 'healthcheck', 'retry', 'id', 'ver', 'ocr', 'mode', 'plan', 'permission', 'goal', 'help'])
+    expect(COMMANDS).toHaveLength(17)
+    expect(new Set(COMMANDS.map(c => c.name)).size).toBe(17)
     for (const c of COMMANDS) {
       expect(c.adminOnly).toBe(true)
       expect(c.help).not.toContain('\n')
@@ -681,6 +681,7 @@ describe('commands', () => {
       '/plan [off|内容] 宿主计划模式',
       '▍查询',
       '/status 会话全景',
+      '/healthcheck [export] 运行体检（export 导出脱敏诊断包）',
       '/id 会话标识（session/chat）',
       '/ver 插件版本',
       '▍操作',
@@ -752,10 +753,11 @@ describe('commands', () => {
 
   it('unknown command with a close match suggests candidates and is consumed (R1)', async () => {
     const h = await makeCmdHarness()
-    // Prefix match: /he is a prefix of /help.
+    // Prefix match: /he is a prefix of /help (and of /healthcheck — table
+    // order puts the newer row first).
     h.sendText('/he')
     await vi.waitFor(() => {
-      expect(h.outbound.some(f => JSON.stringify(f.params).includes('未知命令 /he，你是想用 /help吗？'))).toBe(true)
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('未知命令 /he，你是想用 /healthcheck（/help）吗？'))).toBe(true)
     })
     // Prefix match with several candidates, table order, max shown as /model（/mode）.
     h.sendText('/mo')

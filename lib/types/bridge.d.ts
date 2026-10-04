@@ -16,6 +16,9 @@ import type { Transcriber } from './stt.js';
 import type { ChatId } from './chat.js';
 import type { AccessPolicyConfig } from './chat.js';
 import type { OutboundSegment, SendOptions } from './outbound.js';
+import type { TraceSink } from './trace.js';
+import type { InjectChannel } from './inject.js';
+import type { InboundRecorder } from './record.js';
 /** Resolved runtime configuration for the bridge. */
 export interface BridgeConfig {
     botQQ: string;
@@ -56,6 +59,18 @@ export interface BridgeConfig {
      * inbound message (0 disables; default 7). Evicted chats keep their
      * chat→session mapping, so a later message resumes the same session. */
     chatIdleEvictDays?: number;
+}
+/** W1 trace/config extensions: the observability knobs ride as optional
+ * members (same pattern as the W2-②③ gate keys) so the declared BridgeConfig
+ * shape above stays untouched; absent = the feature is off (0.6.0 behavior). */
+export interface TraceBridgeConfig {
+    /** W1: decision-trace sink; absent/disabled = no traceIds, no jsonl, zero
+     * behavior difference vs 0.6.0. */
+    trace?: TraceSink | undefined;
+    /** W1/T5: inbound recorder (recordInbound); absent = recording off. */
+    recorder?: InboundRecorder | undefined;
+    /** W1/T5: inject channel (injectEnabled, DEBUG-ONLY); absent = channel off. */
+    inject?: InjectChannel | undefined;
 }
 /** Agent-preset service (dsh-agent-presets): joins agents to a preset composition. */
 export interface AgentPresetsLike {
@@ -185,8 +200,12 @@ export interface BridgeDeps {
     workspaceRegistry: WorkspaceRegistryLike | undefined;
     agentDefaultModel: AgentDefaultModelLike | undefined;
     defaultModel: (() => ModelSelection | undefined) | undefined;
-    config: BridgeConfig;
+    config: BridgeConfig & TraceBridgeConfig;
     policy: AccessPolicyConfig;
+    /** W1/T5 health: the ALREADY-redacted plugin config snapshot (secrets
+     * replaced by 已配置/未配置 — see health.redactSnapshot). Absent = the
+     * /healthcheck diagnostics export renders without a config section. */
+    configSnapshot?: (() => Record<string, unknown>) | undefined;
     /** Log line callback (level, message). */
     log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void;
 }
@@ -213,6 +232,20 @@ export declare class ChatBridge {
     private get bySession();
     private sessionEventOff;
     private sessionFlushOff;
+    /** W1: chat-level traceId association table — session events arrive on a
+     * different async chain than the inbound pipeline, so dispatchFollowup
+     * records the initiating traceId per chat here and onSessionEvent reads it
+     * back (agent 回复事件归属发起 traceId). Last dispatch wins; entries are
+     * dropped when the chat is removed. Not cleared at turn/end: the interim
+     * settle loop sends the final reply AFTER turn/end, and clearing there
+     * would orphan exactly that reply's outbound events. One entry per chat
+     * id (bounded by the chat population), so growth is not a concern. */
+    private readonly traceByChat;
+    /** W1/T5: chatId → the traceId of the chat's unsettled INJECTED round
+     * (independent of the trace sink, so the dry-run guard covers the async
+     * agent reply even with tracing off). Cleared by a real dispatch to the
+     * chat or when the chat is removed. */
+    private readonly injectRoundByChat;
     /** Plugin version + git commit, read once for /ver. */
     private pluginVersion;
     private pluginCommit;
@@ -272,8 +305,24 @@ export declare class ChatBridge {
     /**
      * Inbound OneBot message event → agent turn. All policy and media work is
      * contained: a failure here logs and drops the message, never the host.
+     * W1: the whole inbound chain runs inside one trace scope (ALS), so every
+     * pipeline decision point can attribute its event to this message's
+     * traceId; disabled = no scope, no id, 0.6.0 behavior. W1/T5: injected
+     * events (opts.injected) run inside their inject round (ALS) so the
+     * dry-run guard covers the whole synchronous chain, and real events are
+     * recorded by the inbound recorder when recordInbound is on (injected
+     * events are never recorded — no inject→record→replay feedback loop).
      */
-    handleInbound(event: OneBotEvent): Promise<void>;
+    handleInbound(event: OneBotEvent, opts?: {
+        injected?: boolean;
+    }): Promise<void>;
+    private handleInboundOnce;
+    /** W1: mint the inbound traceId + scope and record the first (收到消息)
+     * event; undefined when tracing is off (zero overhead, zero difference).
+     * W1/T5: an injected event REUSES its inject round's traceId, so the whole
+     * injected round (pipeline decisions + intercepted outbound calls) shares
+     * one traceId in the trace stream. */
+    private beginInboundTrace;
     private processInbound;
     /** Feed one user message into a chat's agent (create on demand). Records
      * the base text for /retry, queues the initiator's turn role, and applies
@@ -331,7 +380,29 @@ export declare class ChatBridge {
         name: string;
         content: string;
     }>): Promise<void>;
+    /**
+     * W1/T5: the single connection-call gate every bridge pipeline
+     * (inbound/outbound/interim/typing) routes through. In inject dry-run
+     * mode, WRITE actions of an injected round are intercepted at this
+     * outbound action layer: counted, traced with the original text, resolved
+     * with the marker message id — the real OneBot connection never sees them.
+     * Attribution: (a) the synchronous chain via the inject round's ALS, (b)
+     * the async agent reply via the chat→round association (injectRoundByChat,
+     * independent of the trace sink), (c) recalls of already-intercepted sends
+     * via the marker message id (a real OneBot id is never negative).
+     */
+    private guardedConnectionCall;
+    /** The health deps the /healthcheck command renders from (resolved live). */
+    private healthDeps;
+    /** /healthcheck: render the health summary. */
+    private buildHealthReport;
+    /** /healthcheck export: pack the redacted diagnostics archive. */
+    private exportDiagnosticsPackage;
     private onSessionEvent;
+    /** W1: the trace scope for one chat's session events, resolved through the
+     * chat-level association table; undefined when tracing is off or the chat
+     * has no recorded dispatch (host-initiated turns stay untraced). */
+    private traceForChat;
     private onSessionFlush;
     /** Same-name delegations to the chat registry (D1-PR3): the command table's
      * ctx, the interim/turn event links and the outbound pipeline keep calling
