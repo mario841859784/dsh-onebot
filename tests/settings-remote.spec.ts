@@ -37,7 +37,12 @@ class FakeConfigEditor {
   /** 模拟 profile patch 文档中的覆盖行（含持久层落盘断言目标）。 */
   rows: Array<{ id: string; config: Record<string, unknown> }> = []
   writeCount = 0
+  /** edit 调用总数（含失败）——「失败不重试」断言用。 */
+  editCalls = 0
   failNextEdit: Error | null = null
+  /** W6：模拟宿主「原子写已落盘 → reconcile 失败 → 逐字节还原 → rethrow」
+   *  （docs/m1-characterization/config-editor.md §3 回滚行；测试禁断言 mtime）。 */
+  rollbackSimulate = false
   entry: {
     options: { id: string; name: string; config: Record<string, unknown> }
     fiber: { state: number } | undefined
@@ -52,6 +57,14 @@ class FakeConfigEditor {
   }
 
   async edit(entry: { options: { id: string; config: Record<string, unknown> } }, change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown>) {
+    this.editCalls += 1
+    if (this.rollbackSimulate) {
+      const before = structuredClone(entry.options.config)
+      const next = change({ ...entry.options.config }, {})
+      entry.options.config = structuredClone(next) // 步 14：原子写已替换文件
+      entry.options.config = structuredClone(before) // 步 15 失败：宿主 L127 逐字节还原
+      throw new Error('reconcile failed: dsh-onebot entry did not activate')
+    }
     if (this.failNextEdit) {
       const error = this.failNextEdit
       this.failNextEdit = null
@@ -160,14 +173,17 @@ describe('onebotSettings remote — revision/no-op/失败路径（T1 §3.1 #4 #5
     expect(editor.writeCount).toBe(writes)
   })
 
-  it('edit 失败（宿主侧校验/激活失败回滚）向上传播且 revision 不递增、运行态不变', async () => {
+  it('edit 失败（宿主侧校验/激活失败回滚）归一为 onebot-settings/edit-failed，revision 不递增、运行态不变', async () => {
     const editor = new FakeConfigEditor()
     const state = createRevisionState()
     await updateSettings(editor, state, { port: 20001 })
     const before = getSettings(editor, state).revision
     editor.failNextEdit = new Error('Configuration plugin is no longer active')
 
-    await expect(updateSettings(editor, state, { requireMention: false })).rejects.toThrow('no longer active')
+    await expect(updateSettings(editor, state, { requireMention: false })).rejects.toMatchObject({
+      code: 'onebot-settings/edit-failed',
+      message: expect.stringContaining('插件当前未激活'),
+    })
     expect(getSettings(editor, state).revision).toBe(before)
     expect(editor.entry.options.config.requireMention).toBeUndefined() // 无半态
   })
@@ -253,5 +269,111 @@ describe('onebotSettings remote — descriptor 契约（T1 §4：全 positional�
     const editor = new FakeConfigEditor()
     editor.entry.fiber = undefined
     expect(getSettings(editor, createRevisionState()).entryActive).toBe(false)
+  })
+})
+
+describe('onebotSettings remote — W6 白名单扩展（W1/W2 观测/调试 6 键）', () => {
+  const NEW_BOOLEAN_KEYS = ['actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun'] as const
+  /** 期望默认值（摘自 src/index.ts schema：actionAuditEnabled/injectDryRun 默认开，其余默认关）。 */
+  const NEW_DEFAULTS: Record<string, boolean> = {
+    actionAuditEnabled: true,
+    traceEnabled: false,
+    recordInbound: false,
+    inboxRedact: false,
+    injectEnabled: false,
+    injectDryRun: true,
+  }
+
+  it('6 个新键入快照：默认值正确、落在 diagnostics 组、计入 ALL_KEYS', () => {
+    const editor = new FakeConfigEditor()
+    const snapshot = getSettings(editor, createRevisionState())
+    expect(ALL_KEYS).toHaveLength(25)
+    expect(snapshot.groups.diagnostics).toEqual([...NEW_BOOLEAN_KEYS])
+    for (const key of NEW_BOOLEAN_KEYS) {
+      expect(snapshot.config[key]).toBe(NEW_DEFAULTS[key])
+    }
+  })
+
+  it('新键布尔写入进入覆盖行并递增 revision；与既有键混合 patch 一次写完成', async () => {
+    const editor = new FakeConfigEditor()
+    const state = createRevisionState()
+    const written = await updateSettings(editor, state, { traceEnabled: true, injectEnabled: true, port: 20001 })
+    expect(written.revision).toBe(1)
+    expect(written.config.traceEnabled).toBe(true)
+    expect(written.config.injectEnabled).toBe(true)
+    expect(editor.writeCount).toBe(1)
+    expect(editor.rows[0].config.traceEnabled).toBe(true)
+    expect(editor.rows[0].config.injectEnabled).toBe(true)
+  })
+
+  it('新键非布尔值拒写（bad-request，edit 零调用、revision 不变）', async () => {
+    const editor = new FakeConfigEditor()
+    const state = createRevisionState()
+    const before = getSettings(editor, state).revision
+    const writes = editor.editCalls
+
+    for (const [key, value] of [
+      ['actionAuditEnabled', 'yes'],
+      ['traceEnabled', 1],
+      ['recordInbound', null],
+      ['inboxRedact', ['true']],
+      ['injectEnabled', 'on'],
+      ['injectDryRun', 0],
+    ] as const) {
+      await expect(updateSettings(editor, state, { [key]: value })).rejects.toMatchObject({ code: 'onebot-settings/bad-request' })
+    }
+    expect(editor.editCalls).toBe(writes) // 拒写绝不触达宿主 edit
+    expect(getSettings(editor, state).revision).toBe(before)
+  })
+})
+
+describe('onebotSettings remote — W6 失败守卫（configEditor 失败场景：归一 + 零补偿写）', () => {
+  it('锁冲突（宿主文件锁超时）归一为中文 edit-failed：不重试、不补偿写、revision 不递增', async () => {
+    const editor = new FakeConfigEditor({ host: '127.0.0.1' })
+    const state = createRevisionState()
+    const baseline = getSettings(editor, state)
+    editor.failNextEdit = new Error('atomic-write: timed out waiting for the writer lock at /dsh/profiles/web/package.json.lock')
+
+    await expect(updateSettings(editor, state, { traceEnabled: true })).rejects.toMatchObject({
+      code: 'onebot-settings/edit-failed',
+      message: expect.stringContaining('文件锁'),
+      details: { hostMessage: expect.stringContaining('writer lock') },
+    })
+    expect(editor.editCalls).toBe(1) // 单次调用，插件侧无重试
+    expect(editor.rows).toHaveLength(0) // 无补偿写：覆盖行保持失败前形态
+    const after = getSettings(editor, state)
+    expect(after.revision).toBe(baseline.revision)
+    expect(after.config).toEqual(baseline.config) // 逐键等于写前生效值
+  })
+
+  it('校验拒绝（宿主 schema/resolveConfig 失败）归一转发，原覆盖行逐键不动', async () => {
+    const editor = new FakeConfigEditor({ port: 8643 })
+    const state = createRevisionState()
+    const baseline = getSettings(editor, state)
+    editor.failNextEdit = new Error('Invalid config: expected port to be a number in range')
+
+    await expect(updateSettings(editor, state, { port: 20001, requireMention: false })).rejects.toMatchObject({
+      code: 'onebot-settings/edit-failed',
+      message: expect.stringContaining('宿主 configEditor 拒绝'),
+    })
+    expect(editor.rows).toHaveLength(0)
+    expect(editor.entry.options.config).toEqual({ port: 8643 }) // 原覆盖行不动
+    expect(getSettings(editor, state)).toMatchObject({ revision: baseline.revision })
+  })
+
+  it('激活失败回滚（写后 reconcile 失败 → 宿主还原）→ 快照恢复旧值、revision 不递增、无半态', async () => {
+    const editor = new FakeConfigEditor()
+    const state = createRevisionState()
+    const baseline = getSettings(editor, state)
+    editor.rollbackSimulate = true
+
+    await expect(updateSettings(editor, state, { recordInbound: true, injectDryRun: false })).rejects.toMatchObject({
+      code: 'onebot-settings/edit-failed',
+      message: expect.stringContaining('写入失败'),
+    })
+    const after = getSettings(editor, state)
+    expect(after.revision).toBe(baseline.revision) // 回滚后指纹与写前一致 → 不递增
+    expect(after.config).toEqual(baseline.config) // 逐键还原，无半态（新键无残留）
+    expect(editor.entry.options.config.recordInbound).toBeUndefined()
   })
 })

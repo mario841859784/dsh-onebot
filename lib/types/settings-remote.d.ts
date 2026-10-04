@@ -43,15 +43,19 @@
 export declare const ENTRY_ID = "dsh-onebot";
 /** Typert Remote 命名空间 = cordis 服务键（T1 §4）。 */
 export declare const NAMESPACE = "onebotSettings";
-/** 快照固定值：19 键均为插件级热重启生效（T1 §5）。 */
+/** 快照固定值：25 键均为插件级热重启生效（T1 §5；W1/W2 新增 6 布尔键同粒度）。 */
 export declare const REMOTE_EFFECT = "restart";
-/** 设置页 UI 三组 19 键（T1 §4；与 src/index.ts Config schema 一一对应）。 */
+/** 设置页 UI 四组 25 键（T1 §4；与 src/index.ts Config schema 一一对应）。
+ *  W6：permissions/behavior 三组 19 键保持不动，W1/W2 的 6 个布尔键独立成
+ *  「diagnostics（诊断）」组——它们全部默认关（除 actionAuditEnabled 默认开）、
+ *  属观测/调试面，与连接权限行为组的使用频率与风险等级都不同，独立分组让
+ *  「默认全关的调试开关」一眼可辨（对齐竞品 v0.6.0 面板的开关分组话术）。 */
 export declare const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>>;
 /** schema 默认值（T1 §4 表；摘自 src/index.ts:171-245），快照生效值的底层。 */
 export declare const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>>;
 /** 快照返回侧脱敏的键（T1 §3 敏感字段行；写入侧明文落盘属宿主既有行为）。 */
 export declare const SECRET_KEYS: readonly string[];
-/** 全部 19 键（校验与快照的唯一键集；4 枚举 + 3 数字 + 5 布尔 + 4 字符串 + 3 字符串数组）。 */
+/** 全部 25 键（校验与快照的唯一键集；4 枚举 + 3 数字 + 11 布尔 + 4 字符串 + 3 字符串数组）。 */
 export declare const ALL_KEYS: readonly string[];
 /** OnebotSettingsSnapshot（T1 §3 快照结构）。 */
 export interface OnebotSettingsSnapshot {
@@ -59,7 +63,7 @@ export interface OnebotSettingsSnapshot {
     revision: number;
     /** dsh-onebot 条目 fiber 是否 active（fiber.state === 2，同 configEditor.edit 的活性判据）。 */
     entryActive: boolean;
-    /** 19 键生效值；accessToken 脱敏为 ''。 */
+    /** 25 键生效值；accessToken 脱敏为 ''。 */
     config: Record<string, unknown>;
     /** 脱敏键标记：明文是否已配置。 */
     secrets: Array<{
@@ -94,21 +98,36 @@ export declare function createRevisionState(): RevisionState;
 /** §3.1 #2：读侧观察——config 指纹相对上次有差异即 +1（任何来源的已提交变更
  *  一视同仁）；首次调用仅建立基线不递增。 */
 export declare function observeRevision(state: RevisionState, config: unknown): number;
-/** 19 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
+/** 25 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
 export declare function effectiveConfig(raw: Record<string, unknown>): Record<string, unknown>;
-/** updateSettings 入参校验（T1 §4：19 键的任意子集，扁平 JSON）。未知键整单
+/** updateSettings 入参校验（T1 §4：25 键的任意子集，扁平 JSON）。未知键整单
  *  拒绝（不静默丢弃）；类型/枚举不符拒绝；具体取值合法性交由宿主 schemastery
  *  校验 + reconcile 失败自动回滚兜底（T1 §5）。 */
 export declare function validatePatch(patch: unknown): Record<string, unknown>;
 /** getSettings 实现（descriptor 方法体共用；descriptor 参数 0 个）。 */
 export declare function getSettings(editor: ConfigEditorLike, state: RevisionState): OnebotSettingsSnapshot;
+/** W6 错误归一：宿主 configEditor.edit 的原生失败（文件锁超时 / 活性检查 /
+ *  schema 校验 / home-patch 守卫 / 激活失败回滚后 rethrow）按
+ *  docs/m1-characterization/config-editor.md §3 矩阵归类，转成面板可直接渲染的
+ *  中文 RemoteError('onebot-settings/edit-failed')，原始错误挂 cause（网关透传
+ *  detail 不吞诊断信息）。归类按宿主错误消息特征词匹配，未命中走通用文案；
+ *  所有分支的共同事实（该文档 §3 已钉死）：失败时 patch 文件要么从未被写、要么
+ *  已被宿主逐字节还原，本模块不做任何补偿写（不重试、不回写），仅归一转发。 */
+export declare const EDIT_FAILED_CODE = "onebot-settings/edit-failed";
+export declare function describeEditFailure(cause: unknown): string;
 /** updateSettings 实现（descriptor 参数 (patch, expectedRevision)，全 positional）。
  *
  * 流程：定位条目 → 观察当前 revision → 乐观锁校验 → patch 校验 → no-op 短路
  * （合并结果与当前生效 config 全等则不写、不递增）→ configEditor.edit 合并写
  * （next = fresh config ∪ patch，未知原键原样保留；等于继承层时由宿主整行删
  * 除覆盖行，dsh-config-editor/lib/index.js:93-104）→ 成功后返回新快照（指纹
- * 变化 → revision +1）。 */
+ * 变化 → revision +1）。
+ *
+ * W6：edit 失败不再裸抛宿主原生 Error（此前锁超时/激活回滚等错误绕开
+ * onebot-settings/* 错误码体系直达网关，面板拿到的是英文技术文案）——按
+ * describeEditFailure 归一为 onebot-settings/edit-failed 中文错误并保留 cause；
+ * 失败路径 revision 不递增（指纹观察只在成功后的 buildSnapshot 发生）、不重试、
+ * 不补偿写，patch 文件由宿主保证未被破坏（config-editor.md §3 矩阵）。 */
 export declare function updateSettings(editor: ConfigEditorLike, state: RevisionState, patch: unknown, expectedRevision?: number): Promise<OnebotSettingsSnapshot>;
 /** 组装 descriptor 方法对象（测试与降级类共用；与类方法同一实现）。 */
 export declare function createOnebotSettingsMethods(editor: ConfigEditorLike, state?: RevisionState): {

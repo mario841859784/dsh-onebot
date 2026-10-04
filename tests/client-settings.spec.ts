@@ -5,8 +5,9 @@
  * window.__ModuleLoader__）的模块级契约：
  *   ① 语法可解析（new Function）+ CJS banner/footer 形态 + externals 仅 react；
  *   ② 入口导出 inject + apply；
- *   ③ 三组 19 键：分组/键集/默认值与宿主侧 src/settings-remote.js（T3）导出常量
- *      逐字一致（descriptor 契约核对，防两侧漂移）；
+ *   ③ 四组 25 键：分组/键集/默认值与宿主侧 src/settings-remote.js（T3 + W6 扩展）
+ *      导出常量逐字一致（descriptor 契约核对，防两侧漂移）；诊断组 6 键文案
+ *      为中文标签 + 一句话「关掉会怎样」+ 配置键名（W6）；
  *   ④ Typert descriptor 与 T3 服务方法面逐字对齐：getSettings() /
  *      updateSettings(patch, expectedRevision)，全 positional，namespace
  *      onebotSettings，result codec 可解析 host 形态快照（含脱敏 accessToken）；
@@ -68,6 +69,8 @@ const client = loadClientModule()
 const descriptors = client.ONEBOT_SETTINGS_DESCRIPTORS as Array<Record<string, unknown>>
 const groups = client.GROUPS as Array<{ id: string; title: string; fields: Array<{ key: string; label: string; type: string; options?: string[]; optionLabels?: Record<string, string>; hint?: string }> }>
 const allFields = client.ALL_FIELDS as Array<{ key: string; type: string }>
+/** 模块级共享草稿构造器（W6 新增 describe 复用；既有 describe 内的同名局部声明遮蔽之）。 */
+const draft = client.draftFromSnapshot as (snapshot: { config: Record<string, unknown> }) => Record<string, unknown>
 
 describe('T4 客户端 bundle — 装载契约（CJS 包裹 / externals / 入口导出）', () => {
   it('语法可解析：new Function 直接解析 lib/client.js 全文', () => {
@@ -153,12 +156,12 @@ describe('T4 客户端 bundle — descriptor 契约核对（与 T3 src/settings-
   })
 })
 
-describe('T4 客户端 bundle — 三组 19 键（分组/键集/默认值 = T1 §4 表 = T3 常量）', () => {
+describe('T4 客户端 bundle — 四组 25 键（分组/键集/默认值 = T1 §4 表 + W6 诊断组 = T3 常量）', () => {
   it('分组与键序逐字对齐 host SETTINGS_GROUPS', () => {
     expect(client.GROUP_KEYS).toEqual(SETTINGS_GROUPS)
-    expect(groups.map((group) => group.id)).toEqual(['connection', 'permissions', 'behavior'])
+    expect(groups.map((group) => group.id)).toEqual(['connection', 'permissions', 'behavior', 'diagnostics'])
     expect(allFields.map((field) => field.key).sort()).toEqual([...ALL_KEYS].sort())
-    expect(allFields).toHaveLength(19)
+    expect(allFields).toHaveLength(25)
   })
 
   it('默认值逐字对齐 host SCHEMA_DEFAULTS（重置按钮唯一来源）', () => {
@@ -184,7 +187,7 @@ describe('T4 客户端 bundle — 三组 19 键（分组/键集/默认值 = T1 �
   })
 
   it('分组标题与字段 label 为中文（T4 要求）', () => {
-    expect(groups.map((group) => group.title)).toEqual(['连接', '权限', '行为'])
+    expect(groups.map((group) => group.title)).toEqual(['连接', '权限', '行为', '诊断'])
     for (const field of allFields) expect(field.label).toMatch(/\p{Script=Han}/u)
   })
 
@@ -208,23 +211,23 @@ describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     }))
   }
 
-  it('三组各产出标题与逐字段控件行（19 行 obx-field）', () => {
+  it('四组各产出标题与逐字段控件行（25 行 obx-field）', () => {
     const sections = renderAll(draft({ config: SCHEMA_DEFAULTS }))
-    expect(sections.map((section) => (section.props as Record<string, unknown>)['data-group'])).toEqual(['connection', 'permissions', 'behavior'])
+    expect(sections.map((section) => (section.props as Record<string, unknown>)['data-group'])).toEqual(['connection', 'permissions', 'behavior', 'diagnostics'])
     const titles = sections.map((section) => ((section.children[0] as StubElement).children[0] as string))
-    expect(titles).toEqual(['连接', '权限', '行为'])
+    expect(titles).toEqual(['连接', '权限', '行为', '诊断'])
     const fieldRows = sections.flatMap((section) => walk(section).filter((element) => element.type === 'div' && element.props.className === 'obx-field'))
-    expect(fieldRows).toHaveLength(19)
+    expect(fieldRows).toHaveLength(25)
   })
 
-  it('控件类型齐备：4 枚举下拉 + 3 多行文本 + 5 布尔勾选 + 4 文本框 + 1 密码框（secret 另含清除勾选）', () => {
+  it('控件类型齐备：4 枚举下拉 + 3 多行文本 + 11 布尔勾选 + 4 文本框 + 1 密码框（secret 另含清除勾选）', () => {
     const elements = renderAll(draft({ config: SCHEMA_DEFAULTS })).flatMap((section) => walk(section))
     const inputs = elements.filter((element) => element.type === 'input') as Array<StubElement & { props: Record<string, unknown> }>
     const selects = elements.filter((element) => element.type === 'select')
     const textareas = elements.filter((element) => element.type === 'textarea')
     expect(selects).toHaveLength(4)
     expect(textareas).toHaveLength(3)
-    expect(inputs.filter((input) => input.props.type === 'checkbox')).toHaveLength(5 + 1) // 5 布尔 + secret 清除勾选
+    expect(inputs.filter((input) => input.props.type === 'checkbox')).toHaveLength(11 + 1) // 11 布尔（5 原有 + 6 W6）+ secret 清除勾选
     expect(inputs.filter((input) => input.props.type === 'text')).toHaveLength(6) // host/port/url/botQQ + interimRecallMs/rateLimitPerMinute（number 以文本框渲染）
     expect(inputs.filter((input) => input.props.type === 'password')).toHaveLength(1)
   })
@@ -258,7 +261,7 @@ describe('T4 客户端 bundle — 保存语义（updateSettings(patch, expectedR
     opts?: { secretDraft?: string; clearSecret?: boolean },
   ) => { patch: Record<string, unknown>; invalidKeys: string[] }
 
-  it('仅下发与生效值有差异的键（19 键任意子集）', () => {
+  it('仅下发与生效值有差异的键（25 键任意子集）', () => {
     const values = draft({ config: SCHEMA_DEFAULTS })
     values.port = '9999'
     values.mode = 'forward'
@@ -296,5 +299,126 @@ describe('T4 客户端 bundle — 保存语义（updateSettings(patch, expectedR
     values.adminUsers = ' 10000 \n\n 20000 \n'
     const { patch } = compute(values, SCHEMA_DEFAULTS)
     expect(patch.adminUsers).toEqual(['10000', '20000'])
+  })
+})
+
+describe('W6 诊断组 — 6 个观测/调试布尔键的文案契约（中文标签 + 关掉会怎样 + 配置键名）', () => {
+  const diagnosticsGroup = groups.find((group) => group.id === 'diagnostics')!
+  const NEW_KEYS = ['actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun']
+
+  it('诊断组键集与键序逐字对齐 host SETTINGS_GROUPS.diagnostics', () => {
+    expect(diagnosticsGroup.fields.map((field) => field.key)).toEqual(NEW_KEYS)
+  })
+
+  it('每个键：中文标签 + hint 含「关掉会怎样」一句话与配置键名（对齐竞品行话术风格）', () => {
+    expect(diagnosticsGroup.title).toMatch(/\p{Script=Han}/u)
+    for (const field of diagnosticsGroup.fields) {
+      expect(field.type).toBe('boolean')
+      expect(field.label).toMatch(/\p{Script=Han}/u)
+      expect(field.hint).toBeTruthy()
+      expect(field.hint).toContain(`（配置键 ${field.key}）`) // 配置键名可追溯
+      expect(field.hint!.length).toBeGreaterThan(20) // 一句话「关掉会怎样」而非空占位
+    }
+    expect(diagnosticsGroup.fields.map((field) => field.label)).toEqual([
+      '主动写审计',
+      '决策追踪（trace）',
+      '入站事件录制',
+      '录制脱敏',
+      '事件注入（仅调试）',
+      '注入 dry-run',
+    ])
+  })
+
+  it('诊断组默认值与 host SCHEMA_DEFAULTS 一致（actionAuditEnabled/injectDryRun 开，其余关）', () => {
+    const defaults = client.DEFAULTS as Record<string, unknown>
+    expect(defaults.actionAuditEnabled).toBe(true)
+    expect(defaults.injectDryRun).toBe(true)
+    for (const key of ['traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled']) {
+      expect(defaults[key]).toBe(false)
+    }
+    expect(client.DEFAULTS).toEqual(SCHEMA_DEFAULTS) // 整表逐字一致（含 6 新键）
+  })
+
+  it('诊断组渲染为 6 个布尔勾选行；patchCodec 接受 6 新键、拒绝非布尔', () => {
+    const values = draft({ config: SCHEMA_DEFAULTS }) as Record<string, unknown>
+    values.traceEnabled = true
+    values.injectEnabled = true
+    const compute = client.computePatch as (draftValues: Record<string, unknown>, config: Record<string, unknown>) => { patch: Record<string, unknown> }
+    expect(compute(values, SCHEMA_DEFAULTS).patch).toEqual({ traceEnabled: true, injectEnabled: true })
+    const updateSettings = descriptors[1] as { parameters: Array<{ codec: { schema: { parse(value: unknown): unknown } } }> }
+    const patchCodec = updateSettings.parameters[0].codec.schema
+    expect(patchCodec.parse({ actionAuditEnabled: false, injectDryRun: false })).toEqual({ actionAuditEnabled: false, injectDryRun: false })
+    expect(() => patchCodec.parse({ traceEnabled: 'yes' })).toThrow()
+  })
+})
+
+describe('W6 「非默认」徽标 — 快照生效值 vs schema 默认值（纯客户端计算）', () => {
+  function badges(draftValues: Record<string, unknown>, nonDefaultKeys: string[]) {
+    return groups.flatMap((group) => (client.renderGroup as Function)(stubReact, group, {
+      draft: draftValues,
+      nonDefaultKeys,
+      secretSet: false,
+      clearSecret: false,
+      onChange: () => {},
+      onSecretChange: () => {},
+      onClearSecretChange: () => {},
+    })).flatMap((section) => walk(section)).filter((element) => element.type === 'span' && (element.props as Record<string, unknown>).className === 'obx-badge')
+  }
+
+  it('nonDefaultKeys 命中的键打「非默认」徽标，未命中不打', () => {
+    const draftValues = draft({ config: SCHEMA_DEFAULTS })
+    expect(badges(draftValues, [])).toHaveLength(0)
+    const traceBadges = badges(draftValues, ['traceEnabled'])
+    expect(traceBadges).toHaveLength(1)
+    expect(JSON.stringify(traceBadges[0])).toContain('非默认')
+    // 多键命中逐键标注
+    expect(badges(draftValues, ['traceEnabled', 'injectEnabled', 'port'])).toHaveLength(3)
+  })
+
+  it('徽标数据源是快照生效值（DEFAULTS 对照）：默认快照无任何徽标，改值后对应键出现徽标', () => {
+    // 默认快照 → 无键与 DEFAULTS 不同 → 面板不传任何 nonDefaultKeys 时不打徽标
+    const snapshot: Record<string, unknown> = { config: { ...SCHEMA_DEFAULTS }, secrets: [] }
+    const panelKeys = (config: Record<string, unknown>) => {
+      const allFields = client.ALL_FIELDS as Array<{ key: string }>
+      const valueEquals = (a: unknown, b: unknown) => JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b)
+      const defaults = client.DEFAULTS as Record<string, unknown>
+      return allFields.filter((field) => !valueEquals(config[field.key], defaults[field.key])).map((field) => field.key)
+    }
+    expect(panelKeys(snapshot.config as Record<string, unknown>)).toEqual([])
+    expect(panelKeys({ ...SCHEMA_DEFAULTS, traceEnabled: true, rateLimitPerMinute: 60 })).toEqual(['rateLimitPerMinute', 'traceEnabled'])
+  })
+})
+
+describe('W6 失败守卫（客户端侧）— host edit-failed 中文错误可渲染且不误判为冲突', () => {
+  const unwrap = client.unwrap as (result: unknown) => unknown
+  const isConflictError = client.isConflictError as (cause: unknown) => boolean
+
+  it('unwrap({ok:false}) 保留 code 与中文 message（面板 setError(messageOf) 直接可渲染）', () => {
+    const rendered = '写入失败：配置文件被其他写入方占用（等待文件锁超时），本次修改未落盘，请稍后重试'
+    let caught: unknown
+    try {
+      unwrap({ ok: false, error: { code: 'onebot-settings/edit-failed', message: rendered } })
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).message).toBe(rendered)
+    expect((caught as { code?: string }).code).toBe('onebot-settings/edit-failed')
+  })
+
+  it('edit-failed 不匹配冲突通道（isConflictError=false → 走通用错误渲染而非重拉重放）', () => {
+    const cause = { code: 'onebot-settings/edit-failed', message: '写入失败：宿主 configEditor 拒绝了本次修改' }
+    expect(isConflictError(cause)).toBe(false)
+    expect(isConflictError({ code: 'onebot-settings/conflict', message: 'expectedRevision mismatch' })).toBe(true)
+  })
+
+  it('host patch 白名单 25 键与 client patchSchema 同宽：新键可下发（契约同步核对）', () => {
+    const updateSettings = descriptors[1] as { parameters: Array<{ codec: { schema: { parse(value: unknown): unknown } } }> }
+    const patch = updateSettings.parameters[0].codec.schema.parse({
+      actionAuditEnabled: true, traceEnabled: false, recordInbound: true, inboxRedact: false, injectEnabled: false, injectDryRun: true,
+    })
+    expect(patch).toEqual({
+      actionAuditEnabled: true, traceEnabled: false, recordInbound: true, inboxRedact: false, injectEnabled: false, injectDryRun: true,
+    })
   })
 })
