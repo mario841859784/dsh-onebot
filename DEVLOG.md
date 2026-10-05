@@ -803,3 +803,9 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 ## 2026-10-05 发版 0.8.0（W7 设置页 workspacePath 入面板 + 快速填入）
 
 - 版本 0.7.0→0.8.0（minor：新增用户可见能力）。0.8.0 = 设置页 connection 组新增 workspacePath + 快速填入下拉（只填不存）+ listWorkspaces 降级查询；随宿主重启/热重载生效（client bundle 按文件 mtime/ctime/size 重算 artifact rev 热生效，重开设置页即拉新 bundle）。技术细节见上一节 W7 条目，此处不重复。发版前基线：npx tsc --noEmit 0 错误；npm test 全绿（34 文件 471 用例）。
+
+## 2026-10-05 发版 0.8.1（logLevel 控制台日志级别门槛）
+
+- 版本 0.8.0→0.8.1（patch：新增一个默认行为不变的配置项）。0.8.1 = Config 新增 `logLevel` 配置项——控制台日志级别门槛，debug/info/warn/error 四档，默认 `info`；log 闭包按 `LOG_LEVEL_RANK`（debug:0 < info:1 < warn:2 < error:3）门控，低于配置级别的日志不输出，error→console.error / warn→console.warn 分流保持不变；`logMetaEvent` 增加可选第三参 `minLevel`（默认 'info'，不带参调用行为不变，导出兼容），meta 事件按 info 级别纳入门控。默认值下与 0.8.0 输出差异仅为 debug 调试行（如「session 事件早退：无 chat 映射」等）不再刷屏。技术细节见 logLevel 交付报告（dsh-onebot-loglevel-report-20261005.md）：改动面 src/index.ts（Config 接口/schema/log 闭包门控/logMetaEvent）+ README.md:168 与 README.en.md:179 配置表各 1 行 + lib/ 构建产物随 build 再生。
+- 发版前基线：npx tsc --noEmit 0 错误（npm run build 成功）；npm test 全绿（34 文件 471 用例）。
+- 清单同步：package.json version 0.8.0→0.8.1；dsh.plugin.json version 同步 0.8.1（该字段自 v0.4.0 起历次发版未随动，本次一并追平）。README 兼容性表只约束 dsh 宿主/Node 版本、无插件版本号字段，无需改动；package-lock.json 根 version 自 0.1.0 起历次发版均未随动（既有惯例），本次保持不动。

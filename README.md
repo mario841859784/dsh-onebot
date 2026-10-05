@@ -165,6 +165,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `actionAuditEnabled` | `true` | 主动写审计（W2-③）：每次主动写（成功/失败）与拒发事件追加写一行 JSON 到 `mediaDir/qq-actions.log`（含 ts/chatId/action/ok/reason）；写失败仅 warn 不影响发送 |
 | `traceEnabled` | `false` | 链路追踪（W1）：为每条入站消息生成 traceId 并贯穿入站→模型回合→出站，决策事件（含限流/去重/白名单/@ 门控/闸门拒发与每个静默丢弃分支的中文 reason）逐行 JSON 落盘 `mediaDir/qq-trace.jsonl`（4MiB 改名轮转，保留 `qq-trace.1/2.jsonl`；同一原因 5 分钟限频；异步队列写不阻塞管线）；默认关闭——关闭时不生成 traceId、不落盘、决策行为与 0.6.0 完全一致 |
 | `traceLevel` | `debug` | 追踪事件级别（W1）：`debug` 记录全部决策事件；`warn` 仅记录 ok:false（被拒/失败/丢弃）事件 |
+| `logLevel` | `info` | 控制台日志级别门槛（debug < info < warn < error）：低于该级别的日志不输出。`debug` 全部输出（含「session 事件早退」等调试行）；`info` 常规信息（启动、连接建立、meta 事件等，默认）；`warn` 仅警告与错误；`error` 仅错误 |
 | `recordInbound` | `false` | 入站录制（W1）：把收到的每条入站事件（含被门控跳过的，附当时决策 reason）按可回放形状逐行 JSON 追加写 `mediaDir/qq-inbox.jsonl`（2MiB 改名轮转，保留 `qq-inbox.1/2.jsonl`；注入的帧不会被二次录制，杜绝「注入→录制→回放→注入」自激）；纯旁路：写失败仅 warn 限频，绝不影响回复管线 |
 | `inboxRedact` | `false` | 录制脱敏（W1）：落盘前把帧中 6 位以上的数字串（QQ 号/群号等）脱敏为前 3 位+`****`（数字型 id 字段一并处理），便于把录制文件发给别人离线回放（`npm run replay`） |
 | `injectEnabled` | `false` | 事件注入通道（W1，**仅调试用**）：开启后按 `injectIntervalMs` 轮询 `mediaDir/qq-inject.jsonl`，把新行（每行一个 OneBot 消息事件 JSON）喂进**真实入站管线**（trace 事件标 `stage=inject`）；启动时已存在的历史行跳过并记一条说明。信任边界：注入是调试通道，默认全关，勿在生产开启 |

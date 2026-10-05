@@ -178,6 +178,8 @@ export interface Config {
     injectDryRun: boolean;
     /** W1/T5: inject queue poll interval in ms (min 500). */
     injectIntervalMs: number;
+    /** Console log gate: messages below this level are dropped (debug < info < warn < error). */
+    logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 /** Default media dir: <dsh-home>/media/onebot (dsh-home = $DSH_HOME or ~/.dsh). */
 export declare function defaultMediaDir(): string;
@@ -190,7 +192,7 @@ export declare const Config: Z<Config>;
  * legacy keys never leak into the effective config. */
 export declare function resolveDeprecatedConfig(config: Config): Config;
 /** Log a meta event; periodic heartbeat events are silenced to keep the log readable. */
-export declare function logMetaEvent(selfId: string, event: OneBotEvent): void;
+export declare function logMetaEvent(selfId: string, event: OneBotEvent, minLevel?: Config['logLevel']): void;
 /** Mount the plugin. */
 export declare function apply(ctx: Context, config: Config): void;
 export {};
