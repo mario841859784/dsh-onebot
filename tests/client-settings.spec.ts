@@ -5,12 +5,13 @@
  * window.__ModuleLoader__）的模块级契约：
  *   ① 语法可解析（new Function）+ CJS banner/footer 形态 + externals 仅 react；
  *   ② 入口导出 inject + apply；
- *   ③ 四组 25 键：分组/键集/默认值与宿主侧 src/settings-remote.js（T3 + W6 扩展）
- *      导出常量逐字一致（descriptor 契约核对，防两侧漂移）；诊断组 6 键文案
- *      为中文标签 + 一句话「关掉会怎样」+ 配置键名（W6）；
+ *   ③ 四组 26 键：分组/键集/默认值与宿主侧 src/settings-remote.js（T3 + W6 扩展
+ *      + W7 workspacePath）导出常量逐字一致（descriptor 契约核对，防两侧漂移）；
+ *      诊断组 6 键文案为中文标签 + 一句话「关掉会怎样」+ 配置键名（W6）；
  *   ④ Typert descriptor 与 T3 服务方法面逐字对齐：getSettings() /
- *      updateSettings(patch, expectedRevision)，全 positional，namespace
- *      onebotSettings，result codec 可解析 host 形态快照（含脱敏 accessToken）；
+ *      updateSettings(patch, expectedRevision) / listWorkspaces()（W7），全
+ *      positional，namespace onebotSettings，result codec 可解析 host 形态快照
+ *      （含脱敏 accessToken）与 workspace 列表；
  *   ⑤ 渲染函数模块级可测：renderGroup 纯函数产出三组 19 键控件，accessToken
  *      密码型输入且不明文回显（脱敏约定：host 快照 accessToken 恒 ''）；
  *   ⑥ 保存语义：computePatch 产出 19 键子集 patch；secretDraft '' = 不修改、
@@ -114,12 +115,22 @@ describe('T4 客户端 bundle — descriptor 契约核对（与 T3 src/settings-
     }
   })
 
-  it('方法集逐字对齐：getSettings() 0 参；updateSettings(patch, expectedRevision) 全 positional', () => {
-    expect(descriptors.map((descriptor) => descriptor.method)).toEqual(['getSettings', 'updateSettings'])
+  it('方法集逐字对齐：getSettings() 0 参；updateSettings(patch, expectedRevision)；listWorkspaces() 0 参（W7），全 positional', () => {
+    expect(descriptors.map((descriptor) => descriptor.method)).toEqual(['getSettings', 'updateSettings', 'listWorkspaces'])
     const getSettings = descriptors[0] as { parameters: Array<unknown>; result: { schema: { parse(value: unknown): unknown } } }
     expect(getSettings.parameters).toEqual([])
     const updateSettings = descriptors[1] as { parameters: Array<{ name: string }>; result: { schema: { parse(value: unknown): unknown } } }
     expect(updateSettings.parameters.map((parameter) => parameter.name)).toEqual(['patch', 'expectedRevision'])
+    const listWorkspaces = descriptors[2] as { parameters: Array<unknown>; result: { typeSymbol: string; schema: { parse(value: unknown): unknown } } }
+    expect(listWorkspaces.parameters).toEqual([])
+    expect(listWorkspaces.result.typeSymbol).toBe('WorkspaceListResult')
+    // W7：listWorkspaces result codec 可解析 host 形态（available + workspaces 摘要）。
+    expect(listWorkspaces.result.schema.parse({ available: true, workspaces: [{ id: 'ws-1', path: '/tmp/ws', sessionCount: 2 }] })).toEqual({
+      available: true,
+      workspaces: [{ id: 'ws-1', path: '/tmp/ws', sessionCount: 2 }],
+    })
+    // registry 缺席降级形态同样可解析。
+    expect(listWorkspaces.result.schema.parse({ available: false, workspaces: [] })).toEqual({ available: false, workspaces: [] })
   })
 
   it('result codec 可解析宿主形态快照（T1 §3：19 键 config + secrets 脱敏标记 + groups + effect=restart）', () => {
@@ -136,6 +147,7 @@ describe('T4 客户端 bundle — descriptor 契约核对（与 T3 src/settings-
     }
     const parsed = getSettings.result.schema.parse(snapshot) as typeof snapshot
     expect(parsed.config.accessToken).toBe('')
+    expect(parsed.config.workspacePath).toBe('') // W7：26 键含 workspacePath，默认 ''
     expect(parsed.effect).toBe(REMOTE_EFFECT)
   })
 
@@ -147,21 +159,22 @@ describe('T4 客户端 bundle — descriptor 契约核对（与 T3 src/settings-
     expect(() => getSettings.result.schema.parse({ revision: 0, entryActive: true, config: SCHEMA_DEFAULTS, secrets: [], groups: SETTINGS_GROUPS, effect: 'none' })).toThrow()
   })
 
-  it('updateSettings patch codec 接受 19 键任意子集、拒绝非法枚举值', () => {
+  it('updateSettings patch codec 接受 26 键任意子集、拒绝非法枚举值', () => {
     const updateSettings = descriptors[1] as { parameters: Array<{ codec: { schema: { parse(value: unknown): unknown } } }> }
     const patchCodec = updateSettings.parameters[0].codec.schema
     expect(patchCodec.parse({ port: 1234 })).toEqual({ port: 1234 })
     expect(patchCodec.parse({ adminUsers: ['10000'], unknownCommand: 'passthrough' })).toEqual({ adminUsers: ['10000'], unknownCommand: 'passthrough' })
+    expect(patchCodec.parse({ workspacePath: '/tmp/ws' })).toEqual({ workspacePath: '/tmp/ws' }) // W7：字符串通道
     expect(() => patchCodec.parse({ mode: 'invalid' })).toThrow()
   })
 })
 
-describe('T4 客户端 bundle — 四组 25 键（分组/键集/默认值 = T1 §4 表 + W6 诊断组 = T3 常量）', () => {
+describe('T4 客户端 bundle — 四组 26 键（分组/键集/默认值 = T1 §4 表 + W6 诊断组 + W7 workspacePath = T3 常量）', () => {
   it('分组与键序逐字对齐 host SETTINGS_GROUPS', () => {
     expect(client.GROUP_KEYS).toEqual(SETTINGS_GROUPS)
     expect(groups.map((group) => group.id)).toEqual(['connection', 'permissions', 'behavior', 'diagnostics'])
     expect(allFields.map((field) => field.key).sort()).toEqual([...ALL_KEYS].sort())
-    expect(allFields).toHaveLength(25)
+    expect(allFields).toHaveLength(26)
   })
 
   it('默认值逐字对齐 host SCHEMA_DEFAULTS（重置按钮唯一来源）', () => {
@@ -211,16 +224,16 @@ describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     }))
   }
 
-  it('四组各产出标题与逐字段控件行（25 行 obx-field）', () => {
+  it('四组各产出标题与逐字段控件行（26 行 obx-field）', () => {
     const sections = renderAll(draft({ config: SCHEMA_DEFAULTS }))
     expect(sections.map((section) => (section.props as Record<string, unknown>)['data-group'])).toEqual(['connection', 'permissions', 'behavior', 'diagnostics'])
     const titles = sections.map((section) => ((section.children[0] as StubElement).children[0] as string))
     expect(titles).toEqual(['连接', '权限', '行为', '诊断'])
     const fieldRows = sections.flatMap((section) => walk(section).filter((element) => element.type === 'div' && element.props.className === 'obx-field'))
-    expect(fieldRows).toHaveLength(25)
+    expect(fieldRows).toHaveLength(26)
   })
 
-  it('控件类型齐备：4 枚举下拉 + 3 多行文本 + 11 布尔勾选 + 4 文本框 + 1 密码框（secret 另含清除勾选）', () => {
+  it('控件类型齐备：4 枚举下拉 + 3 多行文本 + 11 布尔勾选 + 5 文本框 + 1 密码框（secret 另含清除勾选）', () => {
     const elements = renderAll(draft({ config: SCHEMA_DEFAULTS })).flatMap((section) => walk(section))
     const inputs = elements.filter((element) => element.type === 'input') as Array<StubElement & { props: Record<string, unknown> }>
     const selects = elements.filter((element) => element.type === 'select')
@@ -228,7 +241,7 @@ describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     expect(selects).toHaveLength(4)
     expect(textareas).toHaveLength(3)
     expect(inputs.filter((input) => input.props.type === 'checkbox')).toHaveLength(11 + 1) // 11 布尔（5 原有 + 6 W6）+ secret 清除勾选
-    expect(inputs.filter((input) => input.props.type === 'text')).toHaveLength(6) // host/port/url/botQQ + interimRecallMs/rateLimitPerMinute（number 以文本框渲染）
+    expect(inputs.filter((input) => input.props.type === 'text')).toHaveLength(7) // host/port/url/botQQ/workspacePath（W7）+ interimRecallMs/rateLimitPerMinute（number 以文本框渲染）
     expect(inputs.filter((input) => input.props.type === 'password')).toHaveLength(1)
   })
 
@@ -261,7 +274,7 @@ describe('T4 客户端 bundle — 保存语义（updateSettings(patch, expectedR
     opts?: { secretDraft?: string; clearSecret?: boolean },
   ) => { patch: Record<string, unknown>; invalidKeys: string[] }
 
-  it('仅下发与生效值有差异的键（25 键任意子集）', () => {
+  it('仅下发与生效值有差异的键（26 键任意子集）', () => {
     const values = draft({ config: SCHEMA_DEFAULTS })
     values.port = '9999'
     values.mode = 'forward'
@@ -412,7 +425,7 @@ describe('W6 失败守卫（客户端侧）— host edit-failed 中文错误可�
     expect(isConflictError({ code: 'onebot-settings/conflict', message: 'expectedRevision mismatch' })).toBe(true)
   })
 
-  it('host patch 白名单 25 键与 client patchSchema 同宽：新键可下发（契约同步核对）', () => {
+  it('host patch 白名单 26 键与 client patchSchema 同宽：新键可下发（契约同步核对）', () => {
     const updateSettings = descriptors[1] as { parameters: Array<{ codec: { schema: { parse(value: unknown): unknown } } }> }
     const patch = updateSettings.parameters[0].codec.schema.parse({
       actionAuditEnabled: true, traceEnabled: false, recordInbound: true, inboxRedact: false, injectEnabled: false, injectDryRun: true,
@@ -420,5 +433,131 @@ describe('W6 失败守卫（客户端侧）— host edit-failed 中文错误可�
     expect(patch).toEqual({
       actionAuditEnabled: true, traceEnabled: false, recordInbound: true, inboxRedact: false, injectEnabled: false, injectDryRun: true,
     })
+  })
+})
+
+describe('W7 workspacePath + 「快速填入 workspace」（connection 组新行 + 只填不存的辅助选择器）', () => {
+  const fillWorkspacePath = client.fillWorkspacePath as (draft: Record<string, unknown>, path: string) => Record<string, unknown>
+  const renderPicker = client.renderWorkspacePicker as (react: unknown, opts: Record<string, unknown>) => StubElement | null
+
+  /** options 里的回调全部换 spy，便于断言「填入只走 onApply、不触保存」。 */
+  function pickerOpts(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      loaded: true,
+      available: true,
+      workspaces: [
+        { id: 'ws-1', path: '/vol2/ws/alpha', sessionCount: 3 },
+        { id: 'ws-2', path: '/vol2/ws/beta', sessionCount: 0 },
+      ],
+      selectedId: '',
+      disabled: false,
+      onSelectedChange: () => {},
+      onApply: () => {},
+      ...overrides,
+    }
+  }
+
+  it('connection 组追加 workspacePath：键序组尾、中文 label、hint 申明新会话生效与 /workspace 覆盖不受影响', () => {
+    const connection = groups.find((group) => group.id === 'connection')!
+    expect(connection.fields.map((field) => field.key)).toEqual(['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath'])
+    const workspaceField = connection.fields.find((field) => field.key === 'workspacePath')!
+    expect(workspaceField.type).toBe('string')
+    expect(workspaceField.label).toMatch(/\p{Script=Han}/u)
+    expect(workspaceField.hint).toContain('新会话')
+    expect(workspaceField.hint).toContain('/workspace')
+    expect(workspaceField.hint).toContain('不受影响')
+    expect(workspaceField.hint).toContain('（配置键 workspacePath）')
+    expect((client.DEFAULTS as Record<string, unknown>).workspacePath).toBe('')
+  })
+
+  it('picker 正常态：select（value=id，label=path（N 会话））+「填入」按钮；未选中时按钮禁用', () => {
+    const node = renderPicker(stubReact, pickerOpts())
+    expect(node).not.toBeNull()
+    expect(node!.props.className).toBe('obx-workspace-row')
+    const elements = walk(node)
+    const select = elements.find((element) => element.type === 'select')!
+    expect(select.props['aria-label']).toBe('快速填入 workspace')
+    expect((select.props as Record<string, unknown>).value).toBe('')
+    const options = select.children as StubElement[]
+    expect(options.map((option) => option.props.value)).toEqual(['', 'ws-1', 'ws-2'])
+    expect(options.map((option) => option.children[0])).toEqual(['选择 workspace…', '/vol2/ws/alpha（3 会话）', '/vol2/ws/beta（0 会话）'])
+    const button = elements.find((element) => element.type === 'button')!
+    expect(button.props.disabled).toBe(true) // 未选中：填入禁用
+    expect(button.children[0]).toBe('填入')
+    // 选中后按钮可用；title 申明「只填值，保存仍走保存设置」。
+    const selected = renderPicker(stubReact, pickerOpts({ selectedId: 'ws-1' }))
+    const elements2 = walk(selected!)
+    expect(elements2.find((element) => element.type === 'button')!.props.disabled).toBe(false)
+    expect(JSON.stringify(selected)).toContain('保存仍走')
+  })
+
+  it('「填入」只调 onApply(选中 path)（且不触碰其他回调）——面板接线 onApply=setDraft(fillWorkspacePath(...))，保存仍走显式通道', () => {
+    const applied: unknown[] = []
+    const selectedChanges: unknown[] = []
+    const node = renderPicker(stubReact, pickerOpts({
+      selectedId: 'ws-2',
+      onApply: (path: string) => { applied.push(path) },
+      onSelectedChange: (id: string) => { selectedChanges.push(id) },
+    }))
+    const elements = walk(node!)
+    const button = elements.find((element) => element.type === 'button')!
+    button.props.onClick()
+    expect(applied).toEqual(['/vol2/ws/beta']) // 填的是 path，不是 id
+    expect(selectedChanges).toEqual([]) // 点击填入不触发 select 回调
+    // 面板源码接线钉住：onApply 唯一动作是写草稿（fillWorkspacePath），结构上无保存调用。
+    expect(CLIENT_SOURCE).toContain('setDraft(fillWorkspacePath(draft, path))')
+    // fillWorkspacePath 纯函数：只改 workspacePath 一个键、返回新对象不改入参。
+    const base = draft({ config: SCHEMA_DEFAULTS })
+    base.botQQ = '10001'
+    const filled = fillWorkspacePath(base, '/vol2/ws/alpha')
+    expect(filled).toEqual({ ...base, workspacePath: '/vol2/ws/alpha' })
+    expect(base.workspacePath).toBe('') // 入参草稿未被就地修改
+    expect(filled).not.toBe(base)
+    expect(fillWorkspacePath(base, undefined as unknown as string).workspacePath).toBe('') // 防御：nullish → ''
+  })
+
+  it('填入后显式保存通道才生效：computePatch 只产出 workspacePath 键，交 host updateSettings', () => {
+    const base = draft({ config: SCHEMA_DEFAULTS })
+    const filled = fillWorkspacePath(base, '/vol2/ws/alpha')
+    const compute = client.computePatch as (draftValues: Record<string, unknown>, config: Record<string, unknown>) => { patch: Record<string, unknown> }
+    expect(compute(filled, SCHEMA_DEFAULTS).patch).toEqual({ workspacePath: '/vol2/ws/alpha' })
+    // 与默认值相同的值不下发（no-op 语义仍成立）。
+    expect(compute(fillWorkspacePath(base, ''), SCHEMA_DEFAULTS).patch).toEqual({})
+  })
+
+  it('picker 降级态：未拉取不渲染；registry 缺席/列表为空隐藏下拉与按钮、渲染可直接输入的说明行', () => {
+    expect(renderPicker(stubReact, pickerOpts({ loaded: false }))).toBeNull() // 打开面板拉取完成前不渲染
+    const unavailable = renderPicker(stubReact, pickerOpts({ available: false, workspaces: [] }))
+    expect(unavailable).not.toBeNull()
+    expect(unavailable!.props.className).toBe('obx-hint obx-workspace-empty')
+    const unavailableText = JSON.stringify(unavailable)
+    expect(unavailableText).toContain('无法获取 workspace 列表')
+    expect(unavailableText).toContain('可直接输入路径')
+    expect(walk(unavailable!).filter((element) => element.type === 'select' || element.type === 'button')).toHaveLength(0)
+    const empty = renderPicker(stubReact, pickerOpts({ available: true, workspaces: [] }))
+    expect(JSON.stringify(empty)).toContain('暂无 workspace 记录，可直接输入路径。')
+    expect(walk(empty!).filter((element) => element.type === 'select' || element.type === 'button')).toHaveLength(0)
+  })
+
+  it('renderGroup 经 renderExtraRow 注入 picker：仅在 workspacePath 字段后追加，obx-field 行数不变', () => {
+    const connection = groups.find((group) => group.id === 'connection')!
+    const render = (opts: Record<string, unknown>) => (client.renderGroup as Function)(stubReact, connection, {
+      draft: draft({ config: SCHEMA_DEFAULTS }),
+      secretSet: false,
+      clearSecret: false,
+      onChange: () => {},
+      onSecretChange: () => {},
+      onClearSecretChange: () => {},
+      ...opts,
+    })
+    const withoutPicker = walk(render({}))
+    expect(withoutPicker.filter((element) => element.props.className === 'obx-workspace-row')).toHaveLength(0)
+    const withPicker = walk(render({
+      renderExtraRow: (field: { key: string }) =>
+        field.key === 'workspacePath' ? renderPicker(stubReact, pickerOpts({ selectedId: 'ws-1' })) : null,
+    }))
+    // 附加行渲染在 workspacePath 之后（connection 组最后一个字段行后），字段行计数不受影响。
+    expect(withPicker.filter((element) => element.props.className === 'obx-field')).toHaveLength(7)
+    expect(withPicker.filter((element) => element.props.className === 'obx-workspace-row')).toHaveLength(1)
   })
 })

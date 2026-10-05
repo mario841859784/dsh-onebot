@@ -14,6 +14,10 @@
  *
  *   getSettings()                            → OnebotSettingsSnapshot
  *   updateSettings(patch, expectedRevision)  → OnebotSettingsSnapshot
+ *   listWorkspaces()                         → WorkspaceListResult（W7：只读查询宿主
+ *     dsh-workspace 注册表，供设置页「快速填入 workspace」；registry 缺席/list()
+ *     失败一律降级为 {available:false, workspaces:[]}，不抛错——辅助查询绝不
+ *     阻塞 getSettings/updateSettings 主链路，也绝不打开 registry 内部态）
  *
  * 持久层 = profile patch 中 `dsh-onebot` 条目的 config 覆盖行（T1 §3——设置页
  * /手改 patch/宿主原生设置页三方同源，无第二优先级）。写入经宿主
@@ -44,20 +48,26 @@ import { isDeepStrictEqual } from 'node:util'
 
 import type { Context } from '@deepseek-ai/cordis'
 
+/** 宿主 dsh-workspace 注册表（src/bridge.ts:152 已有结构面；本模块只读消费
+ *  list()，不打开 registry 内部态——import type 零运行时依赖，不改 bridge.ts）。 */
+import type { WorkspaceRegistryLike } from './bridge.js'
+
 /** patch insert 中 dsh-onebot 主条目的 id（T1 §2/§3：唯一持久层条目）。 */
 export const ENTRY_ID = 'dsh-onebot'
 /** Typert Remote 命名空间 = cordis 服务键（T1 §4）。 */
 export const NAMESPACE = 'onebotSettings'
-/** 快照固定值：25 键均为插件级热重启生效（T1 §5；W1/W2 新增 6 布尔键同粒度）。 */
+/** 快照固定值：26 键均为插件级热重启生效（T1 §5；W1/W2 新增 6 布尔键同粒度）。 */
 export const REMOTE_EFFECT = 'restart'
 
-/** 设置页 UI 四组 25 键（T1 §4；与 src/index.ts Config schema 一一对应）。
+/** 设置页 UI 四组 26 键（T1 §4；与 src/index.ts Config schema 一一对应）。
  *  W6：permissions/behavior 三组 19 键保持不动，W1/W2 的 6 个布尔键独立成
  *  「diagnostics（诊断）」组——它们全部默认关（除 actionAuditEnabled 默认开）、
  *  属观测/调试面，与连接权限行为组的使用频率与风险等级都不同，独立分组让
- *  「默认全关的调试开关」一眼可辨（对齐竞品 v0.6.0 面板的开关分组话术）。 */
+ *  「默认全关的调试开关」一眼可辨（对齐竞品 v0.6.0 面板的开关分组话术）。
+ *  W7：connection 组追加 workspacePath（会话默认工作区；schema 已有该键
+ *  src/index.ts:287，本批次起入面板白名单，键序追加在组尾）。 */
 export const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>> = {
-  connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ'],
+  connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath'],
   permissions: ['requireMention', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom'],
   behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute'],
   diagnostics: ['actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun'],
@@ -71,6 +81,8 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   url: 'ws://127.0.0.1:3001',
   accessToken: '',
   botQQ: '',
+  // W7：会话默认工作区路径（schema 默认 ''，src/index.ts:287——留空 = 宿主进程 cwd）。
+  workspacePath: '',
   requireMention: true,
   adminUsers: [],
   dmPolicy: 'open',
@@ -117,9 +129,9 @@ const BOOLEAN_KEYS: readonly string[] = [
   'requireMention', 'allowAllUsers', 'interimMessages', 'interimRecall', 'sendErrorNotice',
   'actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun',
 ]
-const STRING_KEYS: readonly string[] = ['host', 'url', 'accessToken', 'botQQ']
+const STRING_KEYS: readonly string[] = ['host', 'url', 'accessToken', 'botQQ', 'workspacePath']
 const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupAllowFrom']
-/** 全部 25 键（校验与快照的唯一键集；4 枚举 + 3 数字 + 11 布尔 + 4 字符串 + 3 字符串数组）。 */
+/** 全部 26 键（校验与快照的唯一键集；4 枚举 + 3 数字 + 11 布尔 + 5 字符串 + 3 字符串数组）。 */
 export const ALL_KEYS: readonly string[] = [
   ...Object.keys(ENUM_KEYS), ...NUMBER_KEYS, ...BOOLEAN_KEYS, ...STRING_KEYS, ...STRING_ARRAY_KEYS,
 ]
@@ -130,7 +142,7 @@ export interface OnebotSettingsSnapshot {
   revision: number
   /** dsh-onebot 条目 fiber 是否 active（fiber.state === 2，同 configEditor.edit 的活性判据）。 */
   entryActive: boolean
-  /** 25 键生效值；accessToken 脱敏为 ''。 */
+  /** 26 键生效值；accessToken 脱敏为 ''。 */
   config: Record<string, unknown>
   /** 脱敏键标记：明文是否已配置。 */
   secrets: Array<{ path: string[]; set: boolean }>
@@ -237,7 +249,50 @@ export function observeRevision(state: RevisionState, config: unknown): number {
   return state.revision
 }
 
-/** 25 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
+/** W7：listWorkspaces 返回的单条 workspace 摘要（sessionCount = 注册表里挂在
+ *  该 workspace 下的会话数，纯展示用途）。 */
+export interface WorkspaceSummary {
+  id: string
+  path: string
+  sessionCount: number
+}
+
+/** W7：listWorkspaces 返回值。available=false = 宿主 workspaceRegistry 缺席或
+ *  list() 抛错（降级语义：空列表 + 标注，不抛错——设置页隐藏快速填入行并提示
+ *  可直接输入路径）。 */
+export interface WorkspaceListResult {
+  available: boolean
+  workspaces: WorkspaceSummary[]
+}
+
+/** W7：listWorkspaces 纯实现（descriptor 方法体共用；对 registry 形状做防御性
+ *  校验——与 requireConfigEditor 同款「运行期再校验形状」风格，但绝不抛错：
+ *  缺席/形状不符/list() 失败都归一为 unavailable 空列表）。 */
+export function listWorkspaces(registry: WorkspaceRegistryLike | undefined): WorkspaceListResult {
+  if (registry === undefined || typeof registry.list !== 'function') {
+    return { available: false, workspaces: [] }
+  }
+  try {
+    const workspaces = registry.list().map((workspace) => ({
+      id: String(workspace?.id ?? ''),
+      path: String(workspace?.path ?? ''),
+      sessionCount: Array.isArray(workspace?.sessionIds) ? workspace.sessionIds.length : 0,
+    }))
+    return { available: true, workspaces }
+  } catch {
+    // 只读辅助查询：注册表异常（存储失败等）不该炸掉设置页，降级为不可用。
+    return { available: false, workspaces: [] }
+  }
+}
+
+/** W7：惰性解析宿主 workspaceRegistry（不经 static inject——保持可选依赖，
+ *  registry 缺席时服务照常挂载，仅 listWorkspaces 降级 unavailable）。 */
+function resolveWorkspaceRegistry(ctx: { get(key: string): unknown } | undefined): WorkspaceRegistryLike | undefined {
+  const registry = ctx?.get?.('workspaceRegistry') as WorkspaceRegistryLike | undefined
+  return registry !== undefined && registry !== null && typeof registry.list === 'function' ? registry : undefined
+}
+
+/** 26 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
 export function effectiveConfig(raw: Record<string, unknown>): Record<string, unknown> {
   const effective: Record<string, unknown> = {}
   for (const key of ALL_KEYS) {
@@ -266,7 +321,7 @@ function buildSnapshot(entry: ConfigEditorEntry, state: RevisionState): OnebotSe
   }
 }
 
-/** updateSettings 入参校验（T1 §4：25 键的任意子集，扁平 JSON）。未知键整单
+/** updateSettings 入参校验（T1 §4：26 键的任意子集，扁平 JSON）。未知键整单
  *  拒绝（不静默丢弃）；类型/枚举不符拒绝；具体取值合法性交由宿主 schemastery
  *  校验 + reconcile 失败自动回滚兜底（T1 §5）。 */
 export function validatePatch(patch: unknown): Record<string, unknown> {
@@ -377,17 +432,22 @@ export async function updateSettings(
   return buildSnapshot(findEntry(editor), state)
 }
 
-/** 组装 descriptor 方法对象（测试与降级类共用；与类方法同一实现）。 */
+/** 组装 descriptor 方法对象（测试与降级类共用；与类方法同一实现）。
+ *  W7：workspaceRegistry 可选注入——省略时 listWorkspaces 降级 unavailable
+ *  （与类分支的惰性 ctx 解析同一 listWorkspaces 纯函数出口）。 */
 export function createOnebotSettingsMethods(
   editor: ConfigEditorLike,
   state: RevisionState = createRevisionState(),
+  workspaceRegistry?: WorkspaceRegistryLike,
 ): {
   getSettings(): Promise<OnebotSettingsSnapshot> | OnebotSettingsSnapshot
   updateSettings(patch: unknown, expectedRevision?: number): Promise<OnebotSettingsSnapshot>
+  listWorkspaces(): Promise<WorkspaceListResult>
 } {
   return {
     getSettings: () => getSettings(editor, state),
     updateSettings: (patch, expectedRevision) => updateSettings(editor, state, patch, expectedRevision),
+    listWorkspaces: async () => listWorkspaces(workspaceRegistry),
   }
 }
 
@@ -439,9 +499,15 @@ if (protocol?.TypertRemoteService) {
     async updateSettings(patch: unknown, expectedRevision?: number): Promise<OnebotSettingsSnapshot> {
       return updateSettings(this.configEditor(), this.state, patch, expectedRevision)
     }
+
+    /** W7：只读查询宿主 workspace 注册表（惰性解析，缺席降级 unavailable，不抛错）。 */
+    async listWorkspaces(): Promise<WorkspaceListResult> {
+      return listWorkspaces(resolveWorkspaceRegistry(this.ownerCtx))
+    }
   }
   markRemote(OnebotSettingsRemote, 'getSettings')
   markRemote(OnebotSettingsRemote, 'updateSettings')
+  markRemote(OnebotSettingsRemote, 'listWorkspaces')
   OnebotSettingsService = OnebotSettingsRemote
 } else {
   console.warn('[dsh-onebot] @deepseek-ai/dsh-typert-protocol unavailable — onebotSettings remote degrades to a plain cordis service')
@@ -465,6 +531,11 @@ if (protocol?.TypertRemoteService) {
 
     async updateSettings(patch: unknown, expectedRevision?: number): Promise<OnebotSettingsSnapshot> {
       return updateSettings(this.configEditor(), this.state, patch, expectedRevision)
+    }
+
+    /** W7：与 typert 分支同一惰性解析 + 降级语义。 */
+    async listWorkspaces(): Promise<WorkspaceListResult> {
+      return listWorkspaces(resolveWorkspaceRegistry(this.ctx))
     }
   }
   OnebotSettingsService = OnebotSettingsPlain

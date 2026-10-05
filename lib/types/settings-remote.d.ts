@@ -14,6 +14,10 @@
  *
  *   getSettings()                            → OnebotSettingsSnapshot
  *   updateSettings(patch, expectedRevision)  → OnebotSettingsSnapshot
+ *   listWorkspaces()                         → WorkspaceListResult（W7：只读查询宿主
+ *     dsh-workspace 注册表，供设置页「快速填入 workspace」；registry 缺席/list()
+ *     失败一律降级为 {available:false, workspaces:[]}，不抛错——辅助查询绝不
+ *     阻塞 getSettings/updateSettings 主链路，也绝不打开 registry 内部态）
  *
  * 持久层 = profile patch 中 `dsh-onebot` 条目的 config 覆盖行（T1 §3——设置页
  * /手改 patch/宿主原生设置页三方同源，无第二优先级）。写入经宿主
@@ -39,23 +43,28 @@
  * 内可解析）降级为普通 cordis 服务而非炸掉插件加载（照抄
  * dsh-expert-orchestrator/lib/remote.js 的降级骨架）。
  */
+/** 宿主 dsh-workspace 注册表（src/bridge.ts:152 已有结构面；本模块只读消费
+ *  list()，不打开 registry 内部态——import type 零运行时依赖，不改 bridge.ts）。 */
+import type { WorkspaceRegistryLike } from './bridge.js';
 /** patch insert 中 dsh-onebot 主条目的 id（T1 §2/§3：唯一持久层条目）。 */
 export declare const ENTRY_ID = "dsh-onebot";
 /** Typert Remote 命名空间 = cordis 服务键（T1 §4）。 */
 export declare const NAMESPACE = "onebotSettings";
-/** 快照固定值：25 键均为插件级热重启生效（T1 §5；W1/W2 新增 6 布尔键同粒度）。 */
+/** 快照固定值：26 键均为插件级热重启生效（T1 §5；W1/W2 新增 6 布尔键同粒度）。 */
 export declare const REMOTE_EFFECT = "restart";
-/** 设置页 UI 四组 25 键（T1 §4；与 src/index.ts Config schema 一一对应）。
+/** 设置页 UI 四组 26 键（T1 §4；与 src/index.ts Config schema 一一对应）。
  *  W6：permissions/behavior 三组 19 键保持不动，W1/W2 的 6 个布尔键独立成
  *  「diagnostics（诊断）」组——它们全部默认关（除 actionAuditEnabled 默认开）、
  *  属观测/调试面，与连接权限行为组的使用频率与风险等级都不同，独立分组让
- *  「默认全关的调试开关」一眼可辨（对齐竞品 v0.6.0 面板的开关分组话术）。 */
+ *  「默认全关的调试开关」一眼可辨（对齐竞品 v0.6.0 面板的开关分组话术）。
+ *  W7：connection 组追加 workspacePath（会话默认工作区；schema 已有该键
+ *  src/index.ts:287，本批次起入面板白名单，键序追加在组尾）。 */
 export declare const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>>;
 /** schema 默认值（T1 §4 表；摘自 src/index.ts:171-245），快照生效值的底层。 */
 export declare const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>>;
 /** 快照返回侧脱敏的键（T1 §3 敏感字段行；写入侧明文落盘属宿主既有行为）。 */
 export declare const SECRET_KEYS: readonly string[];
-/** 全部 25 键（校验与快照的唯一键集；4 枚举 + 3 数字 + 11 布尔 + 4 字符串 + 3 字符串数组）。 */
+/** 全部 26 键（校验与快照的唯一键集；4 枚举 + 3 数字 + 11 布尔 + 5 字符串 + 3 字符串数组）。 */
 export declare const ALL_KEYS: readonly string[];
 /** OnebotSettingsSnapshot（T1 §3 快照结构）。 */
 export interface OnebotSettingsSnapshot {
@@ -63,7 +72,7 @@ export interface OnebotSettingsSnapshot {
     revision: number;
     /** dsh-onebot 条目 fiber 是否 active（fiber.state === 2，同 configEditor.edit 的活性判据）。 */
     entryActive: boolean;
-    /** 25 键生效值；accessToken 脱敏为 ''。 */
+    /** 26 键生效值；accessToken 脱敏为 ''。 */
     config: Record<string, unknown>;
     /** 脱敏键标记：明文是否已配置。 */
     secrets: Array<{
@@ -98,9 +107,27 @@ export declare function createRevisionState(): RevisionState;
 /** §3.1 #2：读侧观察——config 指纹相对上次有差异即 +1（任何来源的已提交变更
  *  一视同仁）；首次调用仅建立基线不递增。 */
 export declare function observeRevision(state: RevisionState, config: unknown): number;
-/** 25 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
+/** W7：listWorkspaces 返回的单条 workspace 摘要（sessionCount = 注册表里挂在
+ *  该 workspace 下的会话数，纯展示用途）。 */
+export interface WorkspaceSummary {
+    id: string;
+    path: string;
+    sessionCount: number;
+}
+/** W7：listWorkspaces 返回值。available=false = 宿主 workspaceRegistry 缺席或
+ *  list() 抛错（降级语义：空列表 + 标注，不抛错——设置页隐藏快速填入行并提示
+ *  可直接输入路径）。 */
+export interface WorkspaceListResult {
+    available: boolean;
+    workspaces: WorkspaceSummary[];
+}
+/** W7：listWorkspaces 纯实现（descriptor 方法体共用；对 registry 形状做防御性
+ *  校验——与 requireConfigEditor 同款「运行期再校验形状」风格，但绝不抛错：
+ *  缺席/形状不符/list() 失败都归一为 unavailable 空列表）。 */
+export declare function listWorkspaces(registry: WorkspaceRegistryLike | undefined): WorkspaceListResult;
+/** 26 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
 export declare function effectiveConfig(raw: Record<string, unknown>): Record<string, unknown>;
-/** updateSettings 入参校验（T1 §4：25 键的任意子集，扁平 JSON）。未知键整单
+/** updateSettings 入参校验（T1 §4：26 键的任意子集，扁平 JSON）。未知键整单
  *  拒绝（不静默丢弃）；类型/枚举不符拒绝；具体取值合法性交由宿主 schemastery
  *  校验 + reconcile 失败自动回滚兜底（T1 §5）。 */
 export declare function validatePatch(patch: unknown): Record<string, unknown>;
@@ -129,10 +156,13 @@ export declare function describeEditFailure(cause: unknown): string;
  * 失败路径 revision 不递增（指纹观察只在成功后的 buildSnapshot 发生）、不重试、
  * 不补偿写，patch 文件由宿主保证未被破坏（config-editor.md §3 矩阵）。 */
 export declare function updateSettings(editor: ConfigEditorLike, state: RevisionState, patch: unknown, expectedRevision?: number): Promise<OnebotSettingsSnapshot>;
-/** 组装 descriptor 方法对象（测试与降级类共用；与类方法同一实现）。 */
-export declare function createOnebotSettingsMethods(editor: ConfigEditorLike, state?: RevisionState): {
+/** 组装 descriptor 方法对象（测试与降级类共用；与类方法同一实现）。
+ *  W7：workspaceRegistry 可选注入——省略时 listWorkspaces 降级 unavailable
+ *  （与类分支的惰性 ctx 解析同一 listWorkspaces 纯函数出口）。 */
+export declare function createOnebotSettingsMethods(editor: ConfigEditorLike, state?: RevisionState, workspaceRegistry?: WorkspaceRegistryLike): {
     getSettings(): Promise<OnebotSettingsSnapshot> | OnebotSettingsSnapshot;
     updateSettings(patch: unknown, expectedRevision?: number): Promise<OnebotSettingsSnapshot>;
+    listWorkspaces(): Promise<WorkspaceListResult>;
 };
 /** 服务装配：协议在位 → TypertRemoteService 子类（网关按 typertRemote 绑定 +
  *  原型 descriptor 发现）；否则降级为普通 cordis 服务（同名方法面，仅无网关

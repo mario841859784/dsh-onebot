@@ -29,8 +29,10 @@ import {
   createOnebotSettingsMethods,
   createRevisionState,
   getSettings,
+  listWorkspaces,
   updateSettings,
 } from '../src/settings-remote.js'
+import type { WorkspaceRegistryLike } from '../src/bridge.js'
 
 /** configEditor 最小替身：rows = profile patch 中 dsh-onebot 的覆盖行文档。 */
 class FakeConfigEditor {
@@ -287,7 +289,7 @@ describe('onebotSettings remote — W6 白名单扩展（W1/W2 观测/调试 6 �
   it('6 个新键入快照：默认值正确、落在 diagnostics 组、计入 ALL_KEYS', () => {
     const editor = new FakeConfigEditor()
     const snapshot = getSettings(editor, createRevisionState())
-    expect(ALL_KEYS).toHaveLength(25)
+    expect(ALL_KEYS).toHaveLength(26) // W6 19→25、W7 25→26（workspacePath 入 connection 组）
     expect(snapshot.groups.diagnostics).toEqual([...NEW_BOOLEAN_KEYS])
     for (const key of NEW_BOOLEAN_KEYS) {
       expect(snapshot.config[key]).toBe(NEW_DEFAULTS[key])
@@ -375,5 +377,111 @@ describe('onebotSettings remote — W6 失败守卫（configEditor 失败场景�
     expect(after.revision).toBe(baseline.revision) // 回滚后指纹与写前一致 → 不递增
     expect(after.config).toEqual(baseline.config) // 逐键还原，无半态（新键无残留）
     expect(editor.entry.options.config.recordInbound).toBeUndefined()
+  })
+})
+
+describe('onebotSettings remote — W7 workspacePath 白名单扩展（connection 组 26 键）', () => {
+  it('workspacePath 入快照：默认值 \'\'、connection 组键序追加、ALL_KEYS 25→26', () => {
+    const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
+    expect(ALL_KEYS).toHaveLength(26)
+    expect(SCHEMA_DEFAULTS.workspacePath).toBe('')
+    expect(SETTINGS_GROUPS.connection).toEqual(['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath'])
+    expect(snapshot.groups.connection).toEqual(SETTINGS_GROUPS.connection)
+    expect(snapshot.config.workspacePath).toBe('')
+  })
+
+  it('workspacePath 写入走字符串通道：进覆盖行并递增 revision；非字符串拒写 bad-request 且 edit 零调用', async () => {
+    const editor = new FakeConfigEditor({ botQQ: '10001' })
+    const state = createRevisionState()
+    const written = await updateSettings(editor, state, { workspacePath: '/vol2/ws/alpha' })
+    expect(written.revision).toBe(1)
+    expect(written.config.workspacePath).toBe('/vol2/ws/alpha')
+    expect(editor.writeCount).toBe(1)
+    expect(editor.rows[0].config.workspacePath).toBe('/vol2/ws/alpha')
+    expect(editor.rows[0].config.botQQ).toBe('10001') // 非本次写入的原键保留
+
+    const writes = editor.editCalls
+    for (const value of [123, null, ['/vol2/ws/alpha'], true]) {
+      await expect(updateSettings(editor, state, { workspacePath: value })).rejects.toMatchObject({
+        code: 'onebot-settings/bad-request',
+      })
+    }
+    expect(editor.editCalls).toBe(writes) // 拒写绝不触达宿主 edit
+    expect(getSettings(editor, state).revision).toBe(1)
+  })
+
+  it('拒写语义不变：workspacePath patch 携过期 expectedRevision 仍 conflict、不落盘不递增', async () => {
+    const editor = new FakeConfigEditor()
+    const state = createRevisionState()
+    const baseline = await updateSettings(editor, state, { workspacePath: '/a' })
+    expect(baseline.revision).toBe(1)
+
+    await expect(updateSettings(editor, state, { workspacePath: '/b' }, 0)).rejects.toMatchObject({
+      code: 'onebot-settings/conflict',
+    })
+    expect(editor.writeCount).toBe(1)
+    expect(editor.rows[0].config.workspacePath).toBe('/a')
+    expect(getSettings(editor, state).revision).toBe(1)
+  })
+})
+
+describe('onebotSettings remote — W7 listWorkspaces（workspace 注册表只读查询：正常 + 缺席降级）', () => {
+  const fakeRegistry = {
+    list: () => [
+      { id: 'ws-1', path: '/vol2/ws/alpha', sessionIds: ['s1', 's2', 's3'] },
+      { id: 'ws-2', path: '/vol2/ws/beta', sessionIds: [] },
+    ],
+  } as unknown as WorkspaceRegistryLike
+
+  it('正常态：list() 映射为 {id, path, sessionCount}（sessionCount=sessionIds 长度），available=true', () => {
+    expect(listWorkspaces(fakeRegistry)).toEqual({
+      available: true,
+      workspaces: [
+        { id: 'ws-1', path: '/vol2/ws/alpha', sessionCount: 3 },
+        { id: 'ws-2', path: '/vol2/ws/beta', sessionCount: 0 },
+      ],
+    })
+  })
+
+  it('降级态：registry 缺席（undefined）/ 形状不符 / list() 抛错 → available=false 空列表，绝不抛错', () => {
+    expect(listWorkspaces(undefined)).toEqual({ available: false, workspaces: [] })
+    expect(listWorkspaces({} as unknown as WorkspaceRegistryLike)).toEqual({ available: false, workspaces: [] })
+    const broken = { list: () => { throw new Error('workspace storage unavailable') } } as unknown as WorkspaceRegistryLike
+    expect(listWorkspaces(broken)).toEqual({ available: false, workspaces: [] })
+  })
+
+  it('descriptor 方法全 positional：listWorkspaces() 0 参；createOnebotSettingsMethods 注入 registry 两态', async () => {
+    const withRegistry = createOnebotSettingsMethods(new FakeConfigEditor(), undefined, fakeRegistry)
+    expect(parameterNames(withRegistry.listWorkspaces)).toEqual([])
+    expect(await withRegistry.listWorkspaces()).toMatchObject({ available: true })
+    const withoutRegistry = createOnebotSettingsMethods(new FakeConfigEditor())
+    expect(await withoutRegistry.listWorkspaces()).toEqual({ available: false, workspaces: [] })
+  })
+
+  it('服务面接线：ctx 提供 workspaceRegistry → service.listWorkspaces() 正常；缺席 → 降级 unavailable（服务照常可用）', async () => {
+    const editor = new FakeConfigEditor()
+
+    const ctxWith = new Context()
+    ctxWith.reflect.provide('configEditor', editor)
+    ctxWith.reflect.provide('workspaceRegistry', fakeRegistry)
+    const serviceWith = new OnebotSettingsService(ctxWith)
+    await expect(serviceWith.listWorkspaces()).resolves.toEqual({
+      available: true,
+      workspaces: [
+        { id: 'ws-1', path: '/vol2/ws/alpha', sessionCount: 3 },
+        { id: 'ws-2', path: '/vol2/ws/beta', sessionCount: 0 },
+      ],
+    })
+    // 主链路不受辅助查询影响。
+    expect(await serviceWith.getSettings()).toMatchObject({ revision: 0 })
+
+    const ctxWithout = new Context()
+    ctxWithout.reflect.provide('configEditor', editor)
+    const serviceWithout = new OnebotSettingsService(ctxWithout)
+    await expect(serviceWithout.listWorkspaces()).resolves.toEqual({ available: false, workspaces: [] })
+    await expect(serviceWithout.updateSettings({ workspacePath: '/vol2/ws/beta' })).resolves.toMatchObject({
+      revision: 1,
+      config: { workspacePath: '/vol2/ws/beta' },
+    })
   })
 })
