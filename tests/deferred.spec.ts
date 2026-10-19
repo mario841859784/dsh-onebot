@@ -122,6 +122,8 @@ describe('deferred 单元 — 发送失败分类与重试上限', () => {
     while (scheduler.active().length > 0) scheduler.runNext()
     await flush()
     expect(sendAttempts - before).toBe(DEFERRED_MAX_SEND_ATTEMPTS)
+    // 落盘是异步链（mkdir → 写临时文件 → rename），机器忙时一个节拍不够：确定性等待终态
+    await vi.waitFor(() => expect(readRegistry(mediaDir)[0]?.state).toBe('failed'))
     const entries = readRegistry(mediaDir)
     expect(entries).toHaveLength(1)
     expect(entries[0].state).toBe('failed')
@@ -170,6 +172,8 @@ describe('deferred 单元 — 发送失败分类与重试上限', () => {
     while (scheduler.active().length > 0) scheduler.runNext()
     await flush()
     expect(sendAttempts - before).toBe(1) // 零自动重试
+    // 落盘是异步链，机器忙时一个节拍不够：确定性等待终态
+    await vi.waitFor(() => expect(readRegistry(mediaDir)[0]?.state).toBe('uncertain'))
     const entries = readRegistry(mediaDir)
     expect(entries[0].state).toBe('uncertain')
     expect(entries[0].reason).toContain('结果不确定')

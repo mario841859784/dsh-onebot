@@ -469,3 +469,28 @@ describe('T3-R2: resume-failed settings carrier + settings-only saveMapping inva
     await registry.stop()
   })
 })
+
+describe('serialized atomic mapping saves', () => {
+  it('concurrent fire-and-forget saves never leave a truncated file and the last write is the latest state', async () => {
+    const deps = makeRegistryDeps({ agents: makeFakeAgents([], { followups: [] }, { resumeOk: true }) })
+    const registry = new ChatRegistry(deps)
+    const file = join(deps.config.mediaDir, 'chat-sessions.json')
+    const saves: Array<Promise<void>> = []
+    for (let i = 0; i < 30; i++) {
+      registry.getSettings('private:10001').goal = '目标 ' + i
+      saves.push(registry.saveMapping())
+      // A reader racing the writes always sees a complete JSON document.
+      if (i % 5 === 4) {
+        try {
+          JSON.parse(await readFile(file, 'utf8'))
+        } catch (error) {
+          if ((error as { code?: string }).code !== 'ENOENT') throw error
+        }
+      }
+    }
+    await Promise.all(saves)
+    const mapping = JSON.parse(await readFile(file, 'utf8')) as Record<string, { goal?: string }>
+    expect(mapping['private:10001']?.goal).toBe('目标 29')
+    await registry.stop()
+  })
+})

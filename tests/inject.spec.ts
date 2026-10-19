@@ -93,7 +93,7 @@ describe('inject dry-run interception', () => {
       log: () => undefined,
     })
     const h = await makeHarness({ mediaDir: dir, trace: sink, inject: channel })
-    channel.start()
+    await channel.start()
     writeInjectLine(h.mediaDir, {
       post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002, message_id: 9001,
       message: [{ type: 'text', data: { text: '注入消息' } }], raw_message: '注入消息',
@@ -150,7 +150,7 @@ describe('inject dry-run interception', () => {
       trace: sink,
       log: (_level, message) => logs.push(message),
     })
-    channel.start()
+    await channel.start()
     await new Promise(resolve => setTimeout(resolve, 150))
     expect(channel.getStats().skippedHistory).toBe(1)
     expect(channel.getStats().consumed).toBe(0)
@@ -180,7 +180,7 @@ describe('inject dry-run interception', () => {
       log: () => undefined,
     })
     const h = await makeHarness({ mediaDir: dir, inject: channel })
-    channel.start()
+    await channel.start()
     writeInjectLine(h.mediaDir, {
       post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002, message_id: 9002,
       message: [{ type: 'text', data: { text: '真发消息' } }], raw_message: '真发消息',
@@ -210,7 +210,7 @@ describe('inject dry-run interception', () => {
       log: () => undefined,
     })
     const h = await makeHarness({ mediaDir: dir, inject: channel })
-    channel.start()
+    await channel.start()
     // ① Injected round dispatches.
     writeInjectLine(h.mediaDir, {
       post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002, message_id: 9003,
@@ -245,7 +245,7 @@ describe('inject dry-run interception', () => {
       log: () => undefined,
     })
     const h = await makeHarness({ mediaDir: dir, recorder, inject: channel })
-    channel.start()
+    await channel.start()
     writeInjectLine(h.mediaDir, {
       post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002, message_id: 9004,
       message: [{ type: 'text', data: { text: '不该被录制' } }], raw_message: '不该被录制',
