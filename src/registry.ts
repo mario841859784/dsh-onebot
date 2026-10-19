@@ -392,7 +392,10 @@ export class ChatRegistry {
     const presetId = await this.resolvePresetId(chatId)
     const meta: { cwd: string; agentPreset?: string } = { cwd }
     if (presetId !== undefined) meta.agentPreset = presetId
-    const setup = this.buildSetup(selectionRef)
+    // Mount the same preset the header records: without it joinPreset falls
+    // back to config.agentPreset, so a /preset override was written to the
+    // header but the agent still got the configured preset's tools.
+    const setup = this.buildSetup(selectionRef, presetId)
     let handle: { agent: Agent; dispose(): Promise<void> }
     try {
       handle = await this.deps.agents.create({

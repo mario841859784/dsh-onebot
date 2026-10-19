@@ -86,7 +86,9 @@ LINK_PKGS=(
 mkdir -p node_modules/@deepseek-ai
 for p in "${LINK_PKGS[@]}"; do
   target="$NODE_MODULES/@deepseek-ai/$p"
-  [ -e "$target" ] || { echo "link-host: missing host package: $target" >&2; exit 1; }
+  # dsh 0.2.1 dropped some packages (e.g. dsh-invariants); src imports none of
+  # them, so a missing one only warns — tsc still fails loudly if it is needed.
+  [ -e "$target" ] || { echo "link-host: skip missing host package: $target" >&2; continue; }
   # Remove the npm-installed copy (file or dir) before linking.
   rm -rf "node_modules/@deepseek-ai/$p"
   ln -sfn "$target" "node_modules/@deepseek-ai/$p"
