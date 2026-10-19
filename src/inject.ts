@@ -136,12 +136,20 @@ export class InjectChannel {
 
   /** Skip the lines that already existed at startup (recorded + reported),
    * then start polling. */
-  start(): void {
-    void this.skipHistory()
+  start(): Promise<void> {
+    // The history skip used to run detached — a line appended
+    // right after start() could be counted as "history" (or a tick could read
+    // before the skip set the offset). Ticks now wait for it, and callers can
+    // await start() before writing.
+    this.historyReady = this.skipHistory()
     this.stopped = false
     this.timer = setInterval(() => void this.tick(), this.intervalMs)
     this.timer.unref?.()
+    return this.historyReady
   }
+
+  /** Resolves once the startup history skip has finished. */
+  private historyReady: Promise<void> = Promise.resolve()
 
   async stop(): Promise<void> {
     this.stopped = true
@@ -170,6 +178,7 @@ export class InjectChannel {
   }
 
   private async tick(): Promise<void> {
+    await this.historyReady
     if (this.stopped) return
     let text: string
     try {

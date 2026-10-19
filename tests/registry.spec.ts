@@ -331,8 +331,9 @@ describe('ChatRegistry', () => {
     // the session header even though the plugin config names no preset.
     expect(agentPresets.resolve).toHaveBeenCalledWith('router-flash')
     expect(captured.createdMeta[0].agentPreset).toBe('router-flash')
-    // The setup joins the same composition via the default mount path.
-    expect(mountedPresets).toEqual([undefined])
+    // The setup mounts exactly the preset the header records (the id is
+    // passed through instead of relying on the default mount path).
+    expect(mountedPresets).toEqual(['router-flash'])
     await bridge.stop()
   })
 

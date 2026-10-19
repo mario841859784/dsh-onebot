@@ -505,12 +505,14 @@ describe('commands', () => {
       if (id === 'standard' || id === 'router-flash') return { id: id ?? 'standard' }
       throw new Error('unknown preset ' + id)
     })
+    const mount = vi.fn(async (_agentCtx: unknown, id?: string) => ({ id: id ?? 'standard' }))
     const h = await makeCmdHarness({
-      agentPresets: { defaultId: 'standard', resolve, mount: vi.fn(async () => ({ id: 'router-flash' })) },
+      agentPresets: { defaultId: 'standard', resolve, mount },
     })
     h.sendText('你好')
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
     expect(h.capturedMeta[0].agentPreset).toBe('standard')
+    expect(mount).toHaveBeenLastCalledWith(expect.anything(), 'standard')
 
     h.sendText('/preset')
     await vi.waitFor(() => {
@@ -526,6 +528,8 @@ describe('commands', () => {
     h.sendText('下一条')
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
     expect(h.capturedMeta[1].agentPreset).toBe('router-flash')
+    // The fresh session must mount the overridden preset, not config.agentPreset.
+    expect(mount).toHaveBeenLastCalledWith(expect.anything(), 'router-flash')
 
     h.sendText('/preset nope')
     await vi.waitFor(() => {

@@ -193,21 +193,28 @@ export class FontManager {
     this.inkChecked = true
     const family = this.cjkFamilies[0]
     if (family === undefined) return
-    const canvas = createCanvas(60, 60)
-    const ctx = canvas.getContext('2d')
-    ctx.fillStyle = '#ffffff'
-    ctx.fillRect(0, 0, 60, 60)
-    ctx.font = '40px "' + family + '"'
-    ctx.fillStyle = '#000000'
-    ctx.fillText('中', 5, 45)
-    const data = ctx.getImageData(0, 0, 60, 60).data
-    let ink = 0
-    for (let i = 0; i < data.length; i += 4) {
-      if (data[i] < 128) ink += 1
+    const render = (name: string): Uint8ClampedArray => {
+      const canvas = createCanvas(60, 60)
+      const ctx = canvas.getContext('2d')
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, 60, 60)
+      ctx.font = '40px "' + name + '"'
+      ctx.fillStyle = '#000000'
+      ctx.fillText('中', 5, 45)
+      return ctx.getImageData(0, 0, 60, 60).data
     }
-    // A real CJK glyph at 40px has well over 600 dark pixels; a hollow
-    // fallback box stays far below that (measured ~224 for a missing family).
-    if (ink < 600) {
+    // compare against a family that cannot exist instead of an
+    // absolute ink threshold. The old "< 600 dark pixels" rule was tuned on
+    // macOS; on Linux a real WenQuanYi 中 measures ~294 and every family was
+    // rejected. If the family is not really used, both renders are the same
+    // fallback glyph (or tofu) pixel for pixel.
+    const real = render(family)
+    const fallback = render('dsh-onebot-no-such-font-' + process.pid)
+    let differing = 0
+    for (let i = 0; i < real.length; i += 4) {
+      if ((real[i] < 128) !== (fallback[i] < 128)) differing += 1
+    }
+    if (differing < 40) {
       this.cjkFamilies.shift()
     }
   }
@@ -276,7 +283,9 @@ export class FontManager {
         if (!Array.isArray(faces)) continue
         for (const face of faces) {
           const name = face.postscriptName ?? ''
-          if (name.includes('SC') && !name.includes('Mono')) {
+          // Case-insensitive: newer Noto CJK builds name the face
+          // "NotoSansCJKsc-Regular" (lowercase sc), which an exact 'SC' missed.
+          if (/sc/i.test(name.replace(/^NotoSansCJK/i, '').slice(0, 2)) && !/mono/i.test(name)) {
             const subset = face.createSubset()
             for (const cp of face.characterSet) {
               subset.includeGlyph(face.glyphForCodePoint(cp))

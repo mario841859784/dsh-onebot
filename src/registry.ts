@@ -392,7 +392,10 @@ export class ChatRegistry {
     const presetId = await this.resolvePresetId(chatId)
     const meta: { cwd: string; agentPreset?: string } = { cwd }
     if (presetId !== undefined) meta.agentPreset = presetId
-    const setup = this.buildSetup(selectionRef)
+    // Mount the same preset the header records: without it joinPreset falls
+    // back to config.agentPreset, so a /preset override was written to the
+    // header but the agent still got the configured preset's tools.
+    const setup = this.buildSetup(selectionRef, presetId)
     let handle: { agent: Agent; dispose(): Promise<void> }
     try {
       handle = await this.deps.agents.create({
@@ -573,7 +576,26 @@ export class ChatRegistry {
     })
   }
 
-  async saveMapping(): Promise<void> {
+  /** Serialized mapping writes (see saveMapping). */
+  private mappingSaveChain: Promise<void> = Promise.resolve()
+  private mappingTmpCounter = 0
+
+  /**
+   * Persist the chat↔session mapping. Saves are fire-and-forget
+   * from several paths and used to run concurrently with a plain in-place
+   * writeFile — a reader (or a crash) mid-write could see a truncated file,
+   * and an older snapshot could land after a newer one. Saves now queue on
+   * one chain, each builds its snapshot when it actually runs (so the last
+   * write is always the latest state), and the file is replaced atomically
+   * (unique tmp + rename).
+   */
+  saveMapping(): Promise<void> {
+    const run = this.mappingSaveChain.then(() => this.writeMappingNow())
+    this.mappingSaveChain = run.catch(() => undefined)
+    return run
+  }
+
+  private async writeMappingNow(): Promise<void> {
     try {
       await mkdir(this.deps.config.mediaDir, { recursive: true })
       const mapping: Record<string, string | PersistedChatSettings> = {}
@@ -599,7 +621,9 @@ export class ChatRegistry {
         if (settings.interimOverride === undefined && settings.goal === undefined && (settings.workspacePath === undefined || settings.workspacePath === '')) continue
         mapping[chatId] = persistEntry(makeSessionId(sessionIdForChat(chatId)), settings.interimOverride, settings.goal, settings.workspacePath)
       }
-      await writeFile(this.mappingPath(), JSON.stringify(mapping, null, 2), 'utf8')
+      const tmp = this.mappingPath() + '.tmp-' + process.pid + '-' + (this.mappingTmpCounter++)
+      await writeFile(tmp, JSON.stringify(mapping, null, 2), 'utf8')
+      await rename(tmp, this.mappingPath())
     } catch (error) {
       this.deps.log('warn', 'mapping save failed: ' + describeError(error))
     }
