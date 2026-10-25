@@ -68,6 +68,13 @@ describe('MediaStore.downloadUrl SSRF guards (M1-A5)', () => {
       'http://[fd00::1]/x',
       'http://[fe80::1]/x',
       'http://[::ffff:127.0.0.1]/x',
+      'http://100.64.0.1/x',
+      'http://100.127.255.255/x',
+      'http://198.18.0.1/x',
+      'http://192.0.0.1/x',
+      'http://240.0.0.1/x',
+      'http://[::ffff:100.64.1.2]/x',
+      'http://[64:ff9b::7f00:1]/x',
     ]) {
       await expect(store.downloadUrl(url, '.bin'), url).rejects.toThrow(/private\/loopback address not allowed/)
     }
