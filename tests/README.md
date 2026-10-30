@@ -43,7 +43,7 @@
 | routes slash commands before the model: /stop cancels, unknown goes to the model | 需手工把 agent.status 置 'running'（chats 内省）；未知命令 fall-through + `/tmp/x` 非命令一并覆盖 |
 | blocks slash commands for non-admin users | 非管理员走 **group @-mention** 路径（私聊非管理员在 policy 层就被丢，到不了命令路由） |
 | slash /new retires the chat agent and starts a fresh session on the next message | 段 1–2 属命令路由；段 3–4（retired 文件 + 重启跳过）实属 registry round-trip，建议 PR1 时拆段归位 |
-| slash /model shows the current model and switches with provider/model | 桩挂宿主 ctx：`ctx.llm.listProviders/listModels` + `ctx.agentDefaultModel`；断言 selectionRef.current 与 saveSelection |
+| slash /model shows the current model and switches with provider/model | 桩挂宿主 ctx：`ctx.llm.listProviders/listModels` + `ctx.agentDefaultModel`；断言 agent.model.current()（dsh 0.2.2 起，原 selectionRef.current）与 saveSelection |
 | slash /workspace switches the directory for the next session | 真实第二临时目录 + `realpathSync` 归一（macOS `/var`→`/private/var`）；resetChat 联动属 registry |
 | slash /id /ver /status report the session state | /ver 读 package.json + `git rev-parse`（对工作目录敏感，离仓运行会回退 '?'） |
 | slash /goal /plan /mode set per-chat state and forward to host plan command | commands.execute 桩必须收 AbortSignal（宿主无条件读 signal.aborted）；/goal 前缀断言属入站 prefixTurn |

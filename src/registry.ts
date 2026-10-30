@@ -11,7 +11,7 @@
  * table, the outbound pipeline and the session-event links keep working.
  * @module dsh-onebot/registry
  */
-import type { Agent, AgentRegistry, AgentSetup, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentRegistry, AgentSetup, ModelSelection } from '@deepseek-ai/dsh-agent'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type { SessionId, SessionStore } from '@deepseek-ai/dsh-session'
 import { SessionId as makeSessionId } from '@deepseek-ai/dsh-session'
@@ -162,9 +162,6 @@ export interface ChatAgent {
   activeTurnRole: UserRole
   /** The last user message text actually fed to the agent (for /retry). */
   lastFollowup: string | undefined
-  /** Mutable per-agent model selection (installModelSelection-bound); the
-   * /model command swaps `.current` for the next step. */
-  selectionRef: ModelSelectionRef | undefined
 }
 
 /** The preset id a session's own record names: newest logged selection, else the creation header. */
@@ -254,32 +251,33 @@ export class ChatRegistry {
   // ------------------------------------------------------------ chat lifecycle
 
   /** C2: default-model wiring shared by the create and resume assembly paths
-   * — agent options for the registry call plus the mutable per-agent
-   * selection ref (undefined when the deployment has no default model). */
-  private modelWiring(): { agentOptions: { provider?: string; model?: string }; selectionRef: ModelSelectionRef | undefined } {
+   * — the agent options for the registry call only (the deployment default
+   * rides in as `provider`/`model`; dsh 0.2.2 carries the mutable selection
+   * itself via `agent.model`, seeded from these options). Undefined fields
+   * when the deployment has no default model. */
+  private modelWiring(): { provider?: string; model?: string } {
     const selection = this.deps.defaultModel?.()
     const agentOptions: { provider?: string; model?: string } = {}
     if (selection !== undefined) {
       agentOptions.provider = selection.provider
       agentOptions.model = selection.model
     }
-    const selectionRef = selection !== undefined
-      ? { current: selection, assembled: undefined }
-      : undefined
-    return { agentOptions, selectionRef }
+    return agentOptions
   }
 
   /** C2: the AgentSetup closure shared by the create and resume assembly
    * paths. The only difference between the callers is the preset: a resumed
    * session rejoins the preset it recorded itself; a fresh create reuses the
    * config/default resolution already recorded in its header meta. */
-  private buildSetup(selectionRef: ModelSelectionRef | undefined, recordedPreset?: string): AgentSetup {
+  private buildSetup(recordedPreset?: string): AgentSetup {
     return async agentCtx => {
       this.deps.installChannelScope(agentCtx)
       await this.joinPreset(agentCtx, recordedPreset)
-      if (selectionRef !== undefined) {
-        installModelSelection(agentCtx, selectionRef)
-      }
+      // dsh 0.2.2: host-style unconditional install (single-arg — it only
+      // wires the model-switch notice listener; the selection itself lives
+      // on agent.model). Ignoring the returned disposer matches the host
+      // callers (dsh-api-session-controller/dsh-headless/dsh-acp).
+      installModelSelection(agentCtx)
     }
   }
 
@@ -291,7 +289,6 @@ export class ChatRegistry {
   private createChatAgent(
     chatId: ChatId,
     handle: { agent: Agent; dispose(): Promise<void> },
-    selectionRef: ModelSelectionRef | undefined,
     nickname: string,
   ): ChatAgent {
     return {
@@ -313,7 +310,6 @@ export class ChatRegistry {
       pendingTurnRoles: [],
       activeTurnRole: 'member',
       lastFollowup: undefined,
-      selectionRef,
     }
   }
 
@@ -387,12 +383,12 @@ export class ChatRegistry {
       this.retireSession(sessionId)
       sessionId = this.freshSessionId(chatId)
     }
-    const { agentOptions, selectionRef } = this.modelWiring()
+    const agentOptions = this.modelWiring()
     const cwd = this.effectiveCwd(chatId)
     const presetId = await this.resolvePresetId(chatId)
     const meta: { cwd: string; agentPreset?: string } = { cwd }
     if (presetId !== undefined) meta.agentPreset = presetId
-    const setup = this.buildSetup(selectionRef)
+    const setup = this.buildSetup()
     let handle: { agent: Agent; dispose(): Promise<void> }
     try {
       handle = await this.deps.agents.create({
@@ -421,7 +417,7 @@ export class ChatRegistry {
     // session events route to this chat and the mapping persists the truth.
     const actualSessionId = handle.agent.session.id
     await this.attachToWorkspace(actualSessionId, handle.agent.session.header?.cwd)
-    const chat = this.createChatAgent(chatId, handle, selectionRef, nickname)
+    const chat = this.createChatAgent(chatId, handle, nickname)
     try {
       await handle.agent.whenIdle()
     } catch (error) {
@@ -508,12 +504,12 @@ export class ChatRegistry {
   /** Resume one persisted chat from its recorded session id (shared by
    * loadMapping and the B8c evicted-chat resume). */
   private async resumeChat(chatId: ChatId, sessionId: string): Promise<ChatAgent> {
-    const { agentOptions, selectionRef } = this.modelWiring()
+    const agentOptions = this.modelWiring()
     const recordedPreset = await this.recordedPresetFor(makeSessionId(sessionId))
     const handle = await this.deps.agents.resume({
       resumeSessionId: makeSessionId(sessionId),
       agentOptions,
-      setup: this.buildSetup(selectionRef, recordedPreset),
+      setup: this.buildSetup(recordedPreset),
     })
     await this.attachToWorkspace(handle.agent.session.id, handle.agent.session.header?.cwd)
     // /workspace persistence across restarts: the per-chat override map is
@@ -526,7 +522,7 @@ export class ChatRegistry {
       this.getSettings(chatId).workspacePath = headerCwd
       this.deps.log('debug', 'workspace override restored for ' + chatId + ': ' + headerCwd)
     }
-    const chat = this.createChatAgent(chatId, handle, selectionRef, '')
+    const chat = this.createChatAgent(chatId, handle, '')
     try {
       await handle.agent.whenIdle()
     } catch (error) {

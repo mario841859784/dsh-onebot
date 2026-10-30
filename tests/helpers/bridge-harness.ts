@@ -22,6 +22,22 @@ import { TraceSink } from '../../src/trace.js'
 import { InboundRecorder } from '../../src/record.js'
 import { InjectChannel } from '../../src/inject.js'
 
+/** dsh 0.2.2 host-faithful Agent.model stub: current() returns the last
+ * recorded selection, else the agentOptions fallback (provider/model), else
+ * undefined; select() records the selection — mirroring the durable
+ * model/selection event the host's AgentModel appends. */
+function makeFakeModel(agentOptions?: { provider?: string; model?: string }) {
+  const selections: Array<{ provider: string; model: string }> = []
+  return {
+    current: () => selections[selections.length - 1]
+      ?? (agentOptions?.provider !== undefined && agentOptions?.model !== undefined
+        ? { provider: agentOptions.provider, model: agentOptions.model }
+        : undefined),
+    select: (next: { provider: string; model: string }) => { selections.push({ provider: next.provider, model: next.model }) },
+    selections,
+  }
+}
+
 /** A fake agent handle for the bridge. */
 export function makeFakeAgents(
   sessionIds: string[],
@@ -30,7 +46,7 @@ export function makeFakeAgents(
 ) {
   const disposed: string[] = []
   const agents = {
-    create: vi.fn(async (options: { sessionId: string; meta?: { cwd?: string; agentPreset?: string }; setup?: (agentCtx: unknown) => unknown }) => {
+    create: vi.fn(async (options: { sessionId: string; meta?: { cwd?: string; agentPreset?: string }; agentOptions?: { provider?: string; model?: string }; setup?: (agentCtx: unknown) => unknown }) => {
       if (opts?.createDelayMs !== undefined) await new Promise(resolve => setTimeout(resolve, opts.createDelayMs))
       const sessionId = String(options.sessionId)
       sessionIds.push(sessionId)
@@ -41,6 +57,7 @@ export function makeFakeAgents(
       const agent = {
         session: { id: sessionId, seq: 0, header: { cwd: options.meta?.cwd ?? process.cwd() } },
         status: 'idle',
+        model: makeFakeModel(options.agentOptions),
         cancel: () => { agent.status = 'idle' },
         followup: (message: { content: Array<{ type: string; text?: string }> }) => {
           const text = message.content.map(b => b.text ?? '').join('')
@@ -66,13 +83,14 @@ export function makeFakeAgents(
       return { agent, dispose: vi.fn(async () => { disposed.push(sessionId) }) }
     }),
     disposed,
-    resume: vi.fn(async (options: { resumeSessionId: string; setup?: (agentCtx: unknown) => unknown }) => {
+    resume: vi.fn(async (options: { resumeSessionId: string; agentOptions?: { provider?: string; model?: string }; setup?: (agentCtx: unknown) => unknown }) => {
       if (opts?.resumeOk !== true) throw new Error('not persisted')
       const sessionId = String(options.resumeSessionId)
       sessionIds.push(sessionId)
       const agent = {
         session: { id: sessionId, seq: 1, header: { cwd: process.cwd() } },
         status: 'idle',
+        model: makeFakeModel(options.agentOptions),
         cancel: () => { agent.status = 'idle' },
         followup: (message: { content: Array<{ type: string; text?: string }> }) => {
           const text = message.content.map(b => b.text ?? '').join('')

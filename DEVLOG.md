@@ -900,3 +900,12 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **清单同步**：package.json version 0.9.6→0.9.7；dsh.plugin.json 同步 0.9.7；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.7（it 描述串 + expect 两行，仿 0.9.6 先例）；package-lock.json 沿用既有惯例不动。
 - **发布面收口**：commit → push origin main → tag `v0.9.7` → GitHub Release → npm publish → npmmirror 同步。宿主进程未重启。
 
+
+## 2026-10-30 适配宿主 0.2.2-alpha.2：ModelSelectionRef 移除改用 agent.model 门面 + engines 补 0.2.2 预发段（T9）
+
+- **背景**：宿主 node_modules 切至 dsh-agent 0.2.2-alpha.2 后，`ModelSelectionRef` 类型已删除、`installModelSelection` 单参化（仅装 model-switch notice 监听），选择状态改由 Agent 公开门面 `agent.model`（`current()`/`select()`，select 即 append 持久 `model/selection` 事件）+ `modelSelection` 投影承载；tsc 自 T8 起报 3 个既有错误（src/commands.ts:9、src/registry.ts:14 引用已删类型，src/registry.ts:281 TS2554）。
+- **改法（对齐宿主正规用法，dsh-api-session-controller/lib/index.js:715/:845 同款）**：ChatAgent 删除 `selectionRef` 字段与 modelWiring 的 ref 装配；/model、/status 的当前模型读法改为 `chat?.agent.model.current() ?? safeDefaultModel(ctx)`；裸切换写法改为 `chat.agent.model.select(next)`，守卫 `chat !== undefined && chat.agent.model.current() !== undefined` 与旧 `selectionRef !== undefined` 语义等价（有部署默认→恒可切，无默认→no-op 仍回复成功）。`installModelSelection(agentCtx)` 改为无条件安装（宿主三处调用同款，忽略返回 disposer）；部署默认模型仍走 agentOptions.provider/model 直传（不 append 初始事件，与宿主 native 会话一致）。--default 路径零改动。
+- **已知有意差异（M2-C5a 语义不变的部分）**：裸切换现通过 `model/selection` 事件持久化进 session 日志，重启 resume 后保留（旧实现为内存态、重启丢失恢复为部署默认）；选择仍严格 session 级，任何路径都不写部署默认。resume 后投影 lastUsed（上一次实际路由）优先于部署默认，系宿主投影语义。
+- **engines/peer 补段**：package.json engines.dsh、peerDependencies `@deepseek-ai/dsh-agent`、dsh.plugin.json engines.dsh 均追加 `|| >=0.2.2-0 <0.2.3-0`。宿主 node_modules/semver 实测（0.2.2-alpha.2 运行环境）：现状 ranges 对 0.2.2-alpha.2 = false（prerelease 同元组规则）；补段后 0.2.2-alpha.2/0.2.2/0.2.1-rc.3/0.2.1/0.2.0 全 true，0.3.0-alpha.1/0.2.3-alpha.1 保持 false 不误纳；peer 其余版本判定逐项不变。
+- **验证**：`tsc -p tsconfig.json --noEmit` 0 错误（0.2.2-alpha.2 types 环境）；全量 vitest 40 文件/625 用例 624 过，唯一失败 tests/deferred.spec.ts「不确定结果（动作超时）」为 T8 条目已记载的并行负载时序 flake（失败项逐轮不同），隔离重跑 `--maxWorkers=1` 26/26 全绿，按 0.9.3/0.9.4/T8 同口径处理；改动直接涉及的 commands/bridge/session-switch 等文件全量内均绿。
+- **边界**：src/registry.ts、src/commands.ts、三个 range 串、tests 五文件（bridge-harness 补宿主仿真 model 桩、commands.spec 断言改 agent.model.current()、bridge.spec M2-C2 field snapshot 移除 selectionRef 行、session-switch fake 补 model、tests/README.md 断言说明同步）+ DEVLOG；未发版未 bump（版本号收口由维护者决定）；lib/ 产物未触碰，发版时统一构建；package-lock.json 未动。注意：本次适配后插件运行面要求宿主 dsh-agent ≥ 0.2.2-alpha.2（agent.model 门面），engines/peer 保留的旧版本段仅为既有声明沿用，未对 0.2.1-rc.3 等旧宿主做运行验证。

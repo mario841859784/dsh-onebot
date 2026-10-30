@@ -44,6 +44,17 @@ function recordSwitchableOf(r: ChatRegistry): (chatId: string, id: string) => vo
 function makeDirectAgents(opts?: { failResumeIds?: string[] }) {
   const created: string[] = []
   const resumed: string[] = []
+  // dsh 0.2.2: /status reads agent.model.current(); the stub mirrors the
+  // host semantics (recorded selection ?? agentOptions fallback ?? undefined).
+  const makeModel = (agentOptions?: { provider?: string; model?: string }) => {
+    let recorded: { provider: string; model: string } | undefined
+    return {
+      current: () => recorded ?? (agentOptions?.provider !== undefined && agentOptions?.model !== undefined
+        ? { provider: agentOptions.provider, model: agentOptions.model }
+        : undefined),
+      select: (next: { provider: string; model: string }) => { recorded = { provider: next.provider, model: next.model } },
+    }
+  }
   const agents = {
     create: vi.fn(async (options: { sessionId: string; meta?: { cwd?: string } }) => {
       const id = String(options.sessionId)
@@ -52,6 +63,7 @@ function makeDirectAgents(opts?: { failResumeIds?: string[] }) {
         agent: {
           session: { id, seq: 0, header: { cwd: options.meta?.cwd ?? process.cwd() } },
           status: 'idle',
+          model: makeModel(),
           cancel: () => undefined,
           followup: () => undefined,
           steer: () => undefined,
@@ -68,6 +80,7 @@ function makeDirectAgents(opts?: { failResumeIds?: string[] }) {
         agent: {
           session: { id, seq: 1, header: { cwd: process.cwd() } },
           status: 'idle',
+          model: makeModel(),
           cancel: () => undefined,
           followup: () => undefined,
           steer: () => undefined,

@@ -6,7 +6,7 @@
  * generated from the table (snapshot-gated in tests/commands.spec.ts).
  * @module dsh-onebot/commands
  */
-import type { Agent, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { Agent, ModelSelection } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { SessionId as makeSessionId } from '@deepseek-ai/dsh-session'
 import { execFileSync } from 'node:child_process'
@@ -36,7 +36,6 @@ export interface CommandChatView {
   lastNickname: string
   loopPending: string | null
   loopBuffer: Array<{ id: string; text: string; sentAt: number }>
-  selectionRef: ModelSelectionRef | undefined
 }
 
 /** The bridge capabilities the command surface may touch. Deliberately
@@ -396,12 +395,12 @@ async function resolveNumericSelection(
 }
 
 /** /model: show the current model (+ discoverable providers), or switch.
- * A bare switch retargets ONLY this chat's selection ref (M2-C5a: it no
+ * A bare switch retargets ONLY this chat's agent selection (M2-C5a: it no
  * longer rewrites the deployment default — that is the explicit --default
  * form's job). */
 async function handleModelCommand(ctx: CommandContext, chatId: ChatId, arg: string): Promise<void> {
   const chat = ctx.getChat(chatId)
-  const current = chat?.selectionRef?.current
+  const current = chat?.agent.model.current()
     ?? safeDefaultModel(ctx)
   if (arg === '') {
     const cur = current !== undefined ? current.provider + '/' + current.model : '（未设置）'
@@ -486,10 +485,14 @@ async function handleModelCommand(ctx: CommandContext, chatId: ChatId, arg: stri
     await ctx.sendToChat(chatId, `✅ 已修改部署默认模型：${provider}/${model}（下一步生效）`)
     return
   }
-  // Bare switch: retarget only this chat's selection ref — never the global
-  // default (M2-C5a; the old silent saveSelection here was a scope leak).
-  if (chat?.selectionRef !== undefined) {
-    chat.selectionRef.current = next
+  // Bare switch: record the selection on this chat's agent only — never the
+  // global default (M2-C5a; the old silent saveSelection here was a scope
+  // leak). dsh 0.2.2: `agent.model.select()` appends a durable model/selection
+  // event (the host facade used by dsh-api-session-controller); the guard
+  // keeps the old semantics where a deployment without a default model had
+  // no selection ref and the switch stayed a silent no-op.
+  if (chat !== undefined && chat.agent.model.current() !== undefined) {
+    chat.agent.model.select(next)
   }
   await ctx.sendToChat(chatId, `✅ 已切换当前会话模型：${provider}/${model}（下一步生效）`)
 }
@@ -626,7 +629,7 @@ async function handleStatusCommand(ctx: CommandContext, chatId: ChatId): Promise
     const resolved = await ctx.resolvePresetId(chatId)
     preset = (resolved ?? undefined) !== undefined ? (resolved ?? '') + '（默认/配置）' : '（未记录）'
   }
-  const current = chat?.selectionRef?.current ?? safeDefaultModel(ctx)
+  const current = chat?.agent.model.current() ?? safeDefaultModel(ctx)
   const model = current !== undefined ? current.provider + '/' + current.model : '（未设置）'
   const cwd = ctx.effectiveCwd(chatId)
   let wsSuffix = ''

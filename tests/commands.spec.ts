@@ -120,7 +120,7 @@ describe('commands', () => {
     }
     h.sendText('你好')
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
-    const chat = (h.bridge as unknown as { chats: Map<string, { agent: { session: { id: string } }, selectionRef: { current: { provider: string; model: string } } | undefined }> }).chats.get('private:10001')!
+    const chat = (h.bridge as unknown as { chats: Map<string, { agent: { session: { id: string }, model: { current: () => { provider: string; model: string } | undefined } } }> }).chats.get('private:10001')!
 
     // 1. /model without args shows the current model and provider catalog.
     h.sendText('/model')
@@ -134,7 +134,7 @@ describe('commands', () => {
     await vi.waitFor(() => {
       expect(h.outbound.some(f => JSON.stringify(f.params).includes('已切换当前会话模型：deepseek/deepseek-reasoner'))).toBe(true)
     })
-    expect(chat.selectionRef?.current).toMatchObject({ provider: 'deepseek', model: 'deepseek-reasoner' })
+    expect(chat.agent.model.current()).toMatchObject({ provider: 'deepseek', model: 'deepseek-reasoner' })
     expect(saveSelection).not.toHaveBeenCalled()
     // 3. Unknown model for a provider is rejected with the catalog.
     h.sendText('/model deepseek no-such-model')
@@ -157,14 +157,14 @@ describe('commands', () => {
     })
     h.sendText('你好')
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
-    const chat = (h.bridge as unknown as { chats: Map<string, { selectionRef: { current: { provider: string; model: string } } | undefined }> }).chats.get('private:10001')!
+    const chat = (h.bridge as unknown as { chats: Map<string, { agent: { model: { current: () => { provider: string; model: string } | undefined } } }> }).chats.get('private:10001')!
 
     h.sendText('/model --default deepseek deepseek-reasoner')
     await vi.waitFor(() => {
       expect(h.outbound.some(f => JSON.stringify(f.params).includes('已修改部署默认模型：deepseek/deepseek-reasoner'))).toBe(true)
     })
     expect(saveSelection).toHaveBeenCalledWith({ provider: 'deepseek', model: 'deepseek-reasoner' })
-    expect(chat.selectionRef?.current).toMatchObject({ provider: 'deepseek', model: 'deepseek-chat' })
+    expect(chat.agent.model.current()).toMatchObject({ provider: 'deepseek', model: 'deepseek-chat' })
 
     h.client.close()
     await h.bridge.stop()
@@ -1019,7 +1019,7 @@ describe('commands · serial selection (R2)', () => {
     }
     h.sendText('你好')
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
-    const chat = (h.bridge as unknown as { chats: Map<string, { selectionRef: { current: { provider: string; model: string } } | undefined }> }).chats.get('private:10001')!
+    const chat = (h.bridge as unknown as { chats: Map<string, { agent: { model: { current: () => { provider: string; model: string } | undefined } } }> }).chats.get('private:10001')!
 
     // Level 0 → 1: the bare form numbers the providers and snapshots them.
     h.sendText('/model')
@@ -1048,7 +1048,7 @@ describe('commands · serial selection (R2)', () => {
     await vi.waitFor(() => {
       expect(h.outbound.some(f => JSON.stringify(f.params).includes('已切换当前会话模型：openai/gpt-4o'))).toBe(true)
     })
-    expect(chat.selectionRef?.current).toMatchObject({ provider: 'openai', model: 'gpt-4o' })
+    expect(chat.agent.model.current()).toMatchObject({ provider: 'openai', model: 'gpt-4o' })
     expect(saveSelection).not.toHaveBeenCalled()
     expect(pendingOf(h)).toBeUndefined()
 
@@ -1058,7 +1058,7 @@ describe('commands · serial selection (R2)', () => {
       expect(h.outbound.some(f => JSON.stringify(f.params).includes('已修改部署默认模型：deepseek/deepseek-reasoner'))).toBe(true)
     })
     expect(saveSelection).toHaveBeenCalledWith({ provider: 'deepseek', model: 'deepseek-reasoner' })
-    expect(chat.selectionRef?.current).toMatchObject({ provider: 'openai', model: 'gpt-4o' })
+    expect(chat.agent.model.current()).toMatchObject({ provider: 'openai', model: 'gpt-4o' })
 
     h.client.close()
     await h.bridge.stop()
