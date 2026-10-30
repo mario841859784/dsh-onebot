@@ -909,3 +909,11 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **engines/peer 补段**：package.json engines.dsh、peerDependencies `@deepseek-ai/dsh-agent`、dsh.plugin.json engines.dsh 均追加 `|| >=0.2.2-0 <0.2.3-0`。宿主 node_modules/semver 实测（0.2.2-alpha.2 运行环境）：现状 ranges 对 0.2.2-alpha.2 = false（prerelease 同元组规则）；补段后 0.2.2-alpha.2/0.2.2/0.2.1-rc.3/0.2.1/0.2.0 全 true，0.3.0-alpha.1/0.2.3-alpha.1 保持 false 不误纳；peer 其余版本判定逐项不变。
 - **验证**：`tsc -p tsconfig.json --noEmit` 0 错误（0.2.2-alpha.2 types 环境）；全量 vitest 40 文件/625 用例 624 过，唯一失败 tests/deferred.spec.ts「不确定结果（动作超时）」为 T8 条目已记载的并行负载时序 flake（失败项逐轮不同），隔离重跑 `--maxWorkers=1` 26/26 全绿，按 0.9.3/0.9.4/T8 同口径处理；改动直接涉及的 commands/bridge/session-switch 等文件全量内均绿。
 - **边界**：src/registry.ts、src/commands.ts、三个 range 串、tests 五文件（bridge-harness 补宿主仿真 model 桩、commands.spec 断言改 agent.model.current()、bridge.spec M2-C2 field snapshot 移除 selectionRef 行、session-switch fake 补 model、tests/README.md 断言说明同步）+ DEVLOG；未发版未 bump（版本号收口由维护者决定）；lib/ 产物未触碰，发版时统一构建；package-lock.json 未动。注意：本次适配后插件运行面要求宿主 dsh-agent ≥ 0.2.2-alpha.2（agent.model 门面），engines/peer 保留的旧版本段仅为既有声明沿用，未对 0.2.1-rc.3 等旧宿主做运行验证。
+
+## 2026-10-30 发版 0.9.8（DSH 0.2.2-alpha.2 适配收口，T10）
+
+- **改动**：本次发版为「实质发版」，与 0.9.6/0.9.7 的元数据发版不同，**lib/ 产物须重建入库**。随本发版出版本号的是已入库的 commit `83a6055`（T9：适配宿主 0.2.2-alpha.2——`ModelSelectionRef` 移除改用 `agent.model` 门面 `current()`/`select()`，/model、/status 当前模型读法与裸切换写法迁移，`installModelSelection` 无条件安装；package.json engines.dsh、peerDependencies `@deepseek-ai/dsh-agent`、dsh.plugin.json engines.dsh 均追加 `|| >=0.2.2-0 <0.2.3-0`）。lib/ 相对上一发版的差异：bridge/commands/cq/inbound/media/registry/trace 等编译产物 + 对应 types 声明同步重建（inbound +92/-x、commands、registry 等为 T9 适配的编译体现），即 0.9.2 时代 lib 基线后的首个运行时产物更新。
+- **说明（发布物边界）**：lib/ 随 npm 包 `files` 白名单（lib + cordis.patch.yml）分发；安装用户运行行为即 T9 适配后行为，要求宿主 dsh-agent ≥ 0.2.2-alpha.2。
+- **验证**：`npm run build`（scripts/build.sh，tsc 5.9.3，宿主 node_modules 0.2.2-alpha.2）重建 lib/ 成功；`npx tsc -p tsconfig.json --noEmit` 0 错误；全量 vitest 40 文件 / 625 用例一次全绿（本轮无 flake）；lib import 冒烟（node ESM import lib/index.js）可加载、导出 8 个顶层符号非空。
+- **清单同步**：package.json version 0.9.7→0.9.8；dsh.plugin.json 同步 0.9.8；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.8（it 描述串 + expect 两行，仿 0.9.3–0.9.7 先例）；package-lock.json 沿用既有惯例不动。
+- **发布面收口**：commit（含 lib/）→ push origin main → tag `v0.9.8` → GitHub Release → npm publish → npmmirror 验证。宿主进程未重启。

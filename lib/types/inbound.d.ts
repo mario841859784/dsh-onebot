@@ -42,6 +42,15 @@ export interface NormalizedInbound {
      * reaches the prefix, the boundary attribute or lastNickname. */
     nickname: string;
 }
+/** The get_msg fields needed to verify a reply author and expand its text. */
+export interface QuotedMessageData {
+    message?: unknown;
+    raw_message?: string;
+    sender?: {
+        user_id?: string | number;
+        nickname?: string;
+    };
+}
 /**
  * Reduce one raw OneBot 11 event to the neutral inbound shape, or null when
  * the event is not a processable chat message (notice/recall, meta, unknown
@@ -100,8 +109,9 @@ export interface InboundContext {
     tryHandleCommand(chatId: ChatId, text: string, userId: string, nickname?: string): Promise<boolean>;
     /** Message body assembly (bridge facade: overridable, see the pipeline-order test). */
     buildBody(text: string, media: MediaRef[], chatId: ChatId): Promise<string>;
-    /** Quote (reply) expansion (bridge facade: overridable, see the pipeline-order test). */
-    expandQuote(messageId: string): Promise<string>;
+    /** Quote expansion via the overridable bridge facade; a verified response
+     * is reused for reply-only triggers instead of querying the same id twice. */
+    expandQuote(messageId: string, verifiedData?: QuotedMessageData): Promise<string>;
     /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes). */
     dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string): Promise<void>;
     /** T2 (P1): busy-turn policy seam — invoked for every non-command message
@@ -184,8 +194,13 @@ export declare class InboundPipeline {
      * into the chat's turn (steer at the running turn's nearest step boundary,
      * or a new turn when the agent is idle). Failure keeps [语音] as final. */
     private transcribeLater;
-    /** Expand a quoted (reply) message into [引用] text via get_msg. */
-    expandQuote(messageId: string): Promise<string>;
+    /**
+     * Expand a quote through get_msg, or reuse its already verified response.
+     * @param messageId - quoted OneBot message id.
+     * @param verifiedData - optional response fetched by this inbound message's gate.
+     * @returns the existing [引用] text, or an empty string when expansion fails.
+     */
+    expandQuote(messageId: string, verifiedData?: QuotedMessageData): Promise<string>;
     /**
      * Fetch an inbound QQ file to a local path. NapCat's get_file may return
      * container-internal paths unreachable from this host, so:

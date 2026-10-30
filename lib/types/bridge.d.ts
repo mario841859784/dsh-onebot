@@ -435,7 +435,7 @@ export declare class ChatBridge {
      * can lag the host driver and is deliberately NOT consulted.
      */
     private interceptBusyTurn;
-    /** Expand a quoted (reply) message into [引用] text via get_msg. */
+    /** Expand a quote, forwarding a verified response without repeating get_msg. */
     private expandQuote;
     /** Send one message to a chat and return its message id. */
     private sendMsg;

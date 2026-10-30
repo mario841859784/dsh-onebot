@@ -6,7 +6,7 @@
  * generated from the table (snapshot-gated in tests/commands.spec.ts).
  * @module dsh-onebot/commands
  */
-import type { Agent, ModelSelectionRef } from '@deepseek-ai/dsh-agent';
+import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { SessionId } from '@deepseek-ai/dsh-session';
 import type { OneBotConnection } from './connection.js';
 import type { MediaRef } from './cq.js';
@@ -29,7 +29,6 @@ export interface CommandChatView {
         text: string;
         sentAt: number;
     }>;
-    selectionRef: ModelSelectionRef | undefined;
 }
 /** The bridge capabilities the command surface may touch. Deliberately
  * narrower than BridgeDeps: handlers get the outbound send path, the

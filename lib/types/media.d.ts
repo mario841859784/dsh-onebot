@@ -89,6 +89,19 @@ export declare function extForUrl(url: string, kind: 'image' | 'voice' | 'video'
  * is kept — same rule as extForUrl.
  */
 export declare function extForInboundName(name: string): string;
+/**
+ * Image extension from the file's magic bytes; undefined when the header is
+ * not a JPEG/PNG/GIF/WebP. QQ download URLs carry no extension in the path,
+ * so extForUrl falls back to '.jpg' for every inbound image and GIF/PNG/WebP
+ * stickers land as .jpg — the host's read_image then refuses the file
+ * because its content does not match the extension.
+ */
+export declare function sniffImageExt(head: Buffer): string | undefined;
+/**
+ * Rename a downloaded image so its extension matches its content (see
+ * sniffImageExt). Unknown formats and any I/O error keep the original path.
+ */
+export declare function matchImageExt(path: string): Promise<string>;
 /** Default extension per media kind. */
 export declare function extForKind(kind: 'image' | 'voice' | 'video' | 'file'): string;
 /**

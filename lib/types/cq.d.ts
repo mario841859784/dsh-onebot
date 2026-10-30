@@ -42,17 +42,23 @@ export declare function cqUnescape(value: string): string;
 /** Map a QQ face id to an emoji, with a fallback for unknown ids. */
 export declare function faceToEmoji(id: string): string;
 /**
- * Detect whether the message mentions the bot. Prefers the segment array;
- * falls back to CQ-string scanning. @-detection stays fail-closed: with an
- * unknown bot id and no configured botQQ, group messages are never treated
- * as mentioning us. Reply segments count only when the replied-to user is
- * determinably the bot itself (M1-A8); an undeterminable target (segment
- * carries no qq) falls back to the previous always-mention behavior — a
- * deliberate fail-open so tightening the gate never breaks existing setups.
+ * Detect explicit @bot / @all only; a reply segment never implies an @.
  * @param segments - segment array (may be undefined for CQ-only payloads).
  * @param raw - raw CQ string.
  * @param selfId - learned bot QQ id ('' when unknown).
  * @param botQQ - configured bot QQ id ('' when unset).
+ * @returns whether this message explicitly mentions the known bot.
+ */
+export declare function detectExplicitMention(segments: OneBotSegment[] | undefined, raw: string, selfId: string, botQQ: string): boolean;
+/**
+ * Detect explicit mentions or a reply with a known bot author, fail-closed.
+ * A standard OneBot reply contains only an id; the inbound group gate must
+ * resolve its author through get_msg before allowing a reply-only trigger.
+ * @param segments - preferred OneBot segment array.
+ * @param raw - CQ string fallback.
+ * @param selfId - learned bot QQ id ('' when unknown).
+ * @param botQQ - configured fallback bot QQ id.
+ * @returns false for replies whose author cannot be determined synchronously.
  */
 export declare function detectMention(segments: OneBotSegment[] | undefined, raw: string, selfId: string, botQQ: string): boolean;
 /** Split a raw CQ string into segments; used only when no segment array exists. */

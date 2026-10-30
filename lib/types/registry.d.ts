@@ -11,7 +11,7 @@
  * table, the outbound pipeline and the session-event links keep working.
  * @module dsh-onebot/registry
  */
-import type { Agent, AgentRegistry, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent';
+import type { Agent, AgentRegistry, ModelSelection } from '@deepseek-ai/dsh-agent';
 import type { SessionId, SessionStore } from '@deepseek-ai/dsh-session';
 import type { Context } from '@deepseek-ai/cordis';
 import type { MediaRef } from './cq.js';
@@ -126,9 +126,6 @@ export interface ChatAgent {
     activeTurnRole: UserRole;
     /** The last user message text actually fed to the agent (for /retry). */
     lastFollowup: string | undefined;
-    /** Mutable per-agent model selection (installModelSelection-bound); the
-     * /model command swaps `.current` for the next step. */
-    selectionRef: ModelSelectionRef | undefined;
 }
 /** The preset id a session's own record names: newest logged selection, else the creation header. */
 export declare function resolveRecordedPreset(inspection: {
@@ -200,8 +197,10 @@ export declare class ChatRegistry {
     /** The (lazy-created) settings entry for one chat. */
     getSettings(chatId: ChatId): ChatSettings;
     /** C2: default-model wiring shared by the create and resume assembly paths
-     * — agent options for the registry call plus the mutable per-agent
-     * selection ref (undefined when the deployment has no default model). */
+     * — the agent options for the registry call only (the deployment default
+     * rides in as `provider`/`model`; dsh 0.2.2 carries the mutable selection
+     * itself via `agent.model`, seeded from these options). Undefined fields
+     * when the deployment has no default model. */
     private modelWiring;
     /** C2: the AgentSetup closure shared by the create and resume assembly
      * paths. The only difference between the callers is the preset: a resumed
