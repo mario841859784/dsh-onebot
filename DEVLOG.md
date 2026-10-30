@@ -892,3 +892,11 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **测试与编译**：新增 34 项 ID/兼容性测试，引用门控套件由 31 项增至 65 项，并在已有拒绝矩阵中断言细分 trace 原因。`vitest run tests/cq.spec.ts tests/reply-mention.spec.ts tests/trace.spec.ts tests/inbound.spec.ts tests/record-replay.spec.ts tests/steer-queue.spec.ts --maxWorkers=1` 为 6 文件 / 148 项全部通过；桥接 `inbound pipeline order` 定向测试 1 项通过（其余 15 项因筛选未执行）。`tsc -p tsconfig.json` 默认目录编译通过。本轮未重跑全量，上节全量对照是 10 月 29 日版本的记录；未调用真实 QQ/LLM。
 - **产物边界**：验证编译后，将受跟踪的 `lib/` 还原为原 PR 基线 `bc3aa23`；分支相对该基线的 `lib/` 最终差异为空，由维护者发版构建统一生成。需要从源码运行本修复时先构建。保留原提交，使用追加提交承接评审修改。
 
+## 2026-10-30 发版 0.9.7（peer schemastery 版本带修复，T8）
+
+- **改动**：本次发版为「元数据发版」，**无运行时代码变更**（src/ 零改动、lib/ 产物零改动）。随本发版出版本号的是已入库的 commit `0166a93`（peerDependencies `@deepseek-ai/schemastery` 由 rc 版本带 `>=0.1.5-rc.1 <… <0.3.0-0` 改为上游 `^3.18.0 || >=3.18.6-alpha.1 <3.19.0-0`，修复宿主 semver 校验警告）。
+- **说明（发布物边界）**：peerDependencies 属 npm 包元数据，随 `npm publish` 分发；安装用户运行行为与 0.9.6 完全一致。
+- **验证**：全量 vitest 40 文件 / 625 用例，多轮运行 623–625 通过；失败项逐轮不同（tests/interim.spec.ts、tests/deferred.spec.ts、tests/inject.spec.ts 各出现 1–2 项，均为并行负载下的时序 flake，其中 inject.spec.ts 为 0.9.6 基线已知既有 flake，与本次改动无关），三个涉事文件隔离重跑（`--maxWorkers=1`）3 文件 / 48 用例全绿，按 0.9.3/0.9.4 同口径处理。`npx tsc -p tsconfig.json --noEmit` 在当前宿主 node_modules（0.2.2-alpha.2，今日 15:37 起 symlink）环境下报 3 个与本次无关的既有错误：`src/commands.ts:9`、`src/registry.ts:14` 引用宿主 dsh-agent 已移除的 `ModelSelectionRef`，`src/registry.ts:281` `installModelSelection` 已单参化（TS2554）——系宿主由 0.2.1-rc.3 切换至 0.2.2-alpha.2 后的 API 漂移，src 自 0.9.2 时代未变且本次零改动；0.9.6 先例的 tsc 0 错误基线对应 rc.3 环境。lib 产物 sha256 与发版前逐字节一致（零改动）。
+- **清单同步**：package.json version 0.9.6→0.9.7；dsh.plugin.json 同步 0.9.7；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.7（it 描述串 + expect 两行，仿 0.9.6 先例）；package-lock.json 沿用既有惯例不动。
+- **发布面收口**：commit → push origin main → tag `v0.9.7` → GitHub Release → npm publish → npmmirror 同步。宿主进程未重启。
+

@@ -1,6 +1,6 @@
 {
   "id": "dsh-onebot",
-  "version": "0.9.6",
+  "version": "0.9.7",
   "main": "./lib/index.js",
   "description": "QQ bot channel for dsh via OneBot 11 (NapCat et al.): reverse/forward WebSocket, DM+group with allowlists and mention gating, image/voice inbound, sentence-split long replies, [[qq_forward]], whitelisted NapCat API proxy",
   "engines": { "dsh": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0 || >=0.2.1-0 <0.3.0-0" },
