@@ -72,6 +72,8 @@ describe('MediaStore.downloadUrl SSRF guards (M1-A5)', () => {
       'http://100.127.255.255/x',
       'http://198.18.0.1/x',
       'http://192.0.0.1/x',
+      'http://192.0.2.1/x',
+      'http://[64:ff9b:1::7f00:1]/x',
       'http://240.0.0.1/x',
       'http://[::ffff:100.64.1.2]/x',
       'http://[64:ff9b::7f00:1]/x',
@@ -81,12 +83,18 @@ describe('MediaStore.downloadUrl SSRF guards (M1-A5)', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
-  it('does not block the rest of 192.0.0.0/16', async () => {
-    mockedLookup.mockResolvedValue([{ address: '192.0.1.1', family: 4 }])
-    const fetchSpy = vi.fn(async () => new Response('x', { status: 200 }))
-    vi.stubGlobal('fetch', fetchSpy)
-    await expect(store.downloadUrl('http://192.0.1.1/x', '.bin')).resolves.toBeTruthy()
-    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  it('does not block addresses outside the reserved subnets', async () => {
+    for (const [host, address] of [
+      ['192.0.1.1', '192.0.1.1'],
+      ['100.63.255.255', '100.63.255.255'],
+      ['100.128.0.0', '100.128.0.0'],
+    ]) {
+      mockedLookup.mockResolvedValue([{ address, family: 4 }])
+      const fetchSpy = vi.fn(async () => new Response('x', { status: 200 }))
+      vi.stubGlobal('fetch', fetchSpy)
+      await expect(store.downloadUrl('http://' + host + '/x', '.bin')).resolves.toBeTruthy()
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+    }
   })
 
   it('rejects a hostname that resolves to a private address (mocked DNS)', async () => {

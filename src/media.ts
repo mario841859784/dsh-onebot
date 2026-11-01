@@ -290,13 +290,14 @@ function isPrivateIpv4(address: string): boolean {
     (first === 169 && second === 254) ||
     (first === 100 && second >= 64 && second <= 127) ||
     (first === 198 && (second === 18 || second === 19)) ||
-    (first === 192 && second === 0 && third === 0) ||
+    (first === 192 && second === 0 && (third === 0 || third === 2)) ||
     first >= 240
 }
 
 /** Private/loopback/link-local ranges for IPv6 literals (no brackets). */
 function isPrivateIpv6(address: string): boolean {
   const lower = address.toLowerCase()
+  // 64:ff9b::/32 covers the well-known /96 and RFC 8215 local-use NAT64 prefixes.
   if (lower === '::' || lower === '::1' || lower.startsWith('64:ff9b:')) return true
   // IPv4-mapped endings (::ffff:0:0/96) are judged by their embedded IPv4:
   // the URL parser spells them in hex (::ffff:7f00:1), DNS in dotted form.
