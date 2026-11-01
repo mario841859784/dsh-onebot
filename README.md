@@ -201,6 +201,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `maxFileBytes` | `20971520` | 出站视频/文件大小上限（字节） |
 | `inboundFileMaxBytes` | `20971520` | QQ 入站文件大小上限（字节）：超限文件拒收并提示（旧名 `maxInboundFileBytes` deprecated，本版兼容读取） |
 | `allowPrivateHosts` | `false` | 下载媒体 URL 时允许私网/环回地址（仅跳过私网检查，协议白名单与限长仍生效）；仅本机反代等可信场景开启，公网部署保持 `false` |
+| `fileRefRoots` | `[]` | 允许复制的 `file://` 源根目录；空数组默认拒绝所有入站 `file://` ref。路径按 `realpath` 校验，必须落在这些根目录内；NapCat 本地文件场景按实际缓存目录配置 |
 | `agentPreset` | 空 | 会话挂载的 agent preset（留空=默认） |
 | `workspacePath` | 空 | 会话挂载的工作区（留空=宿主进程 cwd；未配置时插件启动会 warn 一次建议显式配置——宿主未提供可编程查询的默认工作区）。`/workspace` 的 per-chat 覆盖已持久化进映射文件，重启不丢 |
 | `chatIdleEvictDays` | `7` | 会话空闲淘汰天数：chat 超过该天数无任何活动时，在下一条入站消息处理前清理其内存态 agent（会话先 flush 落盘、映射保留，同一 chat 之后再发消息可 resume 恢复原会话）；`0` = 禁用 |

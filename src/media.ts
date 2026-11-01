@@ -6,7 +6,7 @@
  */
 
 import { mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile, copyFile } from 'node:fs/promises'
-import { extname, join, sep } from 'node:path'
+import { extname, join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { shrinkImage } from './image-shrink.js'
@@ -36,6 +36,8 @@ export interface MediaStoreDownloadOptions {
   maxBytes?: number
   /** Escape hatch for local/NAT reverse-proxy deployments: skip the private-address check (protocol whitelist still applies). */
   allowPrivateHosts?: boolean
+  /** Roots allowed for inbound file:// refs; empty (default) refuses all file:// refs. */
+  fileRefRoots?: string[]
 }
 
 /**
@@ -48,6 +50,7 @@ export class MediaStore {
   private readonly imageMaxSize: number
   private readonly downloadMaxBytes: number
   private readonly allowPrivateHosts: boolean
+  private readonly fileRefRoots: string[]
 
   /**
    * @param dir - absolute scratch directory (created on demand).
@@ -63,6 +66,21 @@ export class MediaStore {
     this.imageMaxSize = imageMaxSize
     this.downloadMaxBytes = download.maxBytes ?? 0
     this.allowPrivateHosts = download.allowPrivateHosts ?? false
+    this.fileRefRoots = (download.fileRefRoots ?? []).map(root => resolve(root))
+  }
+
+  /** Copy a file:// ref only when its real path is inside one configured root. */
+  private async copyFileRef(source: string, kind: 'image' | 'voice' | 'video' | 'file'): Promise<string | undefined> {
+    if (this.fileRefRoots.length === 0) return undefined
+    try {
+      const real = await resolveContainedPath(this.fileRefRoots, source)
+      if (real === null) return undefined
+      const path = this.freshPath(extForKind(kind))
+      await copyFile(real, path)
+      return path
+    } catch {
+      return undefined
+    }
   }
 
   /** Ensure the scratch directory exists. */
@@ -148,14 +166,8 @@ export class MediaStore {
         return { path, kind: ref.kind }
       }
       if (file.startsWith('file://')) {
-        const source = file.slice('file://'.length)
-        const path = this.freshPath(extForKind(ref.kind))
-        try {
-          await copyFile(source, path)
-          return { path, kind: ref.kind }
-        } catch {
-          return undefined
-        }
+        const path = await this.copyFileRef(file.slice('file://'.length), ref.kind)
+        return path === undefined ? undefined : { path, kind: ref.kind }
       }
       if (file !== '') {
         // Hash-only ref: ask the implementation (get_image / get_record).
@@ -166,10 +178,8 @@ export class MediaStore {
           return { path, kind: ref.kind }
         }
         if (resolved.file !== undefined && resolved.file.startsWith('file://')) {
-          const source = resolved.file.slice('file://'.length)
-          const path = this.freshPath(extForKind(ref.kind))
-          await copyFile(source, path)
-          return { path, kind: ref.kind }
+          const path = await this.copyFileRef(resolved.file.slice('file://'.length), ref.kind)
+          return path === undefined ? undefined : { path, kind: ref.kind }
         }
       }
       return undefined
