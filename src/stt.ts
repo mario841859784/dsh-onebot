@@ -10,7 +10,7 @@
 import { spawn } from 'node:child_process'
 import { constants } from 'node:fs'
 import { access, mkdir, readFile, readdir, rm } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, extname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 /** STT configuration (subset of the plugin Config). */
@@ -74,13 +74,22 @@ function runProcess(
  * builtins/aliases stop being visible — callers only need real binaries).
  */
 export async function findCommand(name: string): Promise<string | undefined> {
-  for (const dir of (process.env.PATH ?? '').split(process.platform === 'win32' ? ';' : ':')) {
-    const candidate = join(dir, name)
-    try {
-      await access(candidate, constants.X_OK)
-      return candidate
-    } catch {
-      // missing or not executable — try the next dir
+  const win = process.platform === 'win32'
+  // Windows: look for what runProcess's shell-less spawn can start, the way libuv
+  // resolves a name — the name as given only if it already has an extension, then
+  // with .com and .exe appended. PATHEXT is not used: .bat/.cmd need a shell (spawn
+  // throws EINVAL since Node 18.20.2/20.12.2/21.7.3, CVE-2024-27980), and the
+  // extensionless file npm puts beside a .cmd shim is a sh script.
+  const exts = win ? [...(extname(name) !== '' ? [''] : []), '.com', '.exe'] : ['']
+  for (const dir of (process.env.PATH ?? '').split(win ? ';' : ':')) {
+    for (const ext of exts) {
+      const candidate = join(dir, name + ext)
+      try {
+        await access(candidate, constants.X_OK)
+        return candidate
+      } catch {
+        // missing or not executable — try the next candidate
+      }
     }
   }
   return undefined
