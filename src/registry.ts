@@ -26,6 +26,21 @@ import { describeError } from './errors.js'
 
 /** The mapping file name inside the media dir. */
 const MAPPING_FILE = 'chat-sessions.json'
+
+/** #18: local structural stand-in for the ModelSelectionRef the dsh 0.2.1
+ * host's two-arg installModelSelection(agentCtx, selectionRef) expected —
+ * the 0.2.2 package removed the type export, so it is declared here instead
+ * of imported. `assembled` stays undefined: the pre-0.2.2 wiring only ever
+ * seeded `current` (see the 83a6055 modelWiring). */
+interface ModelSelectionRef {
+  current: ModelSelection
+  assembled: ModelSelection | undefined
+}
+
+/** #18: arity-erased view of installModelSelection — the installed 0.2.2
+ * package types it single-arg, but the 0.2.1 host takes a second
+ * selectionRef; the runtime branch reads the real function's `.length`. */
+type InstallModelSelection = (agentCtx: Context, selectionRef?: ModelSelectionRef) => () => void
 /** The retired-session-id file name inside the media dir (append-only). */
 const RETIRED_FILE = 'retired-sessions.json'
 /** The per-chat switchable-session file name inside the media dir. */
@@ -273,11 +288,26 @@ export class ChatRegistry {
     return async agentCtx => {
       this.deps.installChannelScope(agentCtx)
       await this.joinPreset(agentCtx, recordedPreset)
-      // dsh 0.2.2: host-style unconditional install (single-arg — it only
-      // wires the model-switch notice listener; the selection itself lives
-      // on agent.model). Ignoring the returned disposer matches the host
-      // callers (dsh-api-session-controller/dsh-headless/dsh-acp).
-      installModelSelection(agentCtx)
+      // Dual-host arity compat (#18): dsh 0.2.2 removed the ModelSelectionRef
+      // type export and the second parameter (host-style single-arg install —
+      // it only wires the model-switch notice listener; the selection itself
+      // lives on agent.model), while the 0.2.1 host still expects
+      // installModelSelection(agentCtx, selectionRef). Branch on the runtime
+      // arity: the 0.2.1 form takes the selection fresh from defaultModel()
+      // in a locally declared structural type (only when a default model
+      // exists, matching the pre-0.2.2 wiring); otherwise the 0.2.2
+      // unconditional single-arg install. Ignoring the returned disposer
+      // matches the host callers (dsh-api-session-controller/dsh-headless/
+      // dsh-acp).
+      const install = installModelSelection as InstallModelSelection
+      if (install.length >= 2) {
+        const selection = this.deps.defaultModel?.()
+        if (selection !== undefined) {
+          install(agentCtx, { current: selection, assembled: undefined })
+        }
+      } else {
+        install(agentCtx)
+      }
     }
   }
 

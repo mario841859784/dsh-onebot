@@ -7,7 +7,7 @@
  * the registry (this file's convention).
  * @module dsh-onebot/tests/registry
  */
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -25,6 +25,30 @@ import { MediaStore } from '../src/media.js'
 import { Transcriber } from '../src/stt.js'
 
 import { makeCmdHarness, makeEvent, makeFakeAgents, makeHarness } from './helpers/bridge-harness.js'
+
+// #18: the runtime installModelSelection binding is mocked with a switchable
+// arity so both host shapes can be exercised — the dsh 0.2.2 single-arg form
+// (what the installed package types) and the 0.2.1 two-arg form. Every other
+// export of the package stays real; registry.ts is the only runtime importer.
+const installModelState = vi.hoisted(() => {
+  return {
+    /** Declared parameter count the mocked binding reports via `.length`. */
+    arity: 1 as 1 | 2,
+    calls: [] as Array<{ agentCtx: unknown; selectionRef: unknown }>,
+  }
+})
+vi.mock(import('@deepseek-ai/dsh-agent'), async importOriginal => {
+  const actual = await importOriginal<typeof import('@deepseek-ai/dsh-agent')>()
+  const installModelSelection = (agentCtx: unknown, selectionRef?: unknown) => {
+    installModelState.calls.push({ agentCtx, selectionRef })
+    return () => undefined
+  }
+  Object.defineProperty(installModelSelection, 'length', {
+    get: () => installModelState.arity,
+    configurable: true,
+  })
+  return { ...actual, installModelSelection }
+})
 
 /** Registry-only view of a harness-built bridge (the registry is private). */
 function registryOf(h: { bridge: unknown }): ChatRegistry {
@@ -422,6 +446,77 @@ describe('ChatRegistry', () => {
     expect(resolveRecordedPreset({ meta: { agentPreset: 'standard' }, events })).toBe('router-flash')
     expect(resolveRecordedPreset({ meta: { agentPreset: 'standard' }, events: [] })).toBe('standard')
     expect(resolveRecordedPreset({ meta: {}, events: [] })).toBeUndefined()
+  })
+
+  describe('installModelSelection arity compat (#18)', () => {
+    const selection = { provider: 'deepseek', model: 'deepseek-chat' }
+
+    /** Direct-registry harness whose fake agents.create runs the setup with a
+     * captured agentCtx (the internal direct-call convention of this file). */
+    function makeArityAgents() {
+      const agentCtx = {
+        on: () => () => undefined,
+        systemPrompt: { section: () => () => undefined },
+        tools: { register: () => () => undefined },
+      }
+      const agents = {
+        create: vi.fn(async (options: { sessionId: string; setup?: (agentCtx: unknown) => unknown }) => {
+          if (typeof options.setup === 'function') await options.setup(agentCtx)
+          return {
+            agent: { session: { id: String(options.sessionId), seq: 0, header: { cwd: '' } }, whenIdle: async () => undefined },
+            dispose: async () => undefined,
+          }
+        }),
+        resume: vi.fn(),
+      }
+      return { agents, agentCtx }
+    }
+
+    beforeEach(() => {
+      installModelState.arity = 1
+      installModelState.calls.length = 0
+    })
+
+    afterEach(() => {
+      installModelState.arity = 1
+      installModelState.calls.length = 0
+    })
+
+    it('single-arg host (dsh 0.2.2): installs unconditionally, no selectionRef', async () => {
+      installModelState.arity = 1
+      const { agents, agentCtx } = makeArityAgents()
+      const registry = new ChatRegistry({ ...makeRegistryDeps({ agents }), defaultModel: () => selection })
+      await registry.ensureChat('private:10001', '小明')
+      expect(installModelState.calls).toHaveLength(1)
+      expect(installModelState.calls[0].agentCtx).toBe(agentCtx)
+      expect(installModelState.calls[0].selectionRef).toBeUndefined()
+
+      // Unconditional: even with no deployment default model the 0.2.2
+      // listener-only install still runs.
+      installModelState.calls.length = 0
+      const bare = new ChatRegistry({ ...makeRegistryDeps({ agents: makeArityAgents().agents }), defaultModel: undefined })
+      await bare.ensureChat('private:10002', '小红')
+      expect(installModelState.calls).toHaveLength(1)
+      expect(installModelState.calls[0].selectionRef).toBeUndefined()
+    })
+
+    it('two-arg host (dsh 0.2.1): seeds selectionRef from the live defaultModel', async () => {
+      installModelState.arity = 2
+      const { agents, agentCtx } = makeArityAgents()
+      const registry = new ChatRegistry({ ...makeRegistryDeps({ agents }), defaultModel: () => selection })
+      await registry.ensureChat('private:10001', '小明')
+      expect(installModelState.calls).toHaveLength(1)
+      expect(installModelState.calls[0].agentCtx).toBe(agentCtx)
+      expect(installModelState.calls[0].selectionRef).toEqual({ current: selection, assembled: undefined })
+    })
+
+    it('two-arg host (dsh 0.2.1) with no default model: install is skipped (pre-0.2.2 wiring)', async () => {
+      installModelState.arity = 2
+      const { agents } = makeArityAgents()
+      const registry = new ChatRegistry({ ...makeRegistryDeps({ agents }), defaultModel: undefined })
+      await registry.ensureChat('private:10001', '小明')
+      expect(installModelState.calls).toHaveLength(0)
+    })
   })
 
   it('ensureChat avoids a bare id that still owns a persisted log (stale retiring lost)', async () => {
