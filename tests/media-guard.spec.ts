@@ -97,6 +97,19 @@ describe('MediaStore.downloadUrl SSRF guards (M1-A5)', () => {
     }
   })
 
+  it('only allows private addresses inside allowCidrs', async () => {
+    const scoped = new MediaStore(guardDir, 6, 0, { allowCidrs: ['100.64.0.0/10'] })
+    mockedLookup.mockResolvedValue([{ address: '100.64.1.2', family: 4 }])
+    const fetchSpy = vi.fn(async () => new Response('x', { status: 200 }))
+    vi.stubGlobal('fetch', fetchSpy)
+    await expect(scoped.downloadUrl('http://100.64.1.2/x', '.bin')).resolves.toBeTruthy()
+    await expect(scoped.downloadUrl('http://10.0.0.1/x', '.bin')).rejects.toThrow(/private\/loopback address not allowed/)
+  })
+
+  it('rejects malformed allowCidrs entries at construction', () => {
+    expect(() => new MediaStore(guardDir, 6, 0, { allowCidrs: ['not-a-cidr'] })).toThrow(/invalid allowCidrs/)
+  })
+
   it('rejects a hostname that resolves to a private address (mocked DNS)', async () => {
     mockedLookup.mockResolvedValue([{ address: '10.9.8.7', family: 4 }])
     const fetchSpy = vi.fn()
