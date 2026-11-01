@@ -106,6 +106,14 @@ describe('MediaStore.downloadUrl SSRF guards (M1-A5)', () => {
     await expect(scoped.downloadUrl('http://10.0.0.1/x', '.bin')).rejects.toThrow(/private\/loopback address not allowed/)
   })
 
+  it('supports IPv6 allowCidrs prefixes', async () => {
+    const scoped = new MediaStore(guardDir, 6, 0, { allowCidrs: ['fd7a:115c:a1e0::/48'] })
+    mockedLookup.mockResolvedValue([{ address: 'fd7a:115c:a1e0::1', family: 6 }])
+    const fetchSpy = vi.fn(async () => new Response('x', { status: 200 }))
+    vi.stubGlobal('fetch', fetchSpy)
+    await expect(scoped.downloadUrl('http://[fd7a:115c:a1e0::1]/x', '.bin')).resolves.toBeTruthy()
+  })
+
   it('rejects malformed allowCidrs entries at construction', () => {
     expect(() => new MediaStore(guardDir, 6, 0, { allowCidrs: ['not-a-cidr'] })).toThrow(/invalid allowCidrs/)
   })
