@@ -232,6 +232,10 @@ describe('file:// refs (inbound media)', () => {
     const defaultStore = new MediaStore(inside, 6, 0)
     const defaultDenied = await defaultStore.resolve({ kind: 'image', file: 'file://' + join(inside, 'ok.txt') }, async () => undefined)
     expect(defaultDenied).toBeUndefined()
+
+    await symlink(join(outside, 'secret.txt'), join(inside, 'link.txt'))
+    const escaped = await scoped.resolve({ kind: 'image', file: 'file://' + join(inside, 'link.txt') }, async () => undefined)
+    expect(escaped).toBeUndefined()
   })
 })
 
