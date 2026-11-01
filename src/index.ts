@@ -159,6 +159,8 @@ export interface Config {
   chatIdleEvictDays: number
   /** Escape hatch: skip the download private-address check (local reverse proxy). */
   allowPrivateHosts: boolean
+  /** Roots allowed for inbound file:// refs; empty rejects all. */
+  fileRefRoots: string[]
   /** W2-②: inbound (chatId, message_id) dedup window in seconds; 0 disables. */
   dedupWindowSeconds: number
   /** W2-③: bridge-wide proactive-write (qq_send_* tools) cap per minute; 0 disables. */
