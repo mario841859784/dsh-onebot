@@ -917,3 +917,10 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **验证**：`npm run build`（scripts/build.sh，tsc 5.9.3，宿主 node_modules 0.2.2-alpha.2）重建 lib/ 成功；`npx tsc -p tsconfig.json --noEmit` 0 错误；全量 vitest 40 文件 / 625 用例一次全绿（本轮无 flake）；lib import 冒烟（node ESM import lib/index.js）可加载、导出 8 个顶层符号非空。
 - **清单同步**：package.json version 0.9.7→0.9.8；dsh.plugin.json 同步 0.9.8；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.8（it 描述串 + expect 两行，仿 0.9.3–0.9.7 先例）；package-lock.json 沿用既有惯例不动。
 - **发布面收口**：commit（含 lib/）→ push origin main → tag `v0.9.8` → GitHub Release → npm publish → npmmirror 验证。宿主进程未重启。
+
+## 2026-11-01 发版 0.9.9（PR #12 Windows findCommand 修复，T1）
+
+- **改动**：随本发版出版本号的是已入库的 commit `5145a11`（PR #12：修复 Windows 上 findCommand 找不到 ffmpeg/whisper 等命令——按 libuv 解析规则在 PATH 各目录只找不带 shell 能启动的可执行文件：名字已带扩展名先试原名，再依次补 `.com`、`.exe`；不读 PATHEXT，`.bat`/`.cmd` 与无扩展名 sh 脚本不算找到，POSIX 用例不变）。
+- **验证**：`scripts/build.sh`（DSH_ROOT 指向宿主 0.2.2-alpha.2 node_modules，tsc 5.9.3）重建 lib/ 成功，lib/ 相对 0.9.8 仅 `lib/stt.js` 变化（+18/-9，PR #12 编译体现），sha256=`4159416e0089c7e3a637ec2d712aa65365199a7589ddbffab5c1bffac08c1d2c`；`npx tsc --noEmit` 0 错误；全量 vitest 40 文件 / 625 通过 + 4 skipped（tests/stt-find.spec.ts 的 4 条 win32 用例 Linux 上 skip 属预期）一次全绿。
+- **清单同步**：package.json version 0.9.8→0.9.9；dsh.plugin.json 同步 0.9.9；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.9（it 描述串 + expect 两行，仿 0.9.3–0.9.8 先例）；package-lock.json 沿用既有惯例不动。
+- **发布面收口**：commit（含 lib/）→ push origin main → tag `v0.9.9`。npm publish 与 GitHub Release 属任务 T2，本任务不做。宿主进程未重启。
