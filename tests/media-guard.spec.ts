@@ -114,6 +114,18 @@ describe('MediaStore.downloadUrl SSRF guards (M1-A5)', () => {
     await expect(scoped.downloadUrl('http://[fd7a:115c:a1e0::1]/x', '.bin')).resolves.toBeTruthy()
   })
 
+  it('rejects a hostname with any private address outside allowCidrs', async () => {
+    const scoped = new MediaStore(guardDir, 6, 0, { allowCidrs: ['100.64.0.0/10'] })
+    mockedLookup.mockResolvedValue([
+      { address: '100.64.1.2', family: 4 },
+      { address: '10.0.0.1', family: 4 },
+    ])
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    await expect(scoped.downloadUrl('http://mixed.example.com/x', '.bin')).rejects.toThrow(/resolves to a private\/loopback/)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
   it('rejects malformed allowCidrs entries at construction', () => {
     expect(() => new MediaStore(guardDir, 6, 0, { allowCidrs: ['not-a-cidr'] })).toThrow(/invalid allowCidrs/)
   })
