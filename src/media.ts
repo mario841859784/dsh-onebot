@@ -65,6 +65,11 @@ export class MediaStore {
     this.allowPrivateHosts = download.allowPrivateHosts ?? false
   }
 
+  /** Whether a local (non-download) payload exceeds the configured cap. */
+  private exceedsLocalCap(bytes: number): boolean {
+    return this.downloadMaxBytes > 0 && bytes > this.downloadMaxBytes
+  }
+
   /** Ensure the scratch directory exists. */
   async ensure(): Promise<void> {
     await mkdir(this.dir, { recursive: true })
@@ -143,14 +148,18 @@ export class MediaStore {
       }
       const file = ref.file ?? ''
       if (file.startsWith('base64://')) {
+        const data = Buffer.from(file.slice('base64://'.length), 'base64')
+        if (this.exceedsLocalCap(data.length)) return undefined
         const path = this.freshPath(extForKind(ref.kind))
-        await writeFile(path, Buffer.from(file.slice('base64://'.length), 'base64'))
+        await writeFile(path, data)
         return { path, kind: ref.kind }
       }
       if (file.startsWith('file://')) {
         const source = file.slice('file://'.length)
-        const path = this.freshPath(extForKind(ref.kind))
         try {
+          const info = await stat(source)
+          if (this.exceedsLocalCap(info.size)) return undefined
+          const path = this.freshPath(extForKind(ref.kind))
           await copyFile(source, path)
           return { path, kind: ref.kind }
         } catch {
@@ -167,6 +176,8 @@ export class MediaStore {
         }
         if (resolved.file !== undefined && resolved.file.startsWith('file://')) {
           const source = resolved.file.slice('file://'.length)
+          const info = await stat(source)
+          if (this.exceedsLocalCap(info.size)) return undefined
           const path = this.freshPath(extForKind(ref.kind))
           await copyFile(source, path)
           return { path, kind: ref.kind }
