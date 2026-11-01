@@ -81,6 +81,14 @@ describe('MediaStore.downloadUrl SSRF guards (M1-A5)', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
+  it('does not block the rest of 192.0.0.0/16', async () => {
+    mockedLookup.mockResolvedValue([{ address: '192.0.1.1', family: 4 }])
+    const fetchSpy = vi.fn(async () => new Response('x', { status: 200 }))
+    vi.stubGlobal('fetch', fetchSpy)
+    await expect(store.downloadUrl('http://192.0.1.1/x', '.bin')).resolves.toBeTruthy()
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
   it('rejects a hostname that resolves to a private address (mocked DNS)', async () => {
     mockedLookup.mockResolvedValue([{ address: '10.9.8.7', family: 4 }])
     const fetchSpy = vi.fn()
