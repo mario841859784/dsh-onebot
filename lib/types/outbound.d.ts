@@ -14,6 +14,17 @@ export interface SendOptions {
      * recall timers + bookkeeping and must never be replayed. */
     queuable?: boolean;
 }
+/**
+ * T9 (#2): strip a leaked <user_message> boundary. wrapUserMessage (chat.ts)
+ * wraps every inbound payload in `<user_message qq="…" nickname="…">…</user_message>`,
+ * and a model may echo those markers back inside its reply. Only the literal
+ * `user_message` tag name is recognized, in attribute-constrained shapes, so
+ * ordinary angle-bracket text (`<tag>`, XML, `a < b`) passes untouched: a
+ * full wrapper loses just its tags (the enclosed content stays), stray
+ * opening/closing/self-closing tags are dropped verbatim. Clean text is
+ * returned unchanged (no re-trim side effects).
+ */
+export declare function stripBoundaryLeakage(text: string): string;
 /** Narrow view of a live chat the outbound pipeline may touch — the
  * structural subset of the bridge's ChatAgent the pipeline reads: the
  * nickname used as the t2i card title. Re-evaluated for B8d: the per-chat
@@ -54,7 +65,7 @@ export interface OutboundContext {
     /** The only config fields the outbound pipeline reads. The W2-③ write-gate
      * fields ride as optional intersection members so the bridge's BridgeConfig
      * type stays untouched (absent → the defaults below). */
-    config: Pick<BridgeConfig, 'botQQ' | 'sensitivePatterns' | 'textImageThreshold' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies'> & Partial<{
+    config: Pick<BridgeConfig, 'botQQ' | 'sensitivePatterns' | 'textImageThreshold' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies' | 'monoFamilies'> & Partial<{
         /** Audit file directory (W2-③: mediaDir/qq-actions.log); absent → no audit. */
         mediaDir: string;
         /** W2-③ bridge-wide proactive-write cap per sliding minute; 0 disables. */

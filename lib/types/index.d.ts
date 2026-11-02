@@ -128,6 +128,11 @@ export interface Config {
     /** M3-D2b: interim recall degrade switch (false = send-only interims). */
     interimRecall: boolean;
     sendErrorNotice: boolean;
+    /** T8: auto-receipt notice switches (default true keeps existing behavior). */
+    notices: {
+        steerAccepted: boolean;
+        queue: boolean;
+    };
     /** Per-chat per-minute sliding-window cap for normal (non-command) messages; 0 disables. */
     rateLimitPerMinute: number;
     restrictedMemberPrefix: boolean;
@@ -152,6 +157,7 @@ export interface Config {
     cardFooter: string;
     fontFiles: string[];
     fontFamilies: string[];
+    monoFamilies: string[];
     agentPreset: string;
     workspacePath: string;
     inboundFileMaxBytes: number;

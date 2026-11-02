@@ -233,6 +233,11 @@ export declare class ChatRegistry {
     private restoreEvictedSettings;
     /** Resume persisted chats from the mapping file (best-effort). */
     loadMapping(): Promise<void>;
+    /** T4 (#15): quarantine an unparsable/structurally invalid mapping file —
+     * warn, copy it to `<chat-sessions.json>.bak` (an existing .bak is never
+     * overwritten: the earliest post-corruption copy wins), and leave the load
+     * with an empty mapping so the chat stays usable. */
+    private quarantineCorruptMapping;
     /** Resume one persisted chat from its recorded session id (shared by
      * loadMapping and the B8c evicted-chat resume). */
     private resumeChat;
@@ -263,6 +268,10 @@ export declare class ChatRegistry {
     /** Permanently retire a session id: in-memory plus durable on-disk record,
      * so a restart never reuses an id whose log collides with a fresh session. */
     private retireSession;
+    /** T4 (#15): the run's hard-retired (broken) session count, straight from
+     * the retire record — the /session list surfaces it so broken history
+     * stays visible to the admin. */
+    brokenSessionCount(): number;
     /** Whether the persistence layer already owns a durable log for this id —
      * true means reusing the id would collide (stale on-disk log or live entry).
      * A read failure counts as no log so the caller falls back to the normal

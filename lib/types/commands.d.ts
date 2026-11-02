@@ -74,6 +74,10 @@ export interface CommandContext {
      * a bare /workspace|/model|/preset|/session rendered; lazy 5-min TTL, see below). */
     /** /session: this chat's switchable retired sessions (newest first). */
     switchableSessions(chatId: ChatId): SwitchableSession[];
+    /** T4 (#15): broken (hard-retired) session count from the registry's
+     * retire record, surfaced by the /session list. Absent = the list omits
+     * the broken-count line (pre-T4 hosts/tests). */
+    brokenSessionCount?: (() => number) | undefined;
     /** /session <序号>: switch the chat back to a listed session. */
     switchSession(chatId: ChatId, targetSessionId: string): Promise<SessionSwitchOutcome>;
     /** /session list previews: the persistence port each retired session's
