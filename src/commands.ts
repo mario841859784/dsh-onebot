@@ -404,7 +404,7 @@ async function resolveNumericSelection(
  * form's job). */
 async function handleModelCommand(ctx: CommandContext, chatId: ChatId, arg: string): Promise<void> {
   const chat = ctx.getChat(chatId)
-  const current = chat?.agent.model.current()
+  const current = safeChatModel(chat, ctx)
     ?? safeDefaultModel(ctx)
   if (arg === '') {
     const cur = current !== undefined ? current.provider + '/' + current.model : '（未设置）'
@@ -495,7 +495,7 @@ async function handleModelCommand(ctx: CommandContext, chatId: ChatId, arg: stri
   // event (the host facade used by dsh-api-session-controller); the guard
   // keeps the old semantics where a deployment without a default model had
   // no selection ref and the switch stayed a silent no-op.
-  if (chat !== undefined && chat.agent.model.current() !== undefined) {
+  if (chat !== undefined && safeChatModel(chat, ctx) !== undefined) {
     chat.agent.model.select(next)
   }
   await ctx.sendToChat(chatId, `✅ 已切换当前会话模型：${provider}/${model}（下一步生效）`)
@@ -633,7 +633,7 @@ async function handleStatusCommand(ctx: CommandContext, chatId: ChatId): Promise
     const resolved = await ctx.resolvePresetId(chatId)
     preset = (resolved ?? undefined) !== undefined ? (resolved ?? '') + '（默认/配置）' : '（未记录）'
   }
-  const current = chat?.agent.model.current() ?? safeDefaultModel(ctx)
+  const current = safeChatModel(chat, ctx) ?? safeDefaultModel(ctx)
   const model = current !== undefined ? current.provider + '/' + current.model : '（未设置）'
   const cwd = ctx.effectiveCwd(chatId)
   let wsSuffix = ''
@@ -1000,6 +1000,12 @@ async function sessionPreviewFor(ctx: CommandContext, sessionId: string): Promis
  * numbered list is snapshotted (R2, kind 'session') so a following
  * `/session <序号>` picks without re-listing. */
 async function handleSessionCommand(ctx: CommandContext, chatId: ChatId, arg: string): Promise<void> {
+  // #4b: IM input routinely wraps the serial in brackets — /session <1>,
+  // ＜1＞ or ［1］. Strip angle/bracket wrappers before the numeric
+  // resolution so those spellings are equivalent to /session 1. Plain text
+  // (including unpaired brackets) passes through unchanged and still fails
+  // numeric resolution the old way.
+  arg = arg.trim().replace(/^[<＜([{（【]+\s*/, '').replace(/\s*[>＞)}）】\]]+$/, '').trim()
   if (arg.trim() === '') {
     const list = ctx.switchableSessions(chatId)
     const current = ctx.getChat(chatId)?.sessionId ?? await ctx.sessionIdFromMapping(chatId)
@@ -1302,6 +1308,18 @@ function safeDefaultModel(ctx: CommandContext): ModelSelection | undefined {
     return ctx.agentDefaultModel?.currentSelection()
   } catch (error) {
     ctx.log('debug', 'currentSelection failed: ' + String(error))
+    return undefined
+  }
+}
+
+/** #17: chat.model.current() can throw (model registry in a bad state); the
+ * /model and /status surfaces must degrade to the deployment default instead
+ * of crashing the command handler (same pattern as safeDefaultModel). */
+function safeChatModel(chat: CommandChatView | undefined, ctx: CommandContext): ModelSelection | undefined {
+  try {
+    return chat?.agent.model.current()
+  } catch (error) {
+    ctx.log('debug', 'model.current failed: ' + String(error))
     return undefined
   }
 }

@@ -736,6 +736,9 @@ export class ChatBridge {
       setPendingSelection: (chatId, value) => { bridge.registry.getSettings(chatId).pendingSelection = value },
       // /session: the per-chat switchable history and the switch itself.
       switchableSessions: chatId => bridge.registry.switchableSessions(chatId),
+      // T4 (#15): the run-scoped broken-session count (the retire record) so
+      // the /session list can surface quarantined history.
+      brokenSessionCount: () => bridge.registry.brokenSessionCount(),
       switchSession: (chatId, targetSessionId) => bridge.registry.switchSession(chatId, targetSessionId),
       // /session list previews: cold-read each retired session's first user
       // input through the persistence port (read handle, small prefix).
@@ -1046,6 +1049,17 @@ export class ChatBridge {
             trace?.emit('notice', { ok: false, reason: TRACE_REASONS.noticeErrorSendFailed })
           })
         }
+      }
+      // #4a: a 'blocked' turn claims the user's message then discards it in
+      // the pre-step rejection — without a notice the user sees pure silence
+      // and reads it as the bot ignoring them. Same fault-notice discipline
+      // as the error branch above: queuable send; a deferred-tracked turn
+      // keeps its single terminal notice on the补发 path instead.
+      if (reason.kind === 'blocked' && !deferredTracked && this.deps.config.sendErrorNotice) {
+        this.sendToChat(chatId, '⚠️ 该消息未生成回复：回合在开始处理前被系统拦截，请稍后重发。', { queuable: true }).catch((error: unknown) => {
+          this.deps.log('debug', '拦截提示发送失败: ' + describeError(error))
+          trace?.emit('notice', { ok: false, reason: TRACE_REASONS.noticeErrorSendFailed })
+        })
       }
       this.stopTyping(chat)
       chat.lastActivityAt = Date.now()

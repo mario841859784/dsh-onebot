@@ -1110,4 +1110,32 @@ describe('commands · serial selection (R2)', () => {
     await h.bridge.stop()
     await h.connection.stop()
   }, 60_000)
+
+  it('#17: a throwing model.current() degrades /model and /status to the deployment default instead of crashing', async () => {
+    const h = await makeCmdHarness({
+      agentDefaultModel: {
+        currentSelection: () => ({ provider: 'fallback', model: 'default-1' }),
+        saveSelection: vi.fn(async () => undefined),
+      },
+    })
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const chat = h.chats().get('private:10001')!
+    ;(chat.agent.model as { current: () => unknown }).current = () => { throw new Error('model registry exploded') }
+
+    // Both surfaces fall back to the deployment default (the only way
+    // fallback/default-1 can appear is via the safe fallback path).
+    h.sendText('/model')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('当前模型：fallback/default-1'))).toBe(true)
+    })
+    h.sendText('/status')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('model   : fallback/default-1'))).toBe(true)
+    })
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 30_000)
 })
