@@ -253,6 +253,42 @@ export function registerTools(
   }))
 
   register(defineTool({
+    name: 'qq_send_segments',
+    description: '向 QQ 会话按顺序发送多条独立的纯文本气泡（每段一条单独消息）。仅在你明确需要分条呈现时使用——不会自动分段、不模拟打字节奏，需自行拆好每段文字。普通回复请直接输出文本即可。',
+    parameters: {
+      segments: {
+        type: 'array',
+        items: { type: 'string' },
+        required: true,
+        description: '文本段列表：按顺序逐条发送为独立气泡；最多 9 段，每段 ≤500 字且不能为空',
+      },
+      chat_id: { type: 'string', description: '目标会话，格式 private:<QQ号> 或 group:<群号>；省略时默认当前会话' },
+    },
+    output: {
+      schema: { type: 'json' as const },
+      render: (_args: unknown, value: unknown) => {
+        const v = value as { count?: number }
+        return [{ type: 'text' as const, text: '已发送 ' + (v.count ?? 0) + ' 条分段消息' }]
+      },
+    },
+    isConcurrencySafe: () => true,
+    execute: async (args, exec) => {
+      const a = args as { segments?: unknown; chat_id?: unknown }
+      const texts = Array.isArray(a.segments) ? a.segments.filter((s): s is string => typeof s === 'string' && s.trim() !== '') : []
+      if (texts.length === 0) throw new Error('qq_send_segments: segments 不能为空（需为非空文本段数组）')
+      if (texts.length > 9) throw new Error('qq_send_segments: 一次最多 9 段')
+      if (texts.some(t => t.length > 500)) throw new Error('qq_send_segments: 每段最多 500 字')
+      const chatId = resolveChat(bridge, exec, a.chat_id)
+      const messageIds: Array<string | null> = []
+      for (const text of texts) {
+        const id = await bridge.sendSegments(chatId, [{ type: 'text', data: { text } }])
+        messageIds.push(id ?? null)
+      }
+      return { sent: true, count: messageIds.length, messageIds }
+    },
+  }))
+
+  register(defineTool({
     name: 'qq_napcat_api',
     description: '调用 NapCat 白名单内的 OneBot 扩展 API（群成员列表/信息、文件、OCR、AI 语音等）。非白名单 action 会被拒绝。',
     parameters: {

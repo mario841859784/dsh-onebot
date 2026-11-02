@@ -213,3 +213,36 @@ describe('ChatBridge.mediaSendRoots (M1-A3b roots口径)', () => {
     })
   })
 })
+
+describe('qq_send_segments (T10 #6)', () => {
+  it('sends each segment as its own separate send_msg bubble, in order', async () => {
+    const h = await makeHarness()
+    h.seed('group-seg-1', 'admin')
+    const sessionId = 'group-seg-1'
+    const result = await h.tool('qq_send_segments').execute({
+      segments: ['第一段', '第二段', '第三段'],
+    }, h.exec(sessionId)) as { sent: boolean; count: number; messageIds: Array<string | null> }
+    expect(result.sent).toBe(true)
+    expect(result.count).toBe(3)
+    const sends = h.calls.filter(c => c.action === 'send_msg')
+    expect(sends).toHaveLength(3)
+    expect(sends.map(s => (s.params.message as Array<{ data: { text: string } }>)[0].data.text))
+      .toEqual(['第一段', '第二段', '第三段'])
+  })
+
+  it('rejects empty, over-count, and over-length inputs without sending', async () => {
+    const h = await makeHarness()
+    h.seed('group-seg-2', 'admin')
+    const sessionId = 'group-seg-2'
+    const tool = h.tool('qq_send_segments')
+    await expect(tool.execute({ segments: [] }, h.exec(sessionId)))
+      .rejects.toThrow('qq_send_segments: segments 不能为空')
+    await expect(tool.execute({ segments: ['   ', '\n\t'] }, h.exec(sessionId)))
+      .rejects.toThrow('qq_send_segments: segments 不能为空')
+    await expect(tool.execute({ segments: Array.from({ length: 10 }, (_, i) => '段' + i) }, h.exec(sessionId)))
+      .rejects.toThrow('qq_send_segments: 一次最多 9 段')
+    await expect(tool.execute({ segments: ['好'.repeat(501)] }, h.exec(sessionId)))
+      .rejects.toThrow('qq_send_segments: 每段最多 500 字')
+    expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(0)
+  })
+})
