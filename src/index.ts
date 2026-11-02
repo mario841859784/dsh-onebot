@@ -40,6 +40,7 @@ let InboundRecorder: typeof import('./record.js').InboundRecorder
 let InjectChannel: typeof import('./inject.js').InjectChannel
 let redactSnapshot: typeof import('./health.js').redactSnapshot
 let describeError: typeof import('./errors.js').describeError
+let configureSendSegments: typeof import('./tools.js').configureSendSegments
 
 try {
   ;({ default: z } = await import('@deepseek-ai/schemastery'))
@@ -52,6 +53,7 @@ try {
   ;({ InjectChannel } = await import('./inject.js'))
   ;({ redactSnapshot } = await import('./health.js'))
   ;({ describeError } = await import('./errors.js'))
+  ;({ configureSendSegments } = await import('./tools.js'))
 } catch (error) {
   console.error('[dsh-onebot] 挂载失败：peer 依赖解析失败或关键模块缺失 —— 部署副本必须带完整 node_modules 链接集（scripts/link-host.sh 产物），只复制 lib/ 不够。原始错误：' + (error instanceof Error ? error.message : String(error)))
   throw error
@@ -128,6 +130,8 @@ export interface Config {
   sendErrorNotice: boolean
   /** T8: auto-receipt notice switches (default true keeps existing behavior). */
   notices: { steerAccepted: boolean, queue: boolean }
+  /** T14 (#6 补充): qq_send_segments 插件页开关与分段发送间隔（呼吸感）。 */
+  segments: { enabled: boolean, intervalMs: number }
   /** Per-chat per-minute sliding-window cap for normal (non-command) messages; 0 disables. */
   rateLimitPerMinute: number
   restrictedMemberPrefix: boolean
@@ -264,6 +268,13 @@ export const Config: Z<Config> = z.object({
       .description('消息排队提示开关（每个运行回合至多一条）'),
   }).default({})
     .description('自动回执开关集合；缺省全部开启（与 0.9.x 行为一致）'),
+  segments: z.object({
+    enabled: z.boolean().default(true)
+      .description('qq_send_segments 分段发送工具开关（T14）：true（默认）=工具可用；false=工具下线（模型不可见，无法调用）'),
+    intervalMs: z.number().min(0).max(3000).default(0)
+      .description('分段消息相邻两段的发送间隔（毫秒，0–3000，默认 0 = 不等待）：逐条发送之间的间隔营造打字呼吸感；qq_send_segments 的 intervalMs 参数可按次临时覆盖（同样截断到 0–3000）'),
+  }).default({})
+    .description('qq_send_segments 分段发送配置（T14）；缺省 = 启用且无间隔（与 0.9.10 行为一致）'),
   rateLimitPerMinute: z.number().default(30)
     .description('每 chat 每分钟允许的普通消息条数上限（60 秒滑动窗口）；命令消息不计入也不受限；超限时每窗口最多提示一次；0=禁用频控'),
   restrictedMemberPrefix: z.boolean().default(true)
@@ -403,6 +414,9 @@ export function logMetaEvent(selfId: string, event: OneBotEvent, minLevel: Confi
 export function apply(ctx: Context, config: Config): void {
   // D4a: honor the deprecated config names before any consumer reads them.
   config = resolveDeprecatedConfig(config)
+  // T14: qq_send_segments 插件页开关与发送间隔——必须在任何 agent scope 注册
+  // 工具（bridge.installChannelScope → registerTools）之前生效。
+  configureSendSegments(config.segments)
   const mediaDir = config.mediaDir !== '' ? config.mediaDir : defaultMediaDir()
   const policy = resolvePolicy(config)
   /** Console log line callback (level, message) — shared by the bridge deps,

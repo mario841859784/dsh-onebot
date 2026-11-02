@@ -86,6 +86,45 @@ async function fencedMediaFile(path: string, maxBytes: number, allowedRoots: str
 }
 
 /**
+ * T14 (#6 补充): qq_send_segments 插件页开关与发送间隔。配置在插件挂载时由
+ * index.ts 经 configureSendSegments 注入（模块级单例：dsh-onebot 是单实例
+ * 插件，registerTools 的调用点在 bridge.ts 且不在本任务 scope 内）；缺省
+ * 保持 0.9.x 行为（启用、无间隔）。
+ */
+export interface SendSegmentsConfig {
+  enabled: boolean
+  /** 相邻两段发送之间的延时（毫秒）；0 = 不等待。 */
+  intervalMs: number
+}
+
+/** 发送间隔上限（毫秒），与 index.ts 中 zod 的 max 对齐。 */
+export const SEGMENTS_INTERVAL_MAX_MS = 3000
+
+let sendSegmentsConfig: SendSegmentsConfig = { enabled: true, intervalMs: 0 }
+
+/** 把任意数值截断进 0–3000 毫秒窗口（使用侧 clamp；页面值由 zod 校验）。 */
+export function clampSegmentsInterval(ms: number): number {
+  if (!Number.isFinite(ms)) return 0
+  return Math.min(SEGMENTS_INTERVAL_MAX_MS, Math.max(0, ms))
+}
+
+/**
+ * 安装 qq_send_segments 的插件页开关（index.ts apply() 在任何 agent scope
+ * 注册工具之前调用一次）。undefined = 恢复默认（启用、间隔 0）。
+ */
+export function configureSendSegments(config: SendSegmentsConfig | undefined): void {
+  sendSegmentsConfig = {
+    enabled: config?.enabled ?? true,
+    intervalMs: clampSegmentsInterval(config?.intervalMs ?? 0),
+  }
+}
+
+/** 间隔等待；0 完全不排定时器（默认路径零行为差异，也便于假时钟断言）。 */
+function wait(ms: number): Promise<void> {
+  return ms > 0 ? new Promise(resolve => setTimeout(resolve, ms)) : Promise.resolve()
+}
+
+/**
  * Register all qq_* tools on the context. Registration is effect-based: the
  * returned disposer unregisters them.
  * @param ctx - plugin context.
@@ -252,15 +291,20 @@ export function registerTools(
     },
   }))
 
-  register(defineTool({
+  // T14: 插件页开关——enabled=false 时该工具不注册（模型不可见即不可用）。
+  if (sendSegmentsConfig.enabled) register(defineTool({
     name: 'qq_send_segments',
-    description: '向 QQ 会话按顺序发送多条独立的纯文本气泡（每段一条单独消息）。仅在你明确需要分条呈现时使用——不会自动分段、不模拟打字节奏，需自行拆好每段文字。普通回复请直接输出文本即可。',
+    description: '向 QQ 会话按顺序发送多条独立的纯文本气泡（每段一条单独消息）。仅在你明确需要分条呈现时使用——不会自动分段，需自行拆好每段文字；相邻两段的发送间隔由插件配置 segments.intervalMs 控制（可用本工具的 intervalMs 参数临时覆盖）。普通回复请直接输出文本即可。',
     parameters: {
       segments: {
         type: 'array',
         items: { type: 'string' },
         required: true,
         description: '文本段列表：按顺序逐条发送为独立气泡；最多 9 段，每段 ≤500 字且不能为空',
+      },
+      intervalMs: {
+        type: 'number',
+        description: '可选：覆盖全局的相邻段发送间隔（毫秒，0–3000，超界按边界截断）；省略时用插件页配置 segments.intervalMs（默认 0 = 不等待）',
       },
       chat_id: { type: 'string', description: '目标会话，格式 private:<QQ号> 或 group:<群号>；省略时默认当前会话' },
     },
@@ -273,15 +317,19 @@ export function registerTools(
     },
     isConcurrencySafe: () => true,
     execute: async (args, exec) => {
-      const a = args as { segments?: unknown; chat_id?: unknown }
+      const a = args as { segments?: unknown; chat_id?: unknown; intervalMs?: unknown }
       const texts = Array.isArray(a.segments) ? a.segments.filter((s): s is string => typeof s === 'string' && s.trim() !== '') : []
       if (texts.length === 0) throw new Error('qq_send_segments: segments 不能为空（需为非空文本段数组）')
       if (texts.length > 9) throw new Error('qq_send_segments: 一次最多 9 段')
       if (texts.some(t => t.length > 500)) throw new Error('qq_send_segments: 每段最多 500 字')
+      const intervalMs = typeof a.intervalMs === 'number' && Number.isFinite(a.intervalMs)
+        ? clampSegmentsInterval(a.intervalMs)
+        : sendSegmentsConfig.intervalMs
       const chatId = resolveChat(bridge, exec, a.chat_id)
       const messageIds: Array<string | null> = []
-      for (const text of texts) {
-        const id = await bridge.sendSegments(chatId, [{ type: 'text', data: { text } }])
+      for (let i = 0; i < texts.length; i++) {
+        if (i > 0) await wait(intervalMs)
+        const id = await bridge.sendSegments(chatId, [{ type: 'text', data: { text: texts[i] } }])
         messageIds.push(id ?? null)
       }
       return { sent: true, count: messageIds.length, messageIds }

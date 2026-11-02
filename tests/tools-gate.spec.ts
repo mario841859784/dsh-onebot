@@ -6,7 +6,7 @@
  * its private maps); the connection is a recording stub, so nothing hits
  * the network and every assertion on sends reads recorded send_msg params.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, realpathSync } from 'node:fs'
 import { mkdir, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -14,15 +14,17 @@ import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 
 import { ChatBridge } from '../src/bridge.js'
-import { registerTools } from '../src/tools.js'
+import { configureSendSegments, registerTools, SEGMENTS_INTERVAL_MAX_MS } from '../src/tools.js'
 
 interface SendTool {
   name: string
   execute: (args: unknown, exec: unknown) => Promise<unknown>
 }
 
-/** Real ChatBridge + registered qq_* tools with a recording connection stub. */
-async function makeHarness() {
+/** Real ChatBridge + registered qq_* tools with a recording connection stub.
+ * T14: `segments` installs the qq_send_segments page switches BEFORE tool
+ * registration (undefined = module default: enabled, no interval). */
+async function makeHarness(opts: { segments?: { enabled: boolean; intervalMs: number } } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'tools-gate-'))
   const mediaDir = join(root, 'media')
   const workspace = join(root, 'workspace')
@@ -83,6 +85,7 @@ async function makeHarness() {
       return () => undefined
     },
   } as never)
+  configureSendSegments(opts.segments)
   registerTools(ctx, bridge, {} as never, {
     maxImageBytes: 1_000_000,
     maxVoiceBytes: 1_000_000,
@@ -244,5 +247,93 @@ describe('qq_send_segments (T10 #6)', () => {
     await expect(tool.execute({ segments: ['好'.repeat(501)] }, h.exec(sessionId)))
       .rejects.toThrow('qq_send_segments: 每段最多 500 字')
     expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(0)
+  })
+})
+
+/**
+ * T14 (#6 补充): qq_send_segments 插件页开关 + 发送间隔。全部用 fake timers
+ * 断言延时行为——绝不真实 sleep 多秒（deferred/inject 有真实计时 flaky 先例）。
+ * 默认（intervalMs=0）完全不排定时器：若实现误排 setTimeout，await 会挂起
+ * 直到测试超时，本身就是失败信号。
+ */
+describe('qq_send_segments 开关与发送间隔 (T14 #6)', () => {
+  it('default intervalMs=0 keeps 0.9.10 behavior: no delay timers, sends in order', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = await makeHarness() // undefined → 模块默认 { enabled: true, intervalMs: 0 }
+      h.seed('group-seg-d0', 'admin')
+      const result = await h.tool('qq_send_segments').execute({
+        segments: ['一', '二', '三'],
+      }, h.exec('group-seg-d0')) as { sent: boolean; count: number }
+      expect(result.sent).toBe(true)
+      expect(result.count).toBe(3)
+      expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(3)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('enabled=false leaves qq_send_segments unregistered (other tools intact)', async () => {
+    const h = await makeHarness({ segments: { enabled: false, intervalMs: 0 } })
+    expect(() => h.tool('qq_send_segments')).toThrow('tool not registered: qq_send_segments')
+    expect(h.tool('qq_send_image')).toBeTruthy()
+    expect(h.tool('qq_send_forward')).toBeTruthy()
+  })
+
+  it('global intervalMs waits between consecutive segments (fake timers, no real sleep)', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = await makeHarness({ segments: { enabled: true, intervalMs: 40 } })
+      h.seed('group-seg-gi', 'admin')
+      const pending = h.tool('qq_send_segments').execute({
+        segments: ['甲', '乙', '丙'],
+      }, h.exec('group-seg-gi')) as Promise<{ count: number }>
+      // 推进 1ms：第一段已发，第二个段还卡在 40ms 间隔定时器上（证明等待真实生效）。
+      await vi.advanceTimersByTimeAsync(1)
+      expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(1000)
+      const result = await pending
+      expect(result.count).toBe(3)
+      expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('tool intervalMs overrides the global default (0 override = no delay timers)', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = await makeHarness({ segments: { enabled: true, intervalMs: 999 } })
+      h.seed('group-seg-ov', 'admin')
+      const result = await h.tool('qq_send_segments').execute({
+        segments: ['甲', '乙'],
+        intervalMs: 0,
+      }, h.exec('group-seg-ov')) as { count: number }
+      expect(result.count).toBe(2)
+      expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(2)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clamps out-of-range tool intervalMs into 0–3000 (5000 → 3000)', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = await makeHarness() // 全局默认 0，仅参数超界
+      h.seed('group-seg-cl', 'admin')
+      const pending = h.tool('qq_send_segments').execute({
+        segments: ['甲', '乙'],
+        intervalMs: 5000,
+      }, h.exec('group-seg-cl')) as Promise<{ count: number }>
+      // clamp 后单段间隔 = 3000ms：推进到 3000 应完成发送；未 clamp（5000）则不会。
+      await vi.advanceTimersByTimeAsync(SEGMENTS_INTERVAL_MAX_MS)
+      const result = await pending
+      expect(result.count).toBe(2)
+      expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
