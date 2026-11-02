@@ -146,11 +146,17 @@ function optionLetter(i: number): string {
  * The header line mirrors question-answer.ts's parse contract: pure numbered
  * selection is only unambiguous for single-question batches (parseQuestionAnswer
  * returns undefined when questions.length !== 1), so multi-question batches
- * steer the user to the whole-batch 答:/跳过 forms instead. */
+ * steer the user to the whole-batch 答:/跳过 forms instead. T2-board: a
+ * single question with NO options rejects pure numbering too (parseQuestionAnswer
+ * returns undefined when options.length === 0), so its header guides the
+ * 答:/跳过 forms instead of the numbered-selection mislead. */
 export function renderQuestionCard(call: RelayQuestionCall): string {
-  const lines: string[] = [call.questions.length === 1
-    ? '【❓ 提问】回复编号或字母选择，多选用逗号，回复『跳过』放弃；自由回答用「答:内容」：'
-    : '【❓ 提问】' + call.questions.length + ' 道题：回复『答:内容』整体回答（应用于全部题目），或回复『跳过』放弃；纯编号选择仅单题支持：']
+  const single = call.questions.length === 1
+  const lines: string[] = [!single
+    ? '【❓ 提问】' + call.questions.length + ' 道题：回复『答:内容』整体回答（应用于全部题目），或回复『跳过』放弃；纯编号选择仅单题支持：'
+    : single && call.questions[0]!.options.length === 0
+      ? '【❓ 提问】本题没有候选项：回复「答:内容」自由作答，或回复『跳过』放弃：'
+      : '【❓ 提问】回复编号或字母选择，多选用逗号，回复『跳过』放弃；自由回答用「答:内容」：']
   call.questions.forEach((question, index) => {
     lines.push((index + 1) + '. ' + (question.header !== '' ? '[' + question.header + '] ' : '') + question.question)
     question.options.forEach((label, i) => {

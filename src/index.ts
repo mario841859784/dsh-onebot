@@ -607,9 +607,16 @@ export function apply(ctx: Context, config: Config): void {
   // first, so an unload during startup runs the cleanup chain strictly after
   // start completes: no overlapping start/stop, no ghost timers or listeners.
   ctx.effect(async () => {
+    // T2-board: two-phase lifecycle log — 'starting' prints synchronously
+    // when the effect body runs; 'mounted' only after the whole start chain
+    // has settled (the old single line printed BEFORE completion, claiming
+    // "mounted" while the channels were still coming up).
+    const mountDetails = ' (mode=' + config.mode + ', media=' + mediaDir + ', admins=' + policy.adminUsers.length + ')'
+    console.log('[dsh-onebot] starting' + mountDetails)
     await bridge.start()
     await connection.start()
     await injectChannel?.start()
+    console.log('[dsh-onebot] mounted' + mountDetails)
     // QQ 平台说明与 qq_* 工具现按会话 agent 注入（见 ChatBridge.installChannelScope）
     return async () => {
       await injectChannel?.stop()
@@ -617,6 +624,4 @@ export function apply(ctx: Context, config: Config): void {
       await connection.stop()
     }
   }, 'dsh-onebot.lifecycle')
-
-  console.log('[dsh-onebot] mounted (mode=' + config.mode + ', media=' + mediaDir + ', admins=' + policy.adminUsers.length + ')')
 }

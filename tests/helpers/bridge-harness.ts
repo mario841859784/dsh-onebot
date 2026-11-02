@@ -75,7 +75,10 @@ export function makeFakeAgents(
         // plugin context. T2-B1: a userQuestions stub is present so the timed
         // ask_user_question tool registers (captured.channelTools asserts it).
         const agentCtx = {
-          on: () => () => undefined,
+          on: (event: string, listener: (request: unknown, next: () => Promise<unknown>) => unknown) => {
+            captured.agentListeners?.push({ event, listener })
+            return () => undefined
+          },
           systemPrompt: { section: (s: { name: string }) => { captured.channelSections?.push(s.name); return () => undefined } },
           tools: { register: (t: { name: string }) => { captured.channelTools?.push(t.name); return () => undefined } },
           userQuestions: { askTimed: async () => ({ answers: [] }), answer: async () => false },
@@ -116,7 +119,7 @@ export function makeFakeAgents(
 export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; log?: (level: string, message: string) => void; notices?: { steerAccepted?: boolean, queue?: boolean }; monoFamilies?: readonly string[]; userQuestions?: unknown }) {
   const ctx = new Context()
   const sessionIds: string[] = []
-  const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[] }
+  const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[], agentListeners: [] as Array<{ event: string; listener: (request: unknown, next: () => Promise<unknown>) => unknown }> }
   const agents = makeFakeAgents(sessionIds, captured, opts)
   const sessions = { flush: vi.fn(async () => undefined) }
   const mediaDir = opts?.mediaDir ?? mkdtempSync(join(tmpdir(), 'onebot-test-'))
@@ -234,7 +237,7 @@ export async function makeCmdHarness(opts?: {
   const capturedMeta: Array<{ cwd?: string; agentPreset?: string }> = []
   // T2 (P1): steers are captured alongside followups so the /steer and
   // 'steer'-policy tests can assert the exact steered text.
-  const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, createdMeta: capturedMeta }
+  const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, createdMeta: capturedMeta, agentListeners: [] as Array<{ event: string; listener: (request: unknown, next: () => Promise<unknown>) => unknown }> }
   const agents = makeFakeAgents(sessionIds, captured)
   const sessions = { flush: vi.fn(async () => undefined) }
   const mediaDir = opts?.mediaDir ?? mkdtempSync(join(tmpdir(), 'onebot-test-'))

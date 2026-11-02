@@ -219,4 +219,36 @@ describe('plugin entry', () => {
     expect(injectLifecycle.stopCalls).toBe(1)
     expect(injectLifecycle.stopAfterStartCompleted).toBe(true)
   })
+
+  it('T2-board: two-phase lifecycle log — mounted prints only after the start chain settles', async () => {
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-plugin-'))
+    const { ctx } = makeCtx()
+    injectLifecycle.startCalls = 0
+    injectLifecycle.startCompleted = false
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    try {
+      const effectSpy = vi.spyOn(ctx as { effect: (cb: () => unknown, label?: string) => unknown }, 'effect')
+      apply(ctx as never, Config({
+        mediaDir,
+        port: 0,
+        accessToken: 'test-token',
+        botQQ: '10002',
+        sttEnabled: false,
+        sensitivePatterns: [],
+        injectEnabled: true,
+      }))
+      const texts = () => log.mock.calls.map(c => String(c[0]))
+      // start 链已进入闸门：starting 已打印，mounted 尚未打印（旧实现此间就打印 mounted）。
+      await vi.waitFor(() => expect(injectLifecycle.startCalls).toBe(1))
+      expect(texts().some(t => t.startsWith('[dsh-onebot] starting (mode='))).toBe(true)
+      expect(texts().some(t => t.startsWith('[dsh-onebot] mounted'))).toBe(false)
+      // 放行 start：mounted 在整条链完成后才出现。
+      injectLifecycle.releaseStart?.()
+      await vi.waitFor(() => expect(texts().some(t => t.startsWith('[dsh-onebot] mounted (mode='))).toBe(true))
+      const disposer = effectSpy.mock.results[0].value as () => Promise<void>
+      await disposer()
+    } finally {
+      log.mockRestore()
+    }
+  })
 })

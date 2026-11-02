@@ -122,9 +122,9 @@ export interface CommandContext {
   reportFailure?: ((chatId: ChatId, stage: TraceStage, detail: string) => string) | undefined
   /** T3-board /silent: per-chat silence window — epoch-ms until which the
    * inbound pipeline ignores NORMAL messages (undefined = not silenced, or
-   * the window already expired). In-memory on the bridge: a plugin restart
-   * lifts the silence, which is the safe direction (the bot becomes
-   * responsive again). Absent = the host has no silencing wiring. */
+   * the window already expired). T3-board persistence: the durable copy is
+   * ChatSettings.silentUntil (chat-sessions.json) — the window survives a
+   * plugin restart and /new; a bare /silent clears it explicitly. */
   silentUntil?: ((chatId: ChatId) => number | undefined) | undefined
   setSilentUntil?: ((chatId: ChatId, untilMs: number | undefined) => void) | undefined
   /** The only config fields the commands read. */
@@ -354,9 +354,9 @@ export const SILENT_MAX_MINUTES = 24 * 60
  * open the inbound pipeline silently ignores NORMAL messages (slash commands
  * still route — the probe sits after the command router, so /silent itself
  * can never be swallowed by its own mute). A bare /silent lifts the window
- * early; `/silent <分钟>` sets/extends it. The window lives in bridge memory
- * only — a plugin restart lifts it, which is the safe direction (the bot
- * becomes responsive again); documented in the card line and here. */
+ * early; `/silent <分钟>` sets/extends it. The window survives /new (a
+ * property of the chat, not the session) and plugin restarts (persisted in
+ * chat-sessions.json via ChatSettings.silentUntil). */
 async function handleSilentCommand(ctx: CommandContext, chatId: ChatId, arg: string): Promise<void> {
   if (ctx.silentUntil === undefined || ctx.setSilentUntil === undefined) {
     await ctx.sendToChat(chatId, '⚠️ 静音窗口未接线（宿主未提供该能力）。')

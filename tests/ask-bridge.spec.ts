@@ -159,6 +159,18 @@ describe('T2-B2 card relay question extraction', () => {
     expect(text).toContain('（可多选）')
   })
 
+  it('single question with no options guides 答:/跳过 instead of numbered selection (T2-board)', () => {
+    const parsed = parseQuestionCall(JSON.stringify({ questions: [
+      { id: 'q1', question: '说说你的想法' },
+    ] }), 'c6', noopLog)
+    expect(parsed).toBeDefined()
+    const text = renderQuestionCard(parsed!)
+    // 与解析端对称：options 为空时 parseQuestionAnswer 必拒纯编号，头行不得再引导编号选择
+    expect(text).toContain('本题没有候选项：回复「答:内容」自由作答，或回复『跳过』放弃')
+    expect(text).not.toContain('回复编号或字母选择')
+    expect(text).toContain('1. 说说你的想法')
+  })
+
   it('multi-question batch renders whole-batch 答:/跳过 guidance without the numbered-selection mislead', () => {
     const parsed = parseQuestionCall(JSON.stringify({ questions: [
       { id: 'q1', question: '第一题', options: [{ label: '甲' }, { label: '乙' }] },
@@ -408,5 +420,170 @@ describe('T2-B1/B3 bridge integration (tool registration + answer interception)'
     h.client.close()
     await h.bridge.stop()
     await h.connection.stop()
+  })
+})
+
+describe('T3-board foreground instant settle (user-questions/request waterfall)', () => {
+  // Fake-host replica of the timed ask dispatch, mirroring the verified
+  // dsh-user-questions semantics: askTimed wraps the request with
+  // { signal: wait.signal, wait: { callId, timed: true } } and dispatches
+  // 'user-questions/request' as a waterfall whose innermost next() is the
+  // NO_PROVIDER noAnswerer; NO_PROVIDER → the wait deadline maps the
+  // rejection to { pending: true, callId }. attachWait yields exactly one
+  // { remainingMs } frame while the wait is live (a claim that suppresses
+  // the host deadline timer) and resolves its second next() when the wait
+  // closes.
+  function makeForegroundHost(opts?: { attachMode?: 'hold' | 'zero' | 'throw'; fallbackTimeoutMs?: number; holdRemainingMs?: number }) {
+    const NO_PROVIDER = Object.assign(new Error('no user-questions answerer accepted the request'), { code: 'NO_PROVIDER' })
+    const ASK_TIMED_OUT = Object.assign(new Error('ask_user_question timed out before the user answered'), { code: 'ASK_TIMED_OUT' })
+    type Listener = (request: unknown, next: () => Promise<unknown>) => Promise<unknown>
+    let listener: Listener | undefined
+    const waits = new Map<string, AbortController>()
+    const claims: AbortSignal[] = []
+    const attachWait = vi.fn(async function * (_agent: unknown, callId: string, signal: AbortSignal) {
+      if (opts?.attachMode === 'throw') throw new Error('attach refused')
+      if (opts?.attachMode === 'zero') return
+      claims.push(signal)
+      const wait = waits.get(callId)
+      yield { remainingMs: opts?.holdRemainingMs ?? 5_000 }
+      // Second next(): resolves when the host wait closes (askTimed finally).
+      if (wait === undefined) return
+      await new Promise<void>(resolve => {
+        if (wait.signal.aborted) resolve()
+        else wait.signal.addEventListener('abort', () => resolve(), { once: true })
+      })
+    })
+    const answer = vi.fn(async () => false)
+    const askTimedImpl = async (request: { questions?: unknown; agent?: unknown; signal?: AbortSignal }, callId: string, _timeoutMs: number) => {
+      const wait = new AbortController()
+      waits.set(callId, wait)
+      const noAnswerer = () => Promise.reject(NO_PROVIDER)
+      try {
+        const result = await listener?.({ ...request, signal: wait.signal, wait: { callId, timed: true } }, noAnswerer)
+        if (result !== undefined) return result
+        throw NO_PROVIDER
+      } catch (error) {
+        if ((error as { code?: string }).code === 'NO_PROVIDER') {
+          // Host parity: await wait.done → the deadline closes it.
+          await new Promise(resolve => setTimeout(resolve, opts?.fallbackTimeoutMs ?? 40))
+          throw ASK_TIMED_OUT
+        }
+        throw error
+      } finally {
+        wait.abort()
+        waits.delete(callId)
+      }
+    }
+    // Host parity: the askTimed catch maps ASK_TIMED_OUT to the pending payload.
+    const askTimed = vi.fn(async (request: { questions?: unknown; agent?: unknown; signal?: AbortSignal }, callId: string, timeoutMs: number) => {
+      try {
+        return await askTimedImpl(request, callId, timeoutMs)
+      } catch (error) {
+        if ((error as { code?: string }).code === 'ASK_TIMED_OUT') return { pending: true, callId }
+        throw error
+      }
+    })
+    return {
+      service: { askTimed, answer, attachWait },
+      claims,
+      setListener: (next: Listener) => { listener = next },
+    }
+  }
+
+  const fgQuestionBlock = (messageId: string) => ({
+    turn: 1, step: 2, message: { role: 'assistant', id: messageId, content: [
+      { type: 'tool-call', id: 'c2', name: 'ask_user_question', arguments: JSON.stringify({ questions: [
+        { id: 'q1', question: '选哪个方案？', options: [{ label: '方案A' }, { label: '方案B' }], multi_select: true },
+      ] }) },
+    ] },
+  })
+
+  /** Boot + relay the ask card + wire the fake host to the bridge listener. */
+  async function bootForegroundRelay(host: ReturnType<typeof makeForegroundHost>) {
+    const h = await makeCmdHarness({ userQuestions: host.service })
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const relay = h.captured.agentListeners.find(l => l.event === 'user-questions/request')
+    expect(relay).toBeDefined()
+    host.setListener(relay!.listener)
+    const session = { id: h.sessionIds[0] }
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', fgQuestionBlock('relay-fg')))
+    await vi.waitFor(() => expect(sentTexts(h.outbound).some(t => t.includes('回复编号或字母选择'))).toBe(true))
+    return { h, session }
+  }
+
+  it('settles the ask tool instantly from a QQ reply while the foreground wait is live', async () => {
+    const host = makeForegroundHost()
+    const { h } = await bootForegroundRelay(host)
+    const ask = host.service.askTimed(
+      { questions: [{ id: 'q1', question: '选哪个方案？', options: [] }], agent: { session: { id: h.sessionIds[0] } } },
+      'c2', 300_000,
+    )
+    // The bridge took the host wait claim (hold = deadline suppression).
+    await vi.waitFor(() => expect(host.service.attachWait).toHaveBeenCalledTimes(1))
+    h.sendText('1,2')
+    await expect(ask).resolves.toEqual({ answers: [{ id: 'q1', selected: ['方案A', '方案B'] }] })
+    // Settled on the waterfall — the pending answer() path stayed idle.
+    expect(host.service.answer).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(sentTexts(h.outbound).some(t => t.includes(ANSWER_ACCEPTED_NOTICE))).toBe(true))
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it.each(['zero', 'throw'] as const)('still settles instantly with a degraded attach (%s) — fail-open holds the race without a claim', async (mode) => {
+    const host = makeForegroundHost({ attachMode: mode })
+    const { h } = await bootForegroundRelay(host)
+    const ask = host.service.askTimed(
+      { questions: [{ id: 'q1', question: '选哪个方案？', options: [] }], agent: { session: { id: h.sessionIds[0] } } },
+      'c2', 300_000,
+    )
+    await vi.waitFor(() => expect(host.service.attachWait).toHaveBeenCalledTimes(1))
+    // No claim is held, but the QQ answer still settles the tool inside its
+    // wait window (the host 300s timer remains the only deadline).
+    h.sendText('1')
+    await expect(ask).resolves.toEqual({ answers: [{ id: 'q1', selected: ['方案A'] }] })
+    expect(host.service.answer).not.toHaveBeenCalled()
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('releases the claim on the hold deadline → pending, and later replies go through answer()', async () => {
+    const host = makeForegroundHost({ holdRemainingMs: 80, fallbackTimeoutMs: 20 })
+    const { h } = await bootForegroundRelay(host)
+    const ask = host.service.askTimed(
+      { questions: [{ id: 'q1', question: '选哪个方案？', options: [] }], agent: { session: { id: h.sessionIds[0] } } },
+      'c2', 300_000,
+    )
+    await vi.waitFor(() => expect(host.service.attachWait).toHaveBeenCalledTimes(1))
+    await expect(ask).resolves.toEqual({ pending: true, callId: 'c2' })
+    // The claim was released when the hold deadline fired.
+    expect(host.claims[0]!.aborted).toBe(true)
+    // The wait is gone → a later QQ reply takes the pending answer() path.
+    h.sendText('1')
+    await vi.waitFor(() => expect(host.service.answer).toHaveBeenCalledTimes(1))
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('bridge stop releases every claim — no wait outlives the plugin unload', async () => {
+    const host = makeForegroundHost({ holdRemainingMs: 30_000 })
+    const { h } = await bootForegroundRelay(host)
+    const ask = host.service.askTimed(
+      { questions: [{ id: 'q1', question: '选哪个方案？', options: [] }], agent: { session: { id: h.sessionIds[0] } } },
+      'c2', 300_000,
+    )
+    await vi.waitFor(() => expect(host.service.attachWait).toHaveBeenCalledTimes(1))
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+    // Unload resolved the wait → the listener fell through → pending.
+    await expect(ask).resolves.toEqual({ pending: true, callId: 'c2' })
+    expect(host.claims[0]!.aborted).toBe(true)
   })
 })
