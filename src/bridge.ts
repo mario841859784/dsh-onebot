@@ -92,6 +92,8 @@ export interface BridgeConfig {
   cardFooter: string
   fontFiles: readonly string[]
   fontFamilies: readonly string[]
+  /** T2 (P1): preferred mono family names for code text (t2i); absent → t2i platform defaults. */
+  monoFamilies?: readonly string[]
   agentPreset: string
   workspacePath: string
   /** Max inbound file bytes fetched via QQ direct link / base64 (0 = no cap). */

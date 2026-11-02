@@ -95,7 +95,7 @@ export interface InterimContext {
   /** Bridge log line callback. */
   log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void
   /** The only config fields the interim domain reads. */
-  config: Pick<BridgeConfig, 'interimRecallMs' | 'interimRecall' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies'>
+  config: Pick<BridgeConfig, 'interimRecallMs' | 'interimRecall' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies' | 'monoFamilies'>
 }
 
 /**
@@ -272,6 +272,7 @@ export class InterimTracker {
         footerBrand: this.ctx.config.cardFooter,
         fontFiles: this.ctx.config.fontFiles,
         fontFamilies: this.ctx.config.fontFamilies,
+        monoFamilies: this.ctx.config.monoFamilies,
       })
     } catch (error) {
       this.ctx.log('warn', 'interim summary t2i failed, sending as text: ' + describeError(error))

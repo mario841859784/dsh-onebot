@@ -97,7 +97,7 @@ export interface OutboundContext {
   /** The only config fields the outbound pipeline reads. The W2-③ write-gate
    * fields ride as optional intersection members so the bridge's BridgeConfig
    * type stays untouched (absent → the defaults below). */
-  config: Pick<BridgeConfig, 'botQQ' | 'sensitivePatterns' | 'textImageThreshold' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies'> & Partial<{
+  config: Pick<BridgeConfig, 'botQQ' | 'sensitivePatterns' | 'textImageThreshold' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies' | 'monoFamilies'> & Partial<{
     /** Audit file directory (W2-③: mediaDir/qq-actions.log); absent → no audit. */
     mediaDir: string
     /** W2-③ bridge-wide proactive-write cap per sliding minute; 0 disables. */
@@ -193,6 +193,7 @@ export class OutboundPipeline {
             footerBrand: this.ctx.config.cardFooter,
             fontFiles: this.ctx.config.fontFiles,
             fontFamilies: this.ctx.config.fontFamilies,
+            monoFamilies: this.ctx.config.monoFamilies,
           })
           const b64 = 'base64://' + png.toString('base64')
           if (b64.length <= this.ctx.config.maxImageBytes) {
