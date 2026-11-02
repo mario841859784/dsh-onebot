@@ -41,6 +41,7 @@ let InjectChannel: typeof import('./inject.js').InjectChannel
 let redactSnapshot: typeof import('./health.js').redactSnapshot
 let describeError: typeof import('./errors.js').describeError
 let configureSendSegments: typeof import('./tools.js').configureSendSegments
+let resolveUserQuestions: typeof import('./ask-tool.js').resolveUserQuestions
 
 try {
   ;({ default: z } = await import('@deepseek-ai/schemastery'))
@@ -54,6 +55,7 @@ try {
   ;({ redactSnapshot } = await import('./health.js'))
   ;({ describeError } = await import('./errors.js'))
   ;({ configureSendSegments } = await import('./tools.js'))
+  ;({ resolveUserQuestions } = await import('./ask-tool.js'))
 } catch (error) {
   console.error('[dsh-onebot] 挂载失败：peer 依赖解析失败或关键模块缺失 —— 部署副本必须带完整 node_modules 链接集（scripts/link-host.sh 产物），只复制 lib/ 不够。原始错误：' + (error instanceof Error ? error.message : String(error)))
   throw error
@@ -90,6 +92,13 @@ type Context = CordisContext & {
   }
   commands: {
     execute(agent: unknown, line: string, submittedAttachments: readonly unknown[], signal: AbortSignal): Promise<{ kind?: string; text?: string; result?: { kind?: string; text?: string } }>
+  }
+  /** T2-B1/B3: the host userQuestions service (dsh-base registers it). Not in
+   * the inject list on purpose — a deployment without it must degrade to "no
+   * ask_user_question tool / no answer interception", never block the load. */
+  userQuestions?: {
+    askTimed(request: unknown, callId: string, timeoutMs: number): Promise<unknown>
+    answer(agent: unknown, callId: string, payload: { answers: Array<{ id: string; selected: string[]; custom?: string }> }): Promise<boolean>
   }
 }
 
@@ -158,6 +167,10 @@ export interface Config {
   fontFamilies: string[]
   monoFamilies: string[]
   agentPreset: string
+  /** 权限分档 A3: 群聊粗档 preset——设置后群聊会话优先使用该 preset id；空串=现行为。 */
+  agentPresetGroup: string
+  /** 权限分档 A2: 成员档位工具权限（none=成员回合禁用全部 qq_* 工具，默认；all=不限）。 */
+  permissions: { memberTools: 'none' | 'all' }
   workspacePath: string
   inboundFileMaxBytes: number
   /** @deprecated D4a alias of inboundFileMaxBytes; honored for one release. */
@@ -321,6 +334,12 @@ export const Config: Z<Config> = z.object({
     .description('t2i 渲染器代码文本优先使用的等宽字体家族名（优先于 fontFamilies 与平台默认，如 Cascadia Code / Consolas）'),
   agentPreset: z.string().default('')
     .description('QQ 会话加入的 agent 预设 id；留空用部署默认（settings 的 agent-presets.default，当前为 router-flash）。创建时总是解析有效预设并写入会话 header，Web 界面可见；resume 优先恢复会话自己记录的预设'),
+  agentPresetGroup: z.string().default('')
+    .description('权限分档：群聊会话的 agent 预设 id（粗档）——设置后群聊优先使用它，私聊仍用 agentPreset；留空 = 群私同源'),
+  permissions: z.object({
+    memberTools: z.union([z.const('none'), z.const('all')]).default('none')
+      .description('成员档位（非管理员）的工具权限：none=成员回合禁用全部 qq_* 工具（默认，插件硬拦截）；all=不限'),
+  }),
   workspacePath: z.string().default('')
     .description('QQ 会话的工作区目录（写入会话 cwd，并自动归入该工作区，不存在则创建）；留空时使用宿主进程工作目录并在启动时告警提醒（宿主未提供可编程查询的默认工作区），单聊 /workspace 覆盖优先且已持久化到会话映射文件，重启/恢复失败均不丢失'),
   inboundFileMaxBytes: z.number().default(INBOUND_FILE_MAX_BYTES)
@@ -520,6 +539,7 @@ export function apply(ctx: Context, config: Config): void {
     sessions: ctx.sessions,
     agentPresets: ctx.agentPresets,
     commands: ctx.commands as BridgeDeps['commands'],
+    userQuestions: resolveUserQuestions(ctx),
     sessionPersistence: ctx.sessionPersistence,
     workspaceRegistry: ctx.workspaceRegistry as unknown as WorkspaceRegistryLike,
     agentDefaultModel: ctx.agentDefaultModel,
@@ -556,6 +576,8 @@ export function apply(ctx: Context, config: Config): void {
       fontFamilies: config.fontFamilies,
       monoFamilies: config.monoFamilies,
       agentPreset: config.agentPreset,
+      agentPresetGroup: config.agentPresetGroup,
+      permissions: { memberTools: config.permissions.memberTools },
       workspacePath: config.workspacePath,
       maxInboundFileBytes: config.inboundFileMaxBytes,
       chatIdleEvictDays: config.chatIdleEvictDays,

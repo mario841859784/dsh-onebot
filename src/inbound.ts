@@ -163,6 +163,12 @@ export interface InboundContext {
    * nickname (T9-A): pre-sanitized sender display name for the /steer
    * <user_message> boundary attribute. */
   tryHandleCommand(chatId: ChatId, text: string, userId: string, nickname?: string): Promise<boolean>
+  /** T3-board /silent: silence-window probe (bridge-owned per-chat state).
+   * True = normal messages are dropped silently. Checked right AFTER the
+   * command router returns false, so all slash commands (including /silent
+   * itself) bypass the mute and the unlock can never be swallowed. Optional:
+   * absent = the host has no silencing wiring (pre-T3 behavior). */
+  isSilenced?(chatId: ChatId): boolean
   /** Message body assembly (bridge facade: overridable, see the pipeline-order test). */
   buildBody(text: string, media: MediaRef[], chatId: ChatId): Promise<string>
   /** Quote expansion via the overridable bridge facade; a verified response
@@ -180,6 +186,14 @@ export interface InboundContext {
    * media-bearing messages always queue, never steer). Optional: absent =
    * the pre-T2 pipeline (0.8.1 behavior for every message). */
   interceptBusyTurn?(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean): Promise<boolean>
+  /** T2-B3: ask_user_question answer seam — invoked for every plain message
+   * after ALL gates and BEFORE interceptBusyTurn. Parses the raw text as a
+   * reply to the chat's outstanding ask_user_question batch (纯选项选择 /
+   * 答:前缀 / 跳过 — see question-answer.ts) and settles it through the host
+   * userQuestions service. Returns true when consumed as an answer; any
+   * failure (no active batch, non-answer text, settle error/REPLY_QUEUED)
+   * returns false so the message reaches the conversation normally. */
+  interceptQuestionAnswer?(chatId: ChatId, text: string): Promise<boolean>
   /** Outbound facade (the B7 rate-limit notice). */
   sendToChat(chatId: ChatId, text: string): Promise<string[]>
   /** Bridge log line callback. */
@@ -331,6 +345,18 @@ export class InboundPipeline {
       return
     }
 
+    // T3-board /silent: the silence window drops NORMAL messages only —
+    // reached here means command routing already declined (slash commands
+    // returned above), so /silent and friends are never muted by their own
+    // window. The message has already paid the dedup/mention gates; the
+    // lazy /ocr image registration above is harmless (the next image
+    // refreshes the ref once the window lifts).
+    if (this.ctx.isSilenced?.(chatId) === true) {
+      this.ctx.log('debug', '静音窗口内，普通消息已忽略: ' + chatId)
+      currentTrace()?.emit('dispatch', { ok: false, reason: TRACE_REASONS.inboundSilenced })
+      return
+    }
+
     const body = await this.ctx.buildBody(inbound.text, inbound.media, chatId)
 
     let quote = ''
@@ -369,13 +395,15 @@ export class InboundPipeline {
       return
     }
     let final = wrapUserMessage(content, userId, nickname)
+    const role: UserRole = isAdmin ? 'admin' : 'member'
     if (kind === 'group') {
-      final = buildGroupMessagePrefix(nickname, userId, mentioned) + final
+      // 权限分档 A1: the group prefix carries the sender's tier so the model
+      // can see who it is talking to without trusting message-internal text.
+      final = buildGroupMessagePrefix(nickname, userId, mentioned, role) + final
       if (!isAdmin && this.ctx.config.restrictedMemberPrefix) {
         final = RESTRICTED_PREFIX + final
       }
     }
-    const role: UserRole = isAdmin ? 'admin' : 'member'
     // T2 (P1): the busy-turn policy seam runs AFTER every gate above (dedup /
     // self / policy / mention / command / rate-limit) and only around the
     // final dispatch — a queued or steered message has already paid for its
@@ -384,6 +412,14 @@ export class InboundPipeline {
     // messages always queue so the full media pipeline runs for their own
     // turn). Seam absent = pre-T2 behavior (straight dispatch).
     const plain = inbound.media.length === 0 && inbound.replyId === undefined && inbound.forwardId === undefined
+    // T2-B3: the ask_user_question answer seam runs BEFORE the busy-turn seam
+    // and only for plain text (media/quote/forward never parse as answers).
+    // A consumed answer ends here; any fall-through continues below unchanged.
+    if (plain && this.ctx.interceptQuestionAnswer !== undefined
+      && await this.ctx.interceptQuestionAnswer(chatId, inbound.text)) {
+      currentTrace()?.emit('dispatch', { ok: true, reason: TRACE_REASONS.questionAnswered })
+      return
+    }
     if (this.ctx.interceptBusyTurn !== undefined
       && await this.ctx.interceptBusyTurn(chatId, final, role, nickname, plain)) {
       return

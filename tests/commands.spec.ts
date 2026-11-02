@@ -65,19 +65,42 @@ describe('commands', () => {
 
   it('blocks slash commands for non-admin users', async () => {
     const h = await makeCmdHarness()
-    // Group message from a non-admin member, @-mentioning the bot, with /help.
+    // Group message from a non-admin member, @-mentioning the bot, with a
+    // non-member-visible command (/status). /help is member-visible (T3-board)
+    // and covered by its own test below.
     h.client.send(JSON.stringify({
       post_type: 'message', message_type: 'group', user_id: 20002, group_id: 888, self_id: 10002,
       message: [
         { type: 'at', data: { qq: '10002' } },
-        { type: 'text', data: { text: '/help' } },
+        { type: 'text', data: { text: '/status' } },
       ],
-      raw_message: '[CQ:at,qq=10002]/help',
+      raw_message: '[CQ:at,qq=10002]/status',
       sender: { user_id: 20002, nickname: '路人' },
     }))
     await vi.waitFor(() => {
       expect(h.outbound.some(f => JSON.stringify(f.params).includes('仅管理员可用'))).toBe(true)
     })
+    expect(h.captured.followups).toHaveLength(0)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 60_000)
+
+  it('renders the member /help card (memberVisible rows only) for a non-admin (T3-board)', async () => {
+    const h = await makeCmdHarness()
+    h.sendGroupTextAs('/help', 20002)
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('可用命令：'))).toBe(true)
+    })
+    const card = h.outbound.map(f => JSON.stringify(f.params)).join('\n')
+    // /help itself is the only member-visible command so far: the member view
+    // lists it and carries the 「其余命令需管理员」 tail.
+    expect(card).toContain('/help 本帮助')
+    expect(card).toContain('其余命令需管理员。')
+    // Admin-only rows never leak into the member card.
+    expect(card).not.toContain('/new ')
+    expect(card).not.toContain('/silent ')
+    expect(card).not.toContain('可用命令（仅管理员）：')
     expect(h.captured.followups).toHaveLength(0)
     h.client.close()
     await h.bridge.stop()
@@ -627,7 +650,7 @@ describe('commands', () => {
       expect(h.outbound.some(f => JSON.stringify(f.params).includes('可用命令'))).toBe(true)
     })
     const helpText = h.outbound.filter(f => f.action === 'send_msg').map(f => JSON.stringify(f.params)).join('\n')
-    for (const name of ['new', 'stop', 'model', 'workspace', 'preset', 'session', 'status', 'retry', 'id', 'ver', 'ocr', 'mode', 'plan', 'permission', 'goal', 'help']) {
+    for (const name of ['new', 'stop', 'model', 'workspace', 'preset', 'session', 'status', 'retry', 'id', 'ver', 'ocr', 'silent', 'mode', 'plan', 'permission', 'goal', 'help']) {
       expect(helpText).toContain('/' + name)
     }
     expect(h.captured.followups).toHaveLength(0)
@@ -639,7 +662,7 @@ describe('commands', () => {
   it('rejects every routed slash command for a non-admin with no side effects (M2-T0 command table)', async () => {
     const commands = { execute: vi.fn(async () => ({ kind: 'success', text: 'unreachable' })) }
     const h = await makeCmdHarness({ commands })
-    for (const name of ['new', 'stop', 'model', 'workspace', 'preset', 'session', 'status', 'retry', 'id', 'ver', 'ocr', 'mode', 'plan', 'permission', 'goal', 'help']) {
+    for (const name of ['new', 'stop', 'model', 'workspace', 'preset', 'session', 'status', 'retry', 'id', 'ver', 'ocr', 'silent', 'mode', 'plan', 'permission', 'goal']) {
       const before = h.outbound.length
       h.sendGroupTextAs('/' + name, 20002)
       await vi.waitFor(() => {
@@ -655,19 +678,21 @@ describe('commands', () => {
     await h.connection.stop()
   }, 60_000)
 
-  it('command table registers exactly the 18 routed commands, one row each, and /help renders the grouped card from the table (D1-PR1)', () => {
+  it('command table registers exactly the 19 routed commands, one row each, and /help renders the grouped card from the table (D1-PR1)', () => {
     // Row order = the /help line order inside each group; the router matches
     // by name so ordering is routing-neutral. Adding a command is exactly one
     // row here (group + usage-style help) — /help picks it up for free.
-    expect(COMMANDS.map(c => c.name)).toEqual(['new', 'stop', 'steer', 'model', 'workspace', 'preset', 'session', 'status', 'doctor', 'retry', 'id', 'ver', 'ocr', 'mode', 'plan', 'permission', 'goal', 'help'])
-    expect(COMMANDS).toHaveLength(18)
-    expect(new Set(COMMANDS.map(c => c.name)).size).toBe(18)
+    // T3-board: /help carries memberVisible (the sole member-visible row).
+    expect(COMMANDS.map(c => c.name)).toEqual(['new', 'stop', 'steer', 'model', 'workspace', 'preset', 'session', 'status', 'doctor', 'retry', 'id', 'ver', 'ocr', 'silent', 'mode', 'plan', 'permission', 'goal', 'help'])
+    expect(COMMANDS).toHaveLength(19)
+    expect(new Set(COMMANDS.map(c => c.name)).size).toBe(19)
     for (const c of COMMANDS) {
       expect(c.adminOnly).toBe(true)
       expect(c.help).not.toContain('\n')
       expect(c.help.trim()).not.toBe('')
       expect(c.group).toBeDefined()
     }
+    expect(COMMANDS.filter(c => c.memberVisible === true).map(c => c.name)).toEqual(['help'])
     // Full-text snapshot gate: the grouped /help card, byte-exact (the
     // harness-level /help test above exercises the real outbound path).
     // Every routed command must appear exactly once in the card body.
@@ -685,7 +710,7 @@ describe('commands', () => {
       '/plan [off|内容] 宿主计划模式',
       '▍查询',
       '/status 会话全景',
-      '/doctor [export [参考号]] 运行体检（export [参考号] 导出脱敏诊断包，文件名含参考号）',
+      '/doctor [export [参考号]|test] 运行体检（export [参考号] 导出脱敏诊断包；test 一键自测收发链路）',
       '/id 会话标识（session/chat）',
       '/ver 插件版本',
       '▍操作',
@@ -693,11 +718,23 @@ describe('commands', () => {
       '/steer <补充内容> 向运行中的任务补充指令',
       '/retry 重跑上一条',
       '/ocr 识别最近一张图片',
+      '/silent [分钟] 临时免打扰（默认 30 分钟，期间普通消息被忽略；再次 /silent 提前解除）',
       '▍其他',
       '/model [--default] <provider> <model> 切换模型（--default 改部署默认；无参两级序号列表）',
       '/goal [目标|clear] 目标记录',
       '/help 本帮助',
       '',
+      '未知命令默认拦截并提示相近命令；unknownCommand: passthrough 可改为透传给模型。',
+    ].join('\n'))
+    // T3-board: the member card lists ONLY memberVisible rows and swaps the
+    // tail for 「其余命令需管理员」.
+    const memberCard = helpText(true)
+    expect(memberCard).toBe([
+      '可用命令：',
+      '▍其他',
+      '/help 本帮助',
+      '',
+      '其余命令需管理员。',
       '未知命令默认拦截并提示相近命令；unknownCommand: passthrough 可改为透传给模型。',
     ].join('\n'))
     for (const c of COMMANDS) {
@@ -723,6 +760,109 @@ describe('commands', () => {
     await h.bridge.stop()
     await h.connection.stop()
   }, 30_000)
+
+  it('/doctor test sends a marker through the full outbound pipeline and reports success with latency (T3-board)', async () => {
+    const h = await makeCmdHarness()
+    h.sendText('/doctor test')
+    await vi.waitFor(() => {
+      // The marker itself is visible in the chat — receiving it IS the
+      // success signal, so the self-test goes through sendToChat (production
+      // posture), not a raw connection probe.
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('🧪 /doctor test 自测消息'))).toBe(true)
+    })
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('✅ /doctor test 自测通过'))).toBe(true)
+    })
+    const report = h.outbound.map(f => JSON.stringify(f.params)).join('\n')
+    expect(report).toContain('连接：已连接')
+    expect(report).toContain('发送：成功')
+    expect(report).toContain('时延：')
+    expect(report).toMatch(/时延：\d+ ms/)
+    expect(h.captured.followups).toHaveLength(0)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 30_000)
+
+  it('/doctor test reports a send failure describeError-style without crashing the router (T3-board)', async () => {
+    const h = await makeCmdHarness()
+    const spy = vi.spyOn(h.bridge, 'sendToChat').mockRejectedValueOnce(new Error('boom: 链路炸了'))
+    h.sendText('/doctor test')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('⚠️ /doctor test 自测失败'))).toBe(true)
+    })
+    const report = h.outbound.map(f => JSON.stringify(f.params)).join('\n')
+    expect(report).toContain('连接：已连接')
+    expect(report).toContain('发送：失败 — boom: 链路炸了')
+    spy.mockRestore()
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 30_000)
+
+  it('/silent: default 30-minute window drops normal messages, keeps commands, and lifts early (T3-board)', async () => {
+    const h = await makeCmdHarness()
+    h.sendText('/silent')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('🔇 已静音 30 分钟'))).toBe(true)
+    })
+    const afterSilent = h.outbound.length
+    // Normal messages during the window are dropped silently: no reply and
+    // no agent dispatch (the drop sits after command routing, before dispatch).
+    h.sendText('静音期间的第一条')
+    await new Promise(resolve => setTimeout(resolve, 500))
+    expect(h.captured.followups).toHaveLength(0)
+    expect(h.outbound.length).toBe(afterSilent)
+    // Slash commands still route inside the window.
+    h.sendText('/help')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('可用命令（仅管理员）'))).toBe(true)
+    })
+    // A bare /silent lifts the window early.
+    h.sendText('/silent')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('🔔 已解除静音'))).toBe(true)
+    })
+    // Normal messages dispatch again after the lift.
+    h.sendText('解除后的第一条')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 60_000)
+
+  it('/silent <分钟> sets a custom window, invalid input gets the usage line, and members cannot silence (T3-board)', async () => {
+    const h = await makeCmdHarness()
+    h.sendText('/silent 5')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('🔇 已静音 5 分钟'))).toBe(true)
+    })
+    // Out-of-range minutes get the usage line, not a window.
+    h.sendText('/silent 0')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('分钟数无效'))).toBe(true)
+    })
+    h.sendText('/silent 99999')
+    await vi.waitFor(() => {
+      expect(h.outbound.filter(f => JSON.stringify(f.params).includes('分钟数无效'))).toHaveLength(2)
+    })
+    // Bracketed numbers are tolerated (same posture as /session).
+    h.sendText('/silent [15]')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('🔇 已静音 15 分钟'))).toBe(true)
+    })
+    // A member cannot silence the chat: admin gate replies, and the group
+    // chat keeps dispatching (silence state is per-chat and none was set).
+    h.sendGroupTextAs('/silent', 20002)
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('仅管理员可用'))).toBe(true)
+    })
+    h.sendGroupTextAs('普通成员消息', 20002)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 60_000)
 
   it('command errors carry a how-to-fix usage/next-step line (usability audit)', async () => {
     const resolve = vi.fn(async (id?: string) => {

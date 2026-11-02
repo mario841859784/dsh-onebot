@@ -60,7 +60,7 @@ function registryOf(h: { bridge: unknown }): ChatRegistry {
  * direct-call convention of this file). */
 function makeRegistryDeps(overrides?: {
   agents?: unknown
-  config?: Partial<Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>>
+  config?: Partial<Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'agentPresetGroup' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>>
 }): RegistryDeps {
   return {
     agents: (overrides?.agents ?? { create: vi.fn(), resume: vi.fn() }) as never,
@@ -1246,5 +1246,45 @@ describe('ChatRegistry · T4 #15 /session broken-session count rendering', () =>
       expect(sent).toHaveLength(1)
       expect(sent[0]).not.toContain('损坏会话')
     }
+  })
+})
+
+/**
+ * 权限分档 A3: 群聊粗档 preset——resolvePresetId 在群聊 chat 上优先使用
+ * config.agentPresetGroup（未配置/空串 = 现行为，群私同源 agentPreset）；
+ * /preset override 仍然最优先；私聊永远不受 agentPresetGroup 影响。
+ */
+describe('ChatRegistry.resolvePresetId agentPresetGroup (权限分档 A3)', () => {
+  it('group chats prefer agentPresetGroup when configured', async () => {
+    const registry = new ChatRegistry(makeRegistryDeps({
+      config: { agentPreset: 'standard', agentPresetGroup: 'group-basic' },
+    }))
+    await expect(registry.resolvePresetId('group:20001')).resolves.toBe('group-basic')
+    // 私聊不受群档影响。
+    await expect(registry.resolvePresetId('private:10001')).resolves.toBe('standard')
+  })
+
+  it('unconfigured agentPresetGroup keeps the current behavior for group chats', async () => {
+    const registry = new ChatRegistry(makeRegistryDeps({
+      config: { agentPreset: 'standard', agentPresetGroup: '' },
+    }))
+    await expect(registry.resolvePresetId('group:20001')).resolves.toBe('standard')
+    await expect(registry.resolvePresetId('private:10001')).resolves.toBe('standard')
+  })
+
+  it('a /preset override still wins over agentPresetGroup', async () => {
+    const registry = new ChatRegistry(makeRegistryDeps({
+      config: { agentPreset: 'standard', agentPresetGroup: 'group-basic' },
+    }))
+    registry.getSettings('group:20001').presetOverride = 'minimal'
+    await expect(registry.resolvePresetId('group:20001')).resolves.toBe('minimal')
+  })
+
+  it('falls back to the deployment default when neither tier preset is set', async () => {
+    const registry = new ChatRegistry(makeRegistryDeps({
+      config: { agentPreset: '', agentPresetGroup: '' },
+    }))
+    // makeRegistryDeps 的 agentPresets stub defaultId='standard'。
+    await expect(registry.resolvePresetId('group:20001')).resolves.toBe('standard')
   })
 })

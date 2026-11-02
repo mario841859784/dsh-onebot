@@ -27,7 +27,9 @@ import type { AccessPolicyConfig } from './chat.js'
 import { buildPlatformPrompt } from './prompt.js'
 import { registerTools } from './tools.js'
 import { tryHandleCommand as routeCommand, STEER_ACCEPTED_NOTICE, type CommandContext } from './commands.js'
-import { relayHostCards as relayCards, type CardRelayContext } from './card-relay.js'
+import { relayHostCards as relayCards, type CardRelayContext, type RelayQuestionCall } from './card-relay.js'
+import { ASK_USER_TIMEOUT_SECONDS, registerAskUserTool, type UserQuestionsPort } from './ask-tool.js'
+import { parseQuestionAnswer } from './question-answer.js'
 import { OutboundPipeline } from './outbound.js'
 import type { OutboundSegment, SendOptions } from './outbound.js'
 import { ChatRegistry } from './registry.js'
@@ -53,6 +55,13 @@ import type { TraceStage } from './trace.js'
  * turn (the flag resets at turn/end) so a burst of queued messages never
  * spams the chat. Exported for the deterministic text wait in tests. */
 export const QUEUE_NOTICE_TEXT = '⏳ 当前任务运行中，新消息已排队，将在当前任务结束后依次处理。'
+
+/** T2-B2: how long a relayed ask_user_question batch stays interceptable —
+ * after this the bridge stops treating plain replies as answers (the host's
+ * continued-state question may still be answered from the Web card). */
+export const QUESTION_TTL_MS = 15 * 60 * 1000
+/** T2-B3: the auto-receipt sent when a QQ reply settles an ask_user_question batch. */
+export const ANSWER_ACCEPTED_NOTICE = '✔ 已提交回答'
 
 /** Resolved runtime configuration for the bridge. */
 export interface BridgeConfig {
@@ -95,6 +104,13 @@ export interface BridgeConfig {
   /** T2 (P1): preferred mono family names for code text (t2i); absent → t2i platform defaults. */
   monoFamilies?: readonly string[]
   agentPreset: string
+  /** 权限分档 A3: 群聊粗档 preset——设置后群聊会话优先使用该 preset id（私聊
+   * 仍用 agentPreset）；absent/空串 = 现行为（群私同源 agentPreset）。 */
+  agentPresetGroup?: string
+  /** 权限分档 A2: 成员档位工具权限。'none'（缺省）= 成员（非管理员）回合
+   * 内全部 qq_* 工具在 execute 前被硬拦截；'all' = 不限。fail-closed：
+   * 字段缺失按 'none' 处理。 */
+  permissions?: { memberTools?: 'none' | 'all' }
   workspacePath: string
   /** Max inbound file bytes fetched via QQ direct link / base64 (0 = no cap). */
   maxInboundFileBytes: number
@@ -250,6 +266,11 @@ export interface BridgeDeps {
   workspaceRegistry: WorkspaceRegistryLike | undefined
   agentDefaultModel: AgentDefaultModelLike | undefined
   defaultModel: (() => ModelSelection | undefined) | undefined
+  /** T2-B3: the host userQuestions service — settles intercepted QQ replies
+   * against the chat's continued-state ask_user_question. Absent (test
+   * assemblies / unexpected hosts) = answer interception stays disabled and
+   * every reply flows into the conversation normally. */
+  userQuestions?: UserQuestionsPort | undefined
   config: BridgeConfig & TraceBridgeConfig
   policy: AccessPolicyConfig
   /** W1/T5 health: the ALREADY-redacted plugin config snapshot (secrets
@@ -299,6 +320,10 @@ export class ChatBridge {
    * would orphan exactly that reply's outbound events. One entry per chat
    * id (bounded by the chat population), so growth is not a concern. */
   private readonly traceByChat = new Map<ChatId, string>()
+  /** T3-board /silent: per-chat silence window (epoch-ms until; no entry =
+   * not silenced). Deliberately in-memory — a plugin restart lifts the
+   * silence, the safe direction (the bot becomes responsive again). */
+  private readonly silentUntil = new Map<ChatId, number>()
   /** W1/T5: chatId → the traceId of the chat's unsettled INJECTED round
    * (independent of the trace sink, so the dry-run guard covers the async
    * agent reply even with tracing off). Cleared by a real dispatch to the
@@ -308,6 +333,11 @@ export class ChatBridge {
    * running turn (one notice per turn; cleared at turn/end and on chat
    * removal — bounded by the chat population). */
   private readonly queueNoticeChats = new Set<ChatId>()
+  /** T2-B2: the chat's outstanding ask_user_question batch, keyed by chat id
+   * (memory only — a restart loses it and the model re-asks). Populated from
+   * the card relay's onQuestionCall, consumed by interceptQuestionAnswer,
+   * cleared on settle (user-question-reply event), chat removal and the TTL. */
+  private readonly activeQuestion = new Map<ChatId, RelayQuestionCall & { askedAt: number }>()
   /** Plugin version + git commit, read once for /ver. */
   private pluginVersion: string | undefined
   private pluginCommit: string | undefined
@@ -332,6 +362,7 @@ export class ChatBridge {
         this.traceByChat.delete(chat.chatId)
         this.injectRoundByChat.delete(chat.chatId)
         this.queueNoticeChats.delete(chat.chatId)
+        this.activeQuestion.delete(chat.chatId)
       },
       installChannelScope: agentCtx => this.installChannelScope(agentCtx),
     })
@@ -363,10 +394,22 @@ export class ChatBridge {
       transcriber: deps.transcriber,
       steerTranscript: (chatId, text) => this.steerTranscript(chatId, text),
       tryHandleCommand: (chatId, text, userId, nickname) => this.tryHandleCommand(chatId, text, userId, nickname),
+      // T3-board /silent: silence-window probe (in-memory per-chat state;
+      // expired entries are pruned lazily on read).
+      isSilenced: chatId => {
+        const until = this.silentUntil.get(chatId)
+        if (until === undefined) return false
+        if (until <= Date.now()) {
+          this.silentUntil.delete(chatId)
+          return false
+        }
+        return true
+      },
       buildBody: (text, media, chatId) => this.buildBody(text, media, chatId),
       expandQuote: (messageId, verifiedData) => this.expandQuote(messageId, verifiedData),
       dispatchFollowup: (chatId, text, role, nickname) => this.dispatchFollowup(chatId, text, role, nickname),
       interceptBusyTurn: (chatId, text, role, nickname, plain) => this.interceptBusyTurn(chatId, text, role, nickname, plain),
+      interceptQuestionAnswer: (chatId, text) => this.interceptQuestionAnswer(chatId, text),
       sendToChat: (chatId, text) => this.sendToChat(chatId, text),
       log: (level, message) => this.deps.log(level, message),
       config: deps.config,
@@ -463,6 +506,20 @@ export class ChatBridge {
     const chatId = this.bySession.get(sessionId)
     if (chatId === undefined) return true
     return this.chats.get(chatId)?.activeTurnRole === 'admin'
+  }
+
+  /**
+   * 权限分档 A2（工具硬防线）：one tool-call's permission decision. Reuses the
+   * M1-A2 turn-level role (frozen at turn/start, fail-closed member) via
+   * canEditFiles; a caller with no QQ session mapping (Web/other channels) is
+   * outside the tier semantics and stays allowed; permissions.memberTools
+   * === 'all' disables the gate entirely. Absent config fails closed to
+   * 'none' (members blocked).
+   */
+  memberToolsAllowed(sessionId: string | undefined): boolean {
+    if ((this.deps.config.permissions?.memberTools ?? 'none') === 'all') return true
+    if (sessionId === undefined) return true
+    return this.canEditFiles(sessionId)
   }
 
   /**
@@ -672,12 +729,65 @@ export class ChatBridge {
   }
 
   /** The CardRelayContext handed to the card relay (D1-PR2): the outbound
-   * send path plus the bridge log — the only capabilities the relay touches. */
+   * send path plus the bridge log — the only capabilities the relay touches.
+   * T2-B2 adds onQuestionCall to record the outstanding batch. */
   private get cardRelayCtx(): CardRelayContext {
     return {
       sendToChat: (chatId, text) => this.sendToChat(chatId, text),
       log: (level, message) => this.deps.log(level, message),
+      onQuestionCall: (chatId, call) => {
+        this.activeQuestion.set(chatId, { ...call, askedAt: Date.now() })
+      },
     }
+  }
+
+  /** T2-B2: the chat's outstanding ask_user_question batch, or undefined when
+   * there is none or the TTL (QUESTION_TTL_MS) has expired (expired entries
+   * are dropped lazily — no timer needed). */
+  private activeQuestionFor(chatId: ChatId): RelayQuestionCall | undefined {
+    const entry = this.activeQuestion.get(chatId)
+    if (entry === undefined) return undefined
+    if (Date.now() - entry.askedAt > QUESTION_TTL_MS) {
+      this.activeQuestion.delete(chatId)
+      return undefined
+    }
+    return entry
+  }
+
+  /**
+   * T2-B3: intercept a plain QQ message that parses as a reply to the chat's
+   * outstanding ask_user_question batch (选项选择 / 答:前缀 / 跳过 — see
+   * question-answer.ts) and settle it through the host userQuestions service
+   * (the chat's live root agent). Runs in the inbound pipeline before the
+   * busy-turn seam. Any failure — no active batch, not an answer shape, no
+   * userQuestions service, BAD_ANSWER / REPLY_QUEUED / returned false —
+   * falls through so the message reaches the conversation normally.
+   * @param chatId - the chat the reply arrived in.
+   * @param text - raw parsed inbound text.
+   * @returns true when the message was consumed as an answer.
+   */
+  private async interceptQuestionAnswer(chatId: ChatId, text: string): Promise<boolean> {
+    if (this.deps.userQuestions === undefined) return false
+    const entry = this.activeQuestionFor(chatId)
+    if (entry === undefined) return false
+    const answers = parseQuestionAnswer(text, entry.questions)
+    if (answers === undefined) return false
+    const chat = this.chats.get(chatId)
+    if (chat === undefined) return false
+    try {
+      const settled = await this.deps.userQuestions.answer(chat.agent, entry.callId, { answers })
+      if (settled !== true) return false
+    } catch (error: unknown) {
+      // BAD_ANSWER / REPLY_QUEUED / callId no longer continued → not ours to
+      // consume; the message continues into the conversation.
+      this.deps.log('debug', 'question answer settle failed: ' + describeError(error))
+      return false
+    }
+    this.activeQuestion.delete(chatId)
+    this.sendToChat(chatId, ANSWER_ACCEPTED_NOTICE).catch((error: unknown) => {
+      this.deps.log('debug', '回答回执发送失败: ' + describeError(error))
+    })
+    return true
   }
 
   /**
@@ -772,6 +882,12 @@ export class ChatBridge {
       // T4 (P3): command-plane failures (/retry) mint an MF- reference through
       // the bridge's single entry point (registry + trace + structured log).
       reportFailure: (chatId, stage, detail) => bridge.registerMessageFailure(chatId, stage, detail),
+      // T3-board /silent: per-chat silence window (in-memory; restart lifts it).
+      silentUntil: chatId => bridge.silentUntil.get(chatId),
+      setSilentUntil: (chatId, untilMs) => {
+        if (untilMs === undefined) bridge.silentUntil.delete(chatId)
+        else bridge.silentUntil.set(chatId, untilMs)
+      },
       config: { interimMessages: bridge.deps.config.interimMessages, maxImageBytes: bridge.deps.config.maxImageBytes, unknownCommand: bridge.deps.config.unknownCommand },
     }
   }
@@ -1004,6 +1120,14 @@ export class ChatBridge {
     const chat = this.chats.get(chatId)
     if (chat === undefined || chat.sessionId !== session.id) return
     const trace = this.traceForChat(chatId)
+    if (event.type === 'user/message') {
+      // T2-B2: a user-question-reply user message (this bridge's settled
+      // answer, or a Web-side answer) means the outstanding batch is settled —
+      // drop it so later plain text stops being intercepted as answers.
+      const source = (event.data as { source?: { kind?: string } }).source
+      if (source?.kind === 'user-question-reply') this.activeQuestion.delete(chatId)
+      return
+    }
     if (event.type === 'turn/start') {
       trace?.emit('agent', { ok: true, reason: '模型回合开始' })
       // B8: a new turn begins — prune the previous turn's recalled-id
@@ -1210,6 +1334,14 @@ export class ChatBridge {
       maxImageBytes: this.deps.config.maxImageBytes,
       maxVoiceBytes: this.deps.config.maxVoiceBytes,
       maxFileBytes: this.deps.config.maxFileBytes,
+    })
+    // T2-B1: expose ask_user_question to QQ sessions (timed variant, 300s
+    // default). The host registers the tool only for preset/Web scopes, and
+    // the platform prompt previously banned the call on QQ; now QQ sessions
+    // get a scoped shadow whose pending/answer loop the bridge settles (B2/B3).
+    registerAskUserTool(agentCtx, {
+      timeoutSeconds: ASK_USER_TIMEOUT_SECONDS,
+      log: (level, message) => this.deps.log(level, message),
     })
   }
 

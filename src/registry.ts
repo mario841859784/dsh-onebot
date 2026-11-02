@@ -208,7 +208,7 @@ export interface RegistryDeps {
   agentPresets: AgentPresetsLike | undefined
   defaultModel: (() => ModelSelection | undefined) | undefined
   /** The only config fields the registry reads. */
-  config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>
+  config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'agentPresetGroup' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>
   log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void
   /** Bridge stop flag (guards the resume loop). */
   isStopping(): boolean
@@ -1083,7 +1083,15 @@ export class ChatRegistry {
     if (override !== undefined && override !== '') return override
     const presets = this.deps.agentPresets
     if (presets === undefined) return undefined
-    const configured = this.deps.config.agentPreset
+    // 权限分档 A3: 群聊粗档——配置了 agentPresetGroup 时群聊会话优先用它
+    // （私聊与未配置时维持 agentPreset/defaultId 行为不变；/preset override
+    // 仍然最优先）。
+    const groupPreset = this.deps.config.agentPresetGroup
+    const isGroupChat = chatId !== undefined && chatId.startsWith('group:')
+    const base = this.deps.config.agentPreset
+    const configured = isGroupChat && groupPreset !== undefined && groupPreset !== ''
+      ? groupPreset
+      : base
     const wanted = configured !== undefined && configured !== '' ? configured : presets.defaultId
     try {
       const preset = await presets.resolve(wanted)
