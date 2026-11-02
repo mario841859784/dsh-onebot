@@ -192,6 +192,101 @@ describe('inbound pipeline', () => {
     await h.connection.stop()
   })
 
+  it('accepts all three forward node shapes: data.message, data.content, top-level node.message, and flat content', async () => {
+    const h = await makeHarness()
+    const real = h.connection.call.bind(h.connection)
+    h.connection.call = (async (action: string, params: Record<string, unknown>) => {
+      if (action === 'get_forward_msg') {
+        return {
+          messages: [
+            // Canonical OneBot node segment.
+            { type: 'node', data: { user_id: 1, nickname: '甲', message: [{ type: 'text', data: { text: '经data-message' } }] } },
+            // Legacy data.content shape.
+            { type: 'node', data: { user_id: 2, nickname: '乙', content: [{ type: 'text', data: { text: '经data-content' } }] } },
+            // NapCat v4: message at the TOP level of the node, no data wrapper.
+            { type: 'node', message: [{ type: 'text', data: { text: '经顶层node-message' } }], data: { user_id: 3, nickname: '丙' } },
+            // go-cqhttp flat fallback: sender/content at the node level.
+            { type: 'node', sender: { nickname: '丁' }, content: [{ type: 'text', data: { text: '经扁平content' } }] },
+          ],
+        }
+      }
+      return await real(action, params)
+    }) as never
+    h.client.send(JSON.stringify({
+      post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002,
+      message: [{ type: 'forward', data: { id: 'fwd-shapes' } }], raw_message: '[CQ:forward,id=fwd-shapes]',
+      sender: { user_id: 10001, nickname: '甲' },
+    }))
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const text = h.captured.followups[0].text
+    expect(text).toContain('甲: 经data-message')
+    expect(text).toContain('乙: 经data-content')
+    expect(text).toContain('丙: 经顶层node-message')
+    expect(text).toContain('丁: 经扁平content')
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('truncates expanded forwards beyond 50 nodes with a self-serve marker', async () => {
+    const h = await makeHarness()
+    const real = h.connection.call.bind(h.connection)
+    h.connection.call = (async (action: string, params: Record<string, unknown>) => {
+      if (action === 'get_forward_msg') {
+        return {
+          messages: Array.from({ length: 55 }, (_, i) => ({
+            type: 'node', data: { user_id: 10001, nickname: '节点' + i, message: [{ type: 'text', data: { text: '消息' + i } }] },
+          })),
+        }
+      }
+      return await real(action, params)
+    }) as never
+    h.client.send(JSON.stringify({
+      post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002,
+      message: [{ type: 'forward', data: { id: 'fwd-many' } }], raw_message: '[CQ:forward,id=fwd-many]',
+      sender: { user_id: 10001, nickname: '甲' },
+    }))
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const text = h.captured.followups[0].text
+    expect(text).toContain('节点49: 消息49')
+    expect(text).not.toContain('消息50')
+    expect(text).toContain('(已截断，剩余 5 节点，可用 get_forward_msg 自查)')
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('truncates expanded forwards beyond 8000 characters with a self-serve marker', async () => {
+    const h = await makeHarness()
+    const real = h.connection.call.bind(h.connection)
+    h.connection.call = (async (action: string, params: Record<string, unknown>) => {
+      if (action === 'get_forward_msg') {
+        return {
+          messages: [
+            { type: 'node', data: { user_id: 1, nickname: '长文', message: [{ type: 'text', data: { text: '字'.repeat(5000) } }] } },
+            { type: 'node', data: { user_id: 2, nickname: '超限', message: [{ type: 'text', data: { text: '字'.repeat(5000) } }] } },
+            { type: 'node', data: { user_id: 3, nickname: '末尾', message: [{ type: 'text', data: { text: '尾巴' } }] } },
+          ],
+        }
+      }
+      return await real(action, params)
+    }) as never
+    h.client.send(JSON.stringify({
+      post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002,
+      message: [{ type: 'forward', data: { id: 'fwd-long' } }], raw_message: '[CQ:forward,id=fwd-long]',
+      sender: { user_id: 10001, nickname: '甲' },
+    }))
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const text = h.captured.followups[0].text
+    // First line (≈5000 chars) fits; the rest is dropped with the marker.
+    expect(text).toContain('长文: ' + '字'.repeat(5000))
+    expect(text).not.toContain('尾巴')
+    expect(text).toContain('(已截断，剩余 2 节点，可用 get_forward_msg 自查)')
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
   it('reports forward expansion failure with the resId so the model can self-serve', async () => {
     const h = await makeHarness()
     const real = h.connection.call.bind(h.connection)

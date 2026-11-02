@@ -678,6 +678,7 @@ export class InboundPipeline {
       const data = await this.ctx.call('get_forward_msg', { id: forwardId, message_id: forwardId }) as {
         messages?: Array<{
           sender?: { nickname?: string; user_id?: number | string }
+          message?: unknown
           content?: unknown
           data?: { nickname?: string; user_id?: number | string; message?: unknown; content?: unknown }
         }>
@@ -689,7 +690,12 @@ export class InboundPipeline {
         const nodeData = node.data
         const name = nodeData?.nickname ?? node.sender?.nickname
           ?? String(nodeData?.user_id ?? node.sender?.user_id ?? '未知')
-        const text = nodeContentText(nodeData?.message ?? nodeData?.content ?? node.content, name, media, lines)
+        // NapCat v4 puts the message at the TOP level of the node (no data
+        // wrapper); OneBot node segments keep data.message/data.content, and
+        // go-cqhttp-style implementations use the flat sender/content shape.
+        const text = nodeContentText(
+          nodeData?.message ?? nodeData?.content ?? node.message ?? node.content, name, media, lines,
+        )
         if (text !== '') lines.push(name + ': ' + text)
       }
       if (lines.length === 0) {
@@ -697,7 +703,7 @@ export class InboundPipeline {
         currentTrace()?.emit('forward', { ok: false, reason: '合并转发未展开: ' + reason })
         return { text: '[合并转发 id=' + forwardId + ' 未展开: ' + reason + ']', media }
       }
-      return { text: '[合并转发]\n' + lines.join('\n'), media }
+      return { text: '[合并转发]\n' + truncateForwardLines(lines).join('\n'), media }
     } catch (error) {
       this.ctx.log('info', 'forward expansion failed: resId=' + forwardId + ': ' + describeError(error))
       currentTrace()?.emit('forward', { ok: false, reason: '合并转发展开失败: ' + describeError(error) })
@@ -729,6 +735,30 @@ function placeholderFor(ref: MediaRef): string {
     case 'video': return '[视频]'
     default: return ref.name !== undefined ? '[文件:' + ref.name + ']' : '[文件]'
   }
+}
+
+/** Combined-forward expansion caps: at most 50 node lines / 8000 characters. */
+const FORWARD_MAX_LINES = 50
+const FORWARD_MAX_CHARS = 8000
+
+/**
+ * Cap expanded forward lines at 50 nodes / 8000 characters so a huge merged
+ * forward cannot flood the model context. The dropped tail is announced with
+ * a marker pointing at the whitelisted get_forward_msg self-serve tool.
+ */
+function truncateForwardLines(lines: readonly string[]): string[] {
+  const kept: string[] = []
+  let used = 0
+  for (const line of lines) {
+    if (kept.length >= FORWARD_MAX_LINES || used + line.length + 1 > FORWARD_MAX_CHARS) {
+      const remaining = lines.length - kept.length
+      kept.push('(已截断，剩余 ' + remaining + ' 节点，可用 get_forward_msg 自查)')
+      return kept
+    }
+    kept.push(line)
+    used += line.length + 1
+  }
+  return kept
 }
 
 /**
