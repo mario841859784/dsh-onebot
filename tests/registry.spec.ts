@@ -20,6 +20,7 @@ import { OneBotConnection } from '../src/connection.js'
 import { ChatBridge } from '../src/bridge.js'
 import { ChatRegistry, resolveRecordedPreset } from '../src/registry.js'
 import type { ChatSettings, RegistryDeps } from '../src/registry.js'
+import { tryHandleCommand } from '../src/commands.js'
 import type { BridgeConfig } from '../src/bridge.js'
 import { MediaStore } from '../src/media.js'
 import { Transcriber } from '../src/stt.js'
@@ -1132,4 +1133,118 @@ describe('ChatRegistry', () => {
     await h.bridge.stop()
     await h.connection.stop()
   }, 30_000)
+})
+
+describe('ChatRegistry · T4 #15 loadMapping corrupt-mapping handling', () => {
+  /** Direct-registry deps with the log captured (makeRegistryDeps pins a
+   * no-op log; the property stays assignable). */
+  function depsWithLog(): { deps: RegistryDeps; logLines: string[] } {
+    const deps = makeRegistryDeps()
+    const logLines: string[] = []
+    deps.log = (level, message) => { logLines.push(level + ': ' + message) }
+    return { deps, logLines }
+  }
+
+  it('a corrupt JSON mapping is quarantined: warn + .bak, no throw, chat usable', async () => {
+    const { deps, logLines } = depsWithLog()
+    const mappingPath = join(deps.config.mediaDir, 'chat-sessions.json')
+    await writeFile(mappingPath, '{ not json', 'utf8')
+    const registry = new ChatRegistry(deps)
+    await expect(registry.loadMapping()).resolves.toBeUndefined()
+    expect(logLines.some(line => line.startsWith('warn: mapping file is corrupt'))).toBe(true)
+    // The corrupted content was copied aside before the load continued.
+    expect(await readFile(mappingPath + '.bak', 'utf8')).toBe('{ not json')
+    // The chat stays usable on the empty mapping (fresh session).
+    const sessionIds: string[] = []
+    registry.deps.agents = makeFakeAgents(sessionIds, { followups: [] }) as never
+    await expect(registry.ensureChat('private:10001', '小明')).resolves.toBeDefined()
+  })
+
+  it('a BOM-prefixed mapping takes the same quarantine path (warn + .bak, no throw)', async () => {
+    const { deps, logLines } = depsWithLog()
+    const mappingPath = join(deps.config.mediaDir, 'chat-sessions.json')
+    await writeFile(mappingPath, '\uFEFF{"private:10001":"onebot-private-10001"}', 'utf8')
+    const registry = new ChatRegistry(deps)
+    await expect(registry.loadMapping()).resolves.toBeUndefined()
+    expect(logLines.some(line => line.startsWith('warn: mapping file is corrupt'))).toBe(true)
+    expect(await readFile(mappingPath + '.bak', 'utf8')).toBe('\uFEFF{"private:10001":"onebot-private-10001"}')
+  })
+
+  it('a second corrupt load never overwrites the first .bak (earliest copy wins)', async () => {
+    const { deps } = depsWithLog()
+    const mappingPath = join(deps.config.mediaDir, 'chat-sessions.json')
+    await writeFile(mappingPath, 'first corrupt', 'utf8')
+    const registry = new ChatRegistry(deps)
+    await registry.loadMapping()
+    await writeFile(mappingPath, 'second corrupt', 'utf8')
+    await registry.loadMapping()
+    expect(await readFile(mappingPath + '.bak', 'utf8')).toBe('first corrupt')
+  })
+
+  it('a non-object mapping (array/null) is quarantined like a parse failure', async () => {
+    const { deps, logLines } = depsWithLog()
+    const mappingPath = join(deps.config.mediaDir, 'chat-sessions.json')
+    await writeFile(mappingPath, '["onebot-private-10001"]', 'utf8')
+    const registry = new ChatRegistry(deps)
+    await expect(registry.loadMapping()).resolves.toBeUndefined()
+    expect(logLines.some(line => line.startsWith('warn: mapping file is corrupt'))).toBe(true)
+    expect(await readFile(mappingPath + '.bak', 'utf8')).toBe('["onebot-private-10001"]')
+  })
+
+  it('a missing mapping file is a silent fresh start (no warn)', async () => {
+    const { deps, logLines } = depsWithLog()
+    const registry = new ChatRegistry(deps)
+    await expect(registry.loadMapping()).resolves.toBeUndefined()
+    expect(logLines).toHaveLength(0)
+  })
+
+  it('a failed resume retires the id — brokenSessionCount counts it for /session', async () => {
+    const { deps } = depsWithLog()
+    const mappingPath = join(deps.config.mediaDir, 'chat-sessions.json')
+    await writeFile(mappingPath, JSON.stringify({ 'private:10001': 'onebot-private-10001-dead' }), 'utf8')
+    const agents = {
+      create: vi.fn(),
+      resume: vi.fn(async () => { throw new Error('not persisted') }),
+    }
+    deps.agents = agents as never
+    const registry = new ChatRegistry(deps)
+    expect(registry.brokenSessionCount()).toBe(0)
+    await registry.loadMapping()
+    expect(registry.brokenSessionCount()).toBe(1)
+  })
+})
+
+describe('ChatRegistry · T4 #15 /session broken-session count rendering', () => {
+  /** Minimal CommandContext for the /session empty-list branch (only the
+   * fields that path reads; the rest is never touched). */
+  function sessionCtx(brokenCount: number | undefined): { ctx: import('../src/commands.js').CommandContext; sent: string[] } {
+    const sent: string[] = []
+    const ctx = {
+      sendToChat: async (_chatId: string, text: string) => { sent.push(text); return [] },
+      log: () => undefined,
+      isAdmin: () => true,
+      getChat: () => undefined,
+      hasChat: () => false,
+      switchableSessions: () => [],
+      sessionIdFromMapping: async () => 'onebot-private-10001-dead',
+      ...(brokenCount !== undefined ? { brokenSessionCount: () => brokenCount } : {}),
+    } as unknown as import('../src/commands.js').CommandContext
+    return { ctx, sent }
+  }
+
+  it('the empty /session list appends the broken count line when the retire record is non-empty', async () => {
+    const { ctx, sent } = sessionCtx(1)
+    await expect(tryHandleCommand(ctx, 'private:10001', '/session', '10001')).resolves.toBe(true)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toContain('1 个损坏会话已隔离（不可切回）')
+  })
+
+  it('no broken sessions (or a pre-wiring context without the accessor) renders the old output', async () => {
+    for (const brokenCount of [0, undefined]) {
+      const { ctx, sent } = sessionCtx(brokenCount)
+      await expect(tryHandleCommand(ctx, 'private:10001', '/session', '10001')).resolves.toBe(true)
+      expect(sent).toHaveLength(1)
+      expect(sent[0]).not.toContain('损坏会话')
+    }
+  })
 })

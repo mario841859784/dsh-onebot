@@ -16,7 +16,7 @@ import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type { SessionId, SessionStore } from '@deepseek-ai/dsh-session'
 import { SessionId as makeSessionId } from '@deepseek-ai/dsh-session'
 import type { Context } from '@deepseek-ai/cordis'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { constants, copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 
 import type { MediaRef } from './cq.js'
 import type { ChatId, UserRole } from './chat.js'
@@ -479,55 +479,93 @@ export class ChatRegistry {
 
   /** Resume persisted chats from the mapping file (best-effort). */
   async loadMapping(): Promise<void> {
+    let content: string
     try {
-      const content = await readFile(this.mappingPath(), 'utf8')
-      // D4b/T3: additive format — a legacy entry is a bare session-id string; a
-      // new entry is { session, interimOverride?, goal?, workspacePath? }.
-      const mapping = JSON.parse(content) as Record<string, string | PersistedChatSettings>
-      this.deps.log('debug', 'mapping file has ' + Object.keys(mapping).length + ' chat(s)')
-      for (const [chatId, entry] of Object.entries(mapping)) {
-        const sessionId = typeof entry === 'string' ? entry : entry?.session
-        if (typeof sessionId !== 'string' || sessionId === '') continue
-        // Restore the persisted mode/goal/workspace override BEFORE the resume
-        // attempt (old files carry neither — the settings then fall back to
-        // their current defaults). T3: restoring the override first closes the
-        // hole where a failed resume (retire → fresh session) lost the
-        // per-chat /workspace choice.
-        if (typeof entry === 'object' && entry !== null) {
-          const settings = this.getSettings(chatId)
-          if (typeof entry.interimOverride === 'boolean') settings.interimOverride = entry.interimOverride
-          if (typeof entry.goal === 'string' && entry.goal !== '') settings.goal = entry.goal
-          if (typeof entry.workspacePath === 'string' && entry.workspacePath !== '') settings.workspacePath = entry.workspacePath
-        }
-        // T3: a durably retired session id (recorded by resetChat's settings
-        // snapshot) must never be resumed — the entry only carries the
-        // settings for the chat's NEXT session. T3-R1 (review closure): keep
-        // the object entry in evictedChats so any mid-flight saveMapping
-        // (stop(), another chat's createChat) still writes it — a
-        // settings-only chat sits in neither chats nor evictedChats, and one
-        // dropped save would erase workspacePath/goal/mode from the file
-        // before the next restart.
-        if (this.retiredSessionIds.has(sessionId)) {
-          this.deps.log('debug', 'skipping resume of retired session ' + sessionId + ' for ' + chatId + ' (settings only)')
-          if (typeof entry === 'object' && entry !== null) this.evictedChats.set(chatId, entry)
-          continue
-        }
-        this.deps.log('debug', 'attempting resume of ' + chatId + ' @ ' + sessionId)
-        if (this.deps.isStopping()) return
-        try {
-          await this.resumeChat(chatId, sessionId)
-        } catch (error) {
-          this.retireSession(sessionId)
-          // T3-R2: mirror the retired-skip branch above — keep the object
-          // entry in evictedChats as a settings carrier so any later
-          // saveMapping keeps writing it (otherwise one dropped save erases
-          // workspacePath/goal/mode from the file before the next restart).
-          if (typeof entry === 'object' && entry !== null) this.evictedChats.set(chatId, entry)
-          this.deps.log('warn', 'resume failed for ' + chatId + ': ' + describeError(error))
-        }
+      content = await readFile(this.mappingPath(), 'utf8')
+    } catch (error) {
+      // T4 (#15) inner split: a missing mapping file is the ordinary fresh
+      // start — silent. Any other read failure warns (a silent "empty" here
+      // would let a later saveMapping overwrite whatever is on disk, the
+      // loadRetired hazard) but does not quarantine — the file may be
+      // transiently unreadable rather than corrupt.
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        this.deps.log('warn', 'mapping read failed; starting fresh: ' + describeError(error))
       }
-    } catch {
-      // No mapping file yet — fresh start.
+      return
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(content) as unknown
+    } catch (error) {
+      // T4 (#15): a parse failure is no longer silently swallowed — warn,
+      // quarantine the file, and continue with an empty mapping.
+      await this.quarantineCorruptMapping(error)
+      return
+    }
+    // T4 (#15): a structural failure (not a plain JSON object) takes the same
+    // quarantine path as a parse failure.
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      await this.quarantineCorruptMapping(new Error('mapping file is not a JSON object'))
+      return
+    }
+    const mapping = parsed as Record<string, string | PersistedChatSettings>
+    this.deps.log('debug', 'mapping file has ' + Object.keys(mapping).length + ' chat(s)')
+    for (const [chatId, entry] of Object.entries(mapping)) {
+      const sessionId = typeof entry === 'string' ? entry : entry?.session
+      if (typeof sessionId !== 'string' || sessionId === '') continue
+      // Restore the persisted mode/goal/workspace override BEFORE the resume
+      // attempt (old files carry neither — the settings then fall back to
+      // their current defaults). T3: restoring the override first closes the
+      // hole where a failed resume (retire → fresh session) lost the
+      // per-chat /workspace choice.
+      if (typeof entry === 'object' && entry !== null) {
+        const settings = this.getSettings(chatId)
+        if (typeof entry.interimOverride === 'boolean') settings.interimOverride = entry.interimOverride
+        if (typeof entry.goal === 'string' && entry.goal !== '') settings.goal = entry.goal
+        if (typeof entry.workspacePath === 'string' && entry.workspacePath !== '') settings.workspacePath = entry.workspacePath
+      }
+      // T3: a durably retired session id (recorded by resetChat's settings
+      // snapshot) must never be resumed — the entry only carries the
+      // settings for the chat's NEXT session. T3-R1 (review closure): keep
+      // the object entry in evictedChats so any mid-flight saveMapping
+      // (stop(), another chat's createChat) still writes it — a
+      // settings-only chat sits in neither chats nor evictedChats, and one
+      // dropped save would erase workspacePath/goal/mode from the file
+      // before the next restart.
+      if (this.retiredSessionIds.has(sessionId)) {
+        this.deps.log('debug', 'skipping resume of retired session ' + sessionId + ' for ' + chatId + ' (settings only)')
+        if (typeof entry === 'object' && entry !== null) this.evictedChats.set(chatId, entry)
+        continue
+      }
+      this.deps.log('debug', 'attempting resume of ' + chatId + ' @ ' + sessionId)
+      if (this.deps.isStopping()) return
+      try {
+        await this.resumeChat(chatId, sessionId)
+      } catch (error) {
+        this.retireSession(sessionId)
+        // T3-R2: mirror the retired-skip branch above — keep the object
+        // entry in evictedChats as a settings carrier so any later
+        // saveMapping keeps writing it (otherwise one dropped save erases
+        // workspacePath/goal/mode from the file before the next restart).
+        if (typeof entry === 'object' && entry !== null) this.evictedChats.set(chatId, entry)
+        this.deps.log('warn', 'resume failed for ' + chatId + ': ' + describeError(error))
+      }
+    }
+  }
+
+  /** T4 (#15): quarantine an unparsable/structurally invalid mapping file —
+   * warn, copy it to `<chat-sessions.json>.bak` (an existing .bak is never
+   * overwritten: the earliest post-corruption copy wins), and leave the load
+   * with an empty mapping so the chat stays usable. */
+  private async quarantineCorruptMapping(error: unknown): Promise<void> {
+    this.deps.log('warn', 'mapping file is corrupt; quarantining to .bak and starting fresh: ' + describeError(error))
+    try {
+      await copyFile(this.mappingPath(), this.mappingPath() + '.bak', constants.COPYFILE_EXCL)
+    } catch (copyError) {
+      // EEXIST = a previous quarantine already holds the .bak — keep it.
+      if ((copyError as NodeJS.ErrnoException)?.code !== 'EEXIST') {
+        this.deps.log('warn', 'mapping .bak copy failed: ' + describeError(copyError))
+      }
     }
   }
 
@@ -708,6 +746,13 @@ export class ChatRegistry {
     this.brokenSessions.add(id)
     this.retiredSessionIds.add(id)
     void this.saveRetired()
+  }
+
+  /** T4 (#15): the run's hard-retired (broken) session count, straight from
+   * the retire record — the /session list surfaces it so broken history
+   * stays visible to the admin. */
+  brokenSessionCount(): number {
+    return this.brokenSessions.size
   }
 
   /** Whether the persistence layer already owns a durable log for this id —

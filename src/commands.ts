@@ -82,6 +82,10 @@ export interface CommandContext {
    * a bare /workspace|/model|/preset|/session rendered; lazy 5-min TTL, see below). */
   /** /session: this chat's switchable retired sessions (newest first). */
   switchableSessions(chatId: ChatId): SwitchableSession[]
+  /** T4 (#15): broken (hard-retired) session count from the registry's
+   * retire record, surfaced by the /session list. Absent = the list omits
+   * the broken-count line (pre-T4 hosts/tests). */
+  brokenSessionCount?: (() => number) | undefined
   /** /session <序号>: switch the chat back to a listed session. */
   switchSession(chatId: ChatId, targetSessionId: string): Promise<SessionSwitchOutcome>
   /** /session list previews: the persistence port each retired session's
@@ -999,8 +1003,15 @@ async function handleSessionCommand(ctx: CommandContext, chatId: ChatId, arg: st
   if (arg.trim() === '') {
     const list = ctx.switchableSessions(chatId)
     const current = ctx.getChat(chatId)?.sessionId ?? await ctx.sessionIdFromMapping(chatId)
+    // T4 (#15): broken sessions never enter the switchable list, so the count
+    // comes straight from the registry's retire record — surfaced so broken
+    // history is visible instead of silently vanished.
+    const brokenCount = ctx.brokenSessionCount?.() ?? 0
     if (list.length === 0) {
-      await ctx.sendToChat(chatId, '当前 session：' + (current ?? '（未建立会话）') + '\n（该会话没有可切回的历史会话）\n用法：/session <序号> 切回；/new、/workspace、/preset 切换下来的旧会话会进入列表。')
+      let empty = '当前 session：' + (current ?? '（未建立会话）') + '\n（该会话没有可切回的历史会话）'
+      if (brokenCount > 0) empty += '\n⚠️ 另有 ' + brokenCount + ' 个损坏会话已隔离（不可切回）。'
+      empty += '\n用法：/session <序号> 切回；/new、/workspace、/preset 切换下来的旧会话会进入列表。'
+      await ctx.sendToChat(chatId, empty)
       return
     }
     // Each item carries a one-line content preview + creation time so the
@@ -1014,6 +1025,9 @@ async function handleSessionCommand(ctx: CommandContext, chatId: ChatId, arg: st
       return `${index + 1}. ${text}（${created}${formatTimestamp(entry.retiredAt)} 退休 · ${shortSessionId(entry.id)}）`
     }))
     let out = '当前 session：' + (current ?? '（未建立会话）') + '\n可切回历史会话：\n' + lines.join('\n')
+    // T4 (#15): the broken count rides the list output (these ids are absent
+    // from the switchable list, so without the line they would look lost).
+    if (brokenCount > 0) out += '\n⚠️ 另有 ' + brokenCount + ' 个损坏会话已隔离（不可切回）。'
     out += '\n回复 /session <序号> 切回（当前会话会进入列表，可来回切换）。'
     ctx.setPendingSelection(chatId, {
       kind: 'session',
