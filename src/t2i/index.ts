@@ -28,6 +28,8 @@ export interface RenderOptions {
   fontFiles?: readonly string[]
   /** Preferred font family names. */
   fontFamilies?: readonly string[]
+  /** Preferred mono family names for code text (before fontFamilies/platform defaults). */
+  monoFamilies?: readonly string[]
 }
 
 /** Draw the footer: grey "Powered by " + brand in klein blue, centered. */
@@ -48,9 +50,13 @@ let cachedManager: { key: string; manager: FontManager } | undefined
 
 /** Resolve (and cache) the font manager for the given font options. */
 function fontManagerFor(options: RenderOptions): FontManager {
-  const key = JSON.stringify([options.fontFiles ?? [], options.fontFamilies ?? []])
+  const key = JSON.stringify([options.fontFiles ?? [], options.fontFamilies ?? [], options.monoFamilies ?? []])
   if (cachedManager !== undefined && cachedManager.key === key) return cachedManager.manager
-  const manager = FontManager.create({ fontFiles: options.fontFiles, fontFamilies: options.fontFamilies })
+  const manager = FontManager.create({
+    fontFiles: options.fontFiles,
+    fontFamilies: options.fontFamilies,
+    monoFamilies: options.monoFamilies,
+  })
   cachedManager = { key, manager }
   return manager
 }

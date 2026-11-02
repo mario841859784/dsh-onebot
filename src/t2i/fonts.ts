@@ -58,14 +58,42 @@ export interface FontConfig {
   fontFiles?: readonly string[]
   /** Preferred family names, tried before platform defaults. */
   fontFamilies?: readonly string[]
+  /**
+   * Preferred MONO family names for code text, tried before fontFamilies and
+   * platform defaults (e.g. ["Cascadia Code"] on Windows terminals).
+   */
+  monoFamilies?: readonly string[]
 }
 
 /** System families verified present on macOS 26 (auto-loaded by the addon). */
 const MAC_CJK_CANDIDATES = ['Hiragino Sans GB', 'Songti SC', 'STHeiti', 'Arial Unicode MS']
 const MAC_MONO_CANDIDATES = ['Menlo', 'SF Mono', 'Courier New']
 const MAC_EMOJI_CANDIDATES = ['Apple Color Emoji', 'Noto Color Emoji']
+/** System CJK families verified present on Windows (auto-loaded by the addon). */
+const WINDOWS_CJK_CANDIDATES = [
+  'Microsoft YaHei', 'Microsoft YaHei UI', 'SimSun', 'SimHei', 'DengXian', 'KaiTi', 'FangSong',
+]
+/** System mono families per platform (Windows Terminal / Linux distros). */
+const WINDOWS_MONO_CANDIDATES = ['Consolas', 'Cascadia Code', 'Cascadia Mono', 'Courier New']
+const LINUX_MONO_CANDIDATES = ['DejaVu Sans Mono', 'Liberation Mono', 'Nimbus Mono PS', 'Courier New']
 /** Extra family names that may appear after registering Noto on Linux. */
 const LINUX_CJK_FAMILIES = ['Noto Sans CJK SC', 'Noto Sans SC', 'WenQuanYi Zen Hei', 'WenQuanYi Micro Hei', 'Unifont']
+/** Common mono families matched against the live font collection as the final fallback. */
+const COMMON_MONO_FALLBACKS = [
+  'Consolas', 'Cascadia Code', 'Cascadia Mono', 'Menlo', 'SF Mono',
+  'DejaVu Sans Mono', 'Liberation Mono', 'Courier New',
+]
+/** Known CJK family names matched against the live font collection as the final fallback. */
+const KNOWN_CJK_FALLBACKS = [
+  'Microsoft YaHei', 'PingFang SC', 'Source Han Sans SC', 'Noto Sans SC', 'Microsoft JhengHei',
+]
+
+/** Platform-specific mono candidates (auto-loaded system fonts). */
+function platformMonoCandidates(): readonly string[] {
+  if (process.platform === 'darwin') return MAC_MONO_CANDIDATES
+  if (process.platform === 'win32') return WINDOWS_MONO_CANDIDATES
+  return LINUX_MONO_CANDIDATES
+}
 
 /** Linux candidate font FILES (the original Hermes chain + DejaVu mono). */
 const LINUX_CJK_FILES = [
@@ -232,19 +260,24 @@ export class FontManager {
       return undefined
     }
     const preferred = config.fontFamilies ?? []
-    const cjkFirst = firstAvailable([...preferred, ...MAC_CJK_CANDIDATES, ...LINUX_CJK_FAMILIES])
+    const knownCjk = KNOWN_CJK_FALLBACKS.filter(name => available.has(name))
+    const cjkFirst = firstAvailable([
+      ...preferred, ...MAC_CJK_CANDIDATES, ...WINDOWS_CJK_CANDIDATES, ...LINUX_CJK_FAMILIES, ...knownCjk,
+    ])
     // 4. Noto CJK ttc on Linux: the registered default face may be JP/Mono;
     //    extract the CJK SC face with fontkit into a temp ttf and register it.
     if (cjkFirst === undefined && process.platform !== 'darwin') {
       this.extractNotoScFace()
     }
     if (cjkFirst !== undefined) this.cjkFamilies.push(cjkFirst)
-    for (const name of [...MAC_CJK_CANDIDATES, ...LINUX_CJK_FAMILIES]) {
+    for (const name of [...MAC_CJK_CANDIDATES, ...WINDOWS_CJK_CANDIDATES, ...LINUX_CJK_FAMILIES, ...knownCjk]) {
       if (name !== cjkFirst && available.has(name) && !this.cjkFamilies.includes(name)) {
         this.cjkFamilies.push(name)
       }
     }
-    this.monoFamily = firstAvailable([...preferred, ...MAC_MONO_CANDIDATES])
+    this.monoFamily = firstAvailable([
+      ...(config.monoFamilies ?? []), ...preferred, ...platformMonoCandidates(), ...COMMON_MONO_FALLBACKS,
+    ])
     this.emojiFamily = firstAvailable([...preferred, ...MAC_EMOJI_CANDIDATES])
     this.inkCheck()
     this.usableFlag = this.cjkFamilies.length > 0

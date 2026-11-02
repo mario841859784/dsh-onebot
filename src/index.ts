@@ -150,6 +150,7 @@ export interface Config {
   cardFooter: string
   fontFiles: string[]
   fontFamilies: string[]
+  monoFamilies: string[]
   agentPreset: string
   workspacePath: string
   inboundFileMaxBytes: number
@@ -296,6 +297,8 @@ export const Config: Z<Config> = z.object({
     .description('t2i 渲染器注册的字体文件路径（Linux/自定义字体；macOS 自动用系统字体）'),
   fontFamilies: z.array(z.string()).default([])
     .description('t2i 渲染器优先使用的字体家族名（覆盖平台默认）'),
+  monoFamilies: z.array(z.string()).default([])
+    .description('t2i 渲染器代码文本优先使用的等宽字体家族名（优先于 fontFamilies 与平台默认，如 Cascadia Code / Consolas）'),
   agentPreset: z.string().default('')
     .description('QQ 会话加入的 agent 预设 id；留空用部署默认（settings 的 agent-presets.default，当前为 router-flash）。创建时总是解析有效预设并写入会话 header，Web 界面可见；resume 优先恢复会话自己记录的预设'),
   workspacePath: z.string().default('')
