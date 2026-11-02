@@ -11,6 +11,7 @@
       "qq_send_video",
       "qq_send_file",
       "qq_send_forward",
+      "qq_send_segments",
       "qq_napcat_api",
       "qq_group_history"
     ],
