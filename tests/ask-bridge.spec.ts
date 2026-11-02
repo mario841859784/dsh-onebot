@@ -123,6 +123,9 @@ describe('T2-B1 registerAskUserTool', () => {
     expect(() => validateTimeout(1.5)).toThrow()
     expect(() => validateTimeout(2147484)).toThrow()
     expect(validateTimeout(1)).toBe(1)
+    // 有意偏离宿主 -1 无限等待：QQ 桥接结算主路径依赖超时转 pending，报错须说明原因
+    expect(() => validateTimeout(-1)).toThrow('无限等待（-1）在 QQ 桥接下不可结算，请传有限秒数')
+    expect(() => validateTimeout(0)).toThrow('请传有限秒数')
     expect(() => validateQuestionIds([{ id: 'a', question: 'x' }, { id: 'a', question: 'y' }])).toThrow('must be unique')
     const { port } = makeUserQuestions()
     const { ctx, registered } = makeFakeCtx(port)
@@ -154,6 +157,33 @@ describe('T2-B2 card relay question extraction', () => {
     expect(text).toContain('1. [方案] 选哪个方案？')
     expect(text).toContain('a) 方案A')
     expect(text).toContain('（可多选）')
+  })
+
+  it('multi-question batch renders whole-batch 答:/跳过 guidance without the numbered-selection mislead', () => {
+    const parsed = parseQuestionCall(JSON.stringify({ questions: [
+      { id: 'q1', question: '第一题', options: [{ label: '甲' }, { label: '乙' }] },
+      { id: 'q2', question: '第二题', options: [{ label: '丙' }] },
+    ] }), 'c3', noopLog)
+    expect(parsed).toBeDefined()
+    const text = renderQuestionCard(parsed!)
+    // 与解析端对称：questions.length !== 1 时纯编号/字母选择不可解析，文案不得再引导
+    expect(text).toContain('2 道题：回复『答:内容』整体回答（应用于全部题目），或回复『跳过』放弃')
+    expect(text).toContain('纯编号选择仅单题支持')
+    expect(text).not.toContain('多选用逗号')
+  })
+
+  it('renders option letters past d and falls back to numbers past z', () => {
+    const five = parseQuestionCall(JSON.stringify({ questions: [
+      { id: 'q1', question: '五选项', options: [{ label: 'o1' }, { label: 'o2' }, { label: 'o3' }, { label: 'o4' }, { label: 'o5' }] },
+    ] }), 'c4', noopLog)
+    expect(renderQuestionCard(five!)).toContain('e) o5')
+
+    const twentySeven = parseQuestionCall(JSON.stringify({ questions: [
+      { id: 'q1', question: '二十七选项', options: Array.from({ length: 27 }, (_, i) => ({ label: '选项' + (i + 1) })) },
+    ] }), 'c5', noopLog)
+    const text = renderQuestionCard(twentySeven!)
+    expect(text).toContain('z) 选项26')
+    expect(text).toContain('27) 选项27') // >26 回退 1-based 数字编号，optionLabel 同样接受
   })
 
   it('calls onQuestionCall with the callId and parsed batch', () => {

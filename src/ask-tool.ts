@@ -84,10 +84,21 @@ export function resolveUserQuestions(ctx: Context): UserQuestionsPort | undefine
   }
 }
 
-/** Validate a per-call timeout: positive integer up to the host bound. */
+/** Validate a per-call timeout: positive integer up to the host bound.
+ *
+ * 有意偏离（deliberate deviation）：宿主 dsh-tool-ask-user 的 timed 变体接受
+ * -1 表示无限前台等待；本复刻不接受——QQ 桥接的结算主路径依赖「前台等待
+ * 超时 → 转 pending → 用户后续回复经 inbound 拦截由 answer() 结算」。若
+ * 无限等待，问题将永停 open 态而无法从 QQ 侧结算，故非正数一律拒绝。
+ *
+ * 宿主升级同步点：本文件是宿主 dsh-tool-ask-user 协议的内联复刻（宿主包
+ * 不可解析所致，见评审 R4）；升级宿主时须将本函数与宿主 timed ask 的
+ * timeout 语义逐形状重对照，确认偏离仍成立或恢复宿主语义。
+ */
 export function validateTimeout(timeout: unknown): number {
   if (typeof timeout !== 'number' || !Number.isInteger(timeout) || timeout < 1 || timeout > MAX_TIMEOUT_SECONDS) {
-    throw new Error('timeout must be a positive integer up to ' + MAX_TIMEOUT_SECONDS + ' seconds')
+    throw new Error('timeout must be a positive integer up to ' + MAX_TIMEOUT_SECONDS
+      + ' seconds；无限等待（-1）在 QQ 桥接下不可结算，请传有限秒数')
   }
   return timeout
 }

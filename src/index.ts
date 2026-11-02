@@ -600,10 +600,16 @@ export function apply(ctx: Context, config: Config): void {
   connection.onFailure = (stage: string, detail: string): string => bridge.registerConnectionFailure(stage, detail)
 
   // Lifecycle: start the bridge and transport; unwind everything on unload.
-  ctx.effect(() => {
-    bridge.start()
-    connection.start()
-    injectChannel?.start()
+  // The effect body is async (cordis AsyncEffect): injectChannel.start() must
+  // be awaited — it skips history before arming its poll timer, and a stop
+  // landing before start completes would leave a dangling timer. The effect's
+  // disposer is awaitable and dispose waits for the setup promise to settle
+  // first, so an unload during startup runs the cleanup chain strictly after
+  // start completes: no overlapping start/stop, no ghost timers or listeners.
+  ctx.effect(async () => {
+    await bridge.start()
+    await connection.start()
+    await injectChannel?.start()
     // QQ 平台说明与 qq_* 工具现按会话 agent 注入（见 ChatBridge.installChannelScope）
     return async () => {
       await injectChannel?.stop()

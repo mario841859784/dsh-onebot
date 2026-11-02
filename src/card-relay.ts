@@ -134,13 +134,27 @@ export function parseQuestionCall(
   return { callId: callId ?? '', questions }
 }
 
-/** Render a parsed ask_user_question call as the QQ option card (T2-B2 text). */
+/** Display label for option i: a–z for the first 26 options, then a 1-based
+ * number. question-answer.ts's optionLabel accepts both single letters and
+ * numbers, so the mapping stays closed past z (two-letter labels like 'aa'
+ * would NOT parse back — hence the numeric fallback). */
+function optionLetter(i: number): string {
+  return i < 26 ? String.fromCharCode(97 + i) : String(i + 1)
+}
+
+/** Render a parsed ask_user_question call as the QQ option card (T2-B2 text).
+ * The header line mirrors question-answer.ts's parse contract: pure numbered
+ * selection is only unambiguous for single-question batches (parseQuestionAnswer
+ * returns undefined when questions.length !== 1), so multi-question batches
+ * steer the user to the whole-batch 答:/跳过 forms instead. */
 export function renderQuestionCard(call: RelayQuestionCall): string {
-  const lines: string[] = ['【❓ 提问】回复编号或字母选择，多选用逗号，回复『跳过』放弃；自由回答用「答:内容」：']
+  const lines: string[] = [call.questions.length === 1
+    ? '【❓ 提问】回复编号或字母选择，多选用逗号，回复『跳过』放弃；自由回答用「答:内容」：'
+    : '【❓ 提问】' + call.questions.length + ' 道题：回复『答:内容』整体回答（应用于全部题目），或回复『跳过』放弃；纯编号选择仅单题支持：']
   call.questions.forEach((question, index) => {
     lines.push((index + 1) + '. ' + (question.header !== '' ? '[' + question.header + '] ' : '') + question.question)
     question.options.forEach((label, i) => {
-      lines.push('   ' + 'abcd'.charAt(i) + ') ' + label)
+      lines.push('   ' + optionLetter(i) + ') ' + label)
     })
     if (question.multiSelect) lines.push('   （可多选）')
   })
