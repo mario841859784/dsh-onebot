@@ -540,6 +540,7 @@ export function apply(ctx: Context, config: Config): void {
       cardFooter: config.cardFooter,
       fontFiles: config.fontFiles,
       fontFamilies: config.fontFamilies,
+      monoFamilies: config.monoFamilies,
       agentPreset: config.agentPreset,
       workspacePath: config.workspacePath,
       maxInboundFileBytes: config.inboundFileMaxBytes,

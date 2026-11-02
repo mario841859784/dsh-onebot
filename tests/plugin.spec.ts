@@ -6,6 +6,23 @@ import { Context } from '@deepseek-ai/cordis'
 
 import { apply, Config, name, defaultMediaDir } from '../src/index.js'
 
+/**
+ * T12: capture the deps the plugin entry hands to the ChatBridge constructor
+ * so config→bridge wiring (monoFamilies 一行接线) is observable. bridge.js is
+ * mocked file-wide; the existing plugin-entry tests never start the bridge, so
+ * the no-op lifecycle methods keep them behaving identically.
+ */
+const bridgeDepsCaptured = vi.hoisted(() => [] as Array<{ config?: { monoFamilies?: readonly string[] } }>)
+vi.mock('../src/bridge.js', () => ({
+  ChatBridge: class {
+    constructor(deps: { config?: { monoFamilies?: readonly string[] } }) {
+      bridgeDepsCaptured.push(deps)
+    }
+    start(): void {}
+    async stop(): Promise<void> {}
+  },
+}))
+
 /** A stubbed cordis service registry carrying the injected surface. */
 function makeCtx() {
   const ctx = new Context()
@@ -118,5 +135,22 @@ describe('plugin entry', () => {
   it('derives a sensible default media dir', () => {
     const dir = defaultMediaDir()
     expect(dir).toContain('.dsh')
+  })
+
+  it('forwards config.monoFamilies into the bridge constructor (T12 端到端接线收尾)', async () => {
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-plugin-'))
+    const { ctx } = makeCtx()
+    bridgeDepsCaptured.length = 0
+    apply(ctx as never, Config({
+      mediaDir,
+      port: 0,
+      accessToken: 'test-token',
+      botQQ: '10002',
+      sttEnabled: false,
+      sensitivePatterns: [],
+      monoFamilies: ['Cascadia Code', 'Consolas'],
+    }))
+    expect(bridgeDepsCaptured).toHaveLength(1)
+    expect(bridgeDepsCaptured[0]?.config?.monoFamilies).toEqual(['Cascadia Code', 'Consolas'])
   })
 })
