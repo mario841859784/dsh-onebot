@@ -126,6 +126,8 @@ export interface Config {
   /** M3-D2b: interim recall degrade switch (false = send-only interims). */
   interimRecall: boolean
   sendErrorNotice: boolean
+  /** T8: auto-receipt notice switches (default true keeps existing behavior). */
+  notices: { steerAccepted: boolean, queue: boolean }
   /** Per-chat per-minute sliding-window cap for normal (non-command) messages; 0 disables. */
   rateLimitPerMinute: number
   restrictedMemberPrefix: boolean
@@ -255,6 +257,13 @@ export const Config: Z<Config> = z.object({
     .description('中间消息撤回开关：true（默认）=每条中间消息在 interimRecallMs 后自动撤回，回合结束先发整轮 t2i 小结卡再立即撤回原消息；false=只发不撤——中间消息照常实时发出但保留在聊天里：不排自动撤回定时器、回合结束不发小结卡也不撤回原消息，只发最终回复'),
   sendErrorNotice: z.boolean().default(true)
     .description('一轮运行出错时向用户发送 ⚠️ 错误提示'),
+  notices: z.object({
+    steerAccepted: z.boolean().default(true)
+      .description('steer 模式下补充指令受理后的自动回执开关；/steer 命令的手动确认回复不受影响'),
+    queue: z.boolean().default(true)
+      .description('消息排队提示开关（每个运行回合至多一条）'),
+  }).default({})
+    .description('自动回执开关集合；缺省全部开启（与 0.9.x 行为一致）'),
   rateLimitPerMinute: z.number().default(30)
     .description('每 chat 每分钟允许的普通消息条数上限（60 秒滑动窗口）；命令消息不计入也不受限；超限时每窗口最多提示一次；0=禁用频控'),
   restrictedMemberPrefix: z.boolean().default(true)
@@ -519,6 +528,7 @@ export function apply(ctx: Context, config: Config): void {
       interimRecallMs: config.interimRecallMs,
       interimRecall: config.interimRecall,
       sendErrorNotice: config.sendErrorNotice,
+      notices: { steerAccepted: config.notices.steerAccepted, queue: config.notices.queue },
       rateLimitPerMinute: config.rateLimitPerMinute,
       restrictedMemberPrefix: config.restrictedMemberPrefix,
       sensitivePatterns: config.sensitivePatterns,

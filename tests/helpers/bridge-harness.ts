@@ -111,7 +111,7 @@ export function makeFakeAgents(
 }
 
 /** Full bridge + WS harness: inbound via real WebSocket, outbound captured. */
-export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; log?: (level: string, message: string) => void }) {
+export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; log?: (level: string, message: string) => void; notices?: { steerAccepted?: boolean, queue?: boolean } }) {
   const ctx = new Context()
   const sessionIds: string[] = []
   const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[] }
@@ -142,6 +142,8 @@ export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: st
       ...(opts?.newMessagePolicy !== undefined ? { newMessagePolicy: opts.newMessagePolicy } : {}),
       // T3 (P2): deferred-delivery timeout override (absent = the 10min default).
       ...(opts?.deferredTimeoutMs !== undefined ? { deferredTimeoutMs: opts.deferredTimeoutMs } : {}),
+      // T8: auto-receipt notice override (absent = both on).
+      ...(opts?.notices !== undefined ? { notices: opts.notices } : {}),
       // W1: optional decision-trace sink (absent = tracing off).
       trace: opts?.trace,
       // W1/T5: optional recorder / inject channel (absent = feature off).
@@ -215,6 +217,8 @@ export async function makeCmdHarness(opts?: {
   trace?: TraceSink
   /** T4 (P3): optional log capture for reference-number assertions. */
   log?: (level: string, message: string) => void
+  /** T8: auto-receipt notice override (absent = both on). */
+  notices?: { steerAccepted?: boolean, queue?: boolean }
 }) {
   const ctx = new Context()
   const sessionIds: string[] = []
@@ -258,6 +262,8 @@ export async function makeCmdHarness(opts?: {
       ...(opts?.interimRecall !== undefined ? { interimRecall: opts.interimRecall } : {}),
       ...(opts?.rateLimitPerMinute !== undefined ? { rateLimitPerMinute: opts.rateLimitPerMinute } : {}),
       sendErrorNotice: true,
+      // T8: auto-receipt notice override (absent = both on).
+      ...(opts?.notices !== undefined ? { notices: opts.notices } : {}),
       ...(opts?.restrictedMemberPrefix !== undefined ? { restrictedMemberPrefix: opts.restrictedMemberPrefix } : {}),
       ...(opts?.newMessagePolicy !== undefined ? { newMessagePolicy: opts.newMessagePolicy } : {}),
       ...(opts?.autoSteerPolicy !== undefined ? { autoSteerPolicy: opts.autoSteerPolicy } : {}),

@@ -73,6 +73,12 @@ export interface BridgeConfig {
    * with the final text only). Absent/true = the full recall behavior. */
   interimRecall?: boolean
   sendErrorNotice: boolean
+  /** T8 (#3): auto-receipt notice switches — absent → both on (0.9.x
+   * behavior unchanged). steerAccepted gates the steer-mode auto receipt;
+   * queue gates the once-per-running-turn queue notice. The explicit /steer
+   * command confirmation is a command reply, not an auto receipt, and stays
+   * on regardless of this knob. */
+  notices?: { steerAccepted?: boolean, queue?: boolean }
   /** B7: per-chat per-minute sliding-window cap for normal (non-command)
    * messages; absent → 30, 0 disables. */
   rateLimitPerMinute?: number
@@ -847,15 +853,21 @@ export class ChatBridge {
     if ((this.deps.config.newMessagePolicy ?? 'queue') === 'steer' && plain && !restricted && autoSteerAllowed) {
       this.steerMessage(chatId, text)
       currentTrace()?.emit('dispatch', { ok: true, reason: TRACE_REASONS.busyTurnSteered })
-      this.sendToChat(chatId, STEER_ACCEPTED_NOTICE).catch((error: unknown) => {
-        this.deps.log('debug', '插话提交提示发送失败: ' + describeError(error))
-        currentTrace()?.emit('notice', { ok: false, reason: '插话提交提示发送失败: ' + describeError(error) })
-      })
+      // T8 (#3): the auto receipt is switchable (notices.steerAccepted);
+      // the steer itself always happens.
+      if (this.deps.config.notices?.steerAccepted ?? true) {
+        this.sendToChat(chatId, STEER_ACCEPTED_NOTICE).catch((error: unknown) => {
+          this.deps.log('debug', '插话提交提示发送失败: ' + describeError(error))
+          currentTrace()?.emit('notice', { ok: false, reason: '插话提交提示发送失败: ' + describeError(error) })
+        })
+      }
       return true
     }
     await this.dispatchFollowup(chatId, text, role, nickname)
     currentTrace()?.emit('dispatch', { ok: true, reason: TRACE_REASONS.busyTurnQueued })
-    if (!this.queueNoticeChats.has(chatId)) {
+    // T8 (#3): the once-per-running-turn queue notice is switchable
+    // (notices.queue); the queueing itself always happens.
+    if ((this.deps.config.notices?.queue ?? true) && !this.queueNoticeChats.has(chatId)) {
       this.queueNoticeChats.add(chatId)
       this.sendToChat(chatId, QUEUE_NOTICE_TEXT).catch((error: unknown) => {
         this.deps.log('debug', '排队提示发送失败: ' + describeError(error))
