@@ -133,6 +133,11 @@ export interface Config {
         steerAccepted: boolean;
         queue: boolean;
     };
+    /** T14 (#6 补充): qq_send_segments 插件页开关与分段发送间隔（呼吸感）。 */
+    segments: {
+        enabled: boolean;
+        intervalMs: number;
+    };
     /** Per-chat per-minute sliding-window cap for normal (non-command) messages; 0 disables. */
     rateLimitPerMinute: number;
     restrictedMemberPrefix: boolean;

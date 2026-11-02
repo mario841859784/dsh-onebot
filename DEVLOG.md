@@ -933,3 +933,4 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **清单同步**：package.json version 0.9.9→0.9.10；dsh.plugin.json 同步 0.9.10；engines.dsh 维持现状不动；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.10（it 描述串 + expect 两行，仿 0.9.3–0.9.9 先例）；package-lock.json 沿用既有惯例不动。
 - **文档**：README.md 与 README.en.md 补 `notices.steerAccepted`/`notices.queue`、`monoFamilies` 配置行（含 Windows 中文/等宽自动候选说明）、`qq_send_segments` 工具行与「分段发送」专章、平台说明行；issue 回复素材（#7/#9/#14）在未跟踪 `docs/issue-replies-0.9.10-draft.md`，不入库。
 - **发布面收口**：commit（含 lib/）为本任务范围；push origin main、tag `v0.9.10`、GitHub Release、npm publish 属后续任务，本任务不做。宿主进程未重启。
+- **T14/T15 追加（0.9.10 后）**：qq_send_segments 呼吸感（插件页开关 `segments.enabled` + 分段发送间隔 `segments.intervalMs`，0–3000 默认 0；工具 `intervalMs` 参数可按次覆盖），README 中英补配置行与「分段发送」章节能点。

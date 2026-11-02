@@ -187,6 +187,8 @@ default). Common options:
 | `autoSteerPolicy` | `admin` | who may auto-steer under the steer mode (T9, user ruling 2026-10-12): `admin` (default) = admins only; `all` = every non-restricted sender. Messages from senders without eligibility take the queue path (enqueue + queue notice); the `/steer` command stays admin-only regardless of this setting; the `queue` mode behavior is completely unchanged. Editable in the settings page behavior group; applies after a hot restart |
 | `notices.steerAccepted` | `true` | auto-receipt after a supplementary instruction is accepted under steer mode (since 0.9.10): with `false` the steer is still accepted but the automatic submit notice is no longer sent; the manual confirmation replies of the `/steer` command are unaffected |
 | `notices.queue` | `true` | queue-notice switch (since 0.9.10): with `false` new messages still queue, but the "queued" notice is no longer sent (the at-most-one-notice-per-running-turn hint is muted) |
+| `segments.enabled` | `true` | `qq_send_segments` segmented-sending tool switch (since 0.9.10): `false` = the tool goes offline (invisible to the model, not callable); `true` = the tool is available (default, same as pre-0.9.10 behavior) |
+| `segments.intervalMs` | `0` | send interval between adjacent segments of a segmented message in ms (since 0.9.10): the gap between consecutive sends creates a typing "breathing" feel; range 0–3000, out-of-range values are clamped; the `intervalMs` parameter of the `qq_send_segments` tool can override it per call (also clamped to 0–3000); `0` = no wait |
 | `deferredTimeoutMs` | `600000` | wait-for-model-reply timeout in ms (T3/P2 deferred delivery): when a turn produces no model output for this long, the plugin replies with a timeout notice and registers the turn into the deferred-delivery registry (the turn keeps running); when the turn finishes, the final text is delivered to the original chat with the「（超时补发）」(deferred delivery) prefix through the existing outbound splitting/t2i rules — final text and terminal-state notices only; approvals / question cards / file tool calls / images are never replayed. Definitive send failures are retried up to 3 times (2s/10s backoff); when the send result is uncertain (action timeout / non-gateway error — the message may still have arrived) the record is kept and auto-retry stops to prevent duplicate messages. The registry is persisted line-by-line as JSONL at `mediaDir/deferred-delivery.jsonl` (atomic write, per-line corrupt degrade, missing file = fresh start) and pending entries resume tracking after a plugin restart; `/stop` still only cancels the turn the current chat submitted and also explicitly terminates that chat's deferred tracking (other chats are unaffected); normal (non-timed-out) completion writes nothing and sends nothing extra. Editable in the settings page behavior group; applies after a hot restart; `0` disables |
 | `dmPolicy` | `open` | DM policy: `open`(admins only)/`allowlist`/`disabled` |
 | `groupPolicy` | `open` | group policy: `open`(everyone)/`allowlist`/`disabled` |
@@ -370,6 +372,10 @@ being split into separate bubbles (step-by-step guides, lists):
 - optional `chat_id`: target chat (`private:<QQ id>` or `group:<group id>`); omitted = current chat;
 - it does not auto-split ordinary replies — plain output goes through the existing t2i card /
   auto-split path; use this tool only when separate bubbles are explicitly wanted;
+- breathing feel (since 0.9.10): the interval between adjacent segments is controlled by the plugin
+  config `segments.intervalMs` (0–3000, default `0` = no wait); the optional tool parameter
+  `intervalMs` overrides it per call (also clamped to 0–3000); with the settings-page switch
+  `segments.enabled` (default `true`) set to `false` the tool goes offline;
 - it is a proactive write and is gated by `actionRatePerMinute`.
 
 ## dm / group access policies (pick on first setup)
