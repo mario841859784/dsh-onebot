@@ -37,6 +37,30 @@ export interface SendOptions {
   queuable?: boolean
 }
 
+/**
+ * T9 (#2): strip a leaked <user_message> boundary. wrapUserMessage (chat.ts)
+ * wraps every inbound payload in `<user_message qq="…" nickname="…">…</user_message>`,
+ * and a model may echo those markers back inside its reply. Only the literal
+ * `user_message` tag name is recognized, in attribute-constrained shapes, so
+ * ordinary angle-bracket text (`<tag>`, XML, `a < b`) passes untouched: a
+ * full wrapper loses just its tags (the enclosed content stays), stray
+ * opening/closing/self-closing tags are dropped verbatim. Clean text is
+ * returned unchanged (no re-trim side effects).
+ */
+export function stripBoundaryLeakage(text: string): string {
+  if (!/<\/?user_message[\s/>]/i.test(text)) return text
+  return text
+    // Full wrapper: drop the tags, keep the enclosed content (inner edge
+    // whitespace trimmed so the removal leaves no doubled blank lines).
+    .replace(/<user_message\s[^>]*?>\s*([\s\S]*?)\s*<\/user_message\s*>/gi, '$1')
+    // Stray tags without a matching pair: opening (with attrs), bare
+    // opening, closing, and self-closing forms.
+    .replace(/<\/?user_message(?:\s[^>]*?)?\/?>/gi, '')
+    // Collapse blank-line runs the removal left behind.
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 /** Narrow view of a live chat the outbound pipeline may touch — the
  * structural subset of the bridge's ChatAgent the pipeline reads: the
  * nickname used as the t2i card title. Re-evaluated for B8d: the per-chat
@@ -146,6 +170,10 @@ export class OutboundPipeline {
       }
       const ids: string[] = []
       const { body, nodes } = extractForwardBlocks(text, '助手')
+      // T9 (#2): the model may echo the <user_message> boundary that
+      // wrapUserMessage injected — strip the markers before delivery so both
+      // the t2i card and the plain-text branch stay clean.
+      const clean = stripBoundaryLeakage(body)
       if (nodes.length > 0) {
         // Passive reply path: [[qq_forward]] blocks inside a turn reply are
         // NOT gated as proactive writes (see the W2-③ 口径 note).
@@ -154,13 +182,13 @@ export class OutboundPipeline {
       }
       let sentCard = false
       const threshold = this.ctx.config.textImageThreshold
-      if (threshold > 0 && body.length > threshold) {
+      if (threshold > 0 && clean.length > threshold) {
         try {
           const chat = this.ctx.getChat(chatId)
           const title = chat !== undefined && chat.lastNickname !== ''
             ? 'To ' + chat.lastNickname
             : undefined
-          const png = renderTextImage(body, {
+          const png = renderTextImage(clean, {
             title,
             footerBrand: this.ctx.config.cardFooter,
             fontFiles: this.ctx.config.fontFiles,
@@ -181,7 +209,7 @@ export class OutboundPipeline {
         }
       }
       if (!sentCard) {
-        const plain = stripMarkdown(body)
+        const plain = stripMarkdown(clean)
         if (plain !== '') {
           const id = await this.sendMsg(chatId, [{ type: 'text', data: { text: plain } }], options)
           if (id !== undefined) ids.push(id)

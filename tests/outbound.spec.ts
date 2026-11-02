@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { OneBotActionError, OneBotNotConnectedError } from '../src/connection.js'
-import { ACTION_AUDIT_FILE, OutboundPipeline } from '../src/outbound.js'
+import { ACTION_AUDIT_FILE, OutboundPipeline, stripBoundaryLeakage } from '../src/outbound.js'
 
 import { inboundAndDisconnect, makeCmdHarness, makeEvent, makeHarness, reconnect, sentTexts } from './helpers/bridge-harness.js'
 
@@ -377,4 +377,49 @@ describe('outbound proactive-write gate (W2-③)', () => {
     await vi.waitFor(() => expect(readAudit(mediaDir)).toHaveLength(25))
     expect(readAudit(mediaDir).every(l => l.ok === true)).toBe(true)
   })
+})
+
+describe('T9: stripBoundaryLeakage', () => {
+  it('full <user_message> wrapper: tags stripped, enclosed content kept', () => {
+    const wrapped = '<user_message qq="10001" nickname="小明">\n帮我看看这段报错\n</user_message>'
+    expect(stripBoundaryLeakage(wrapped)).toBe('帮我看看这段报错')
+    // Multi-line model echo of the whole boundary with surrounding prose.
+    const echo = '好的，你刚才说：\n<user_message qq="10001" nickname="小明">\n你好\n</user_message>\n我已收到。'
+    expect(stripBoundaryLeakage(echo)).toBe('好的，你刚才说：\n你好\n我已收到。')
+  })
+
+  it('stray opening/closing/self-closing tags are dropped verbatim', () => {
+    expect(stripBoundaryLeakage('<user_message qq="10001" nickname="小明">你好')).toBe('你好')
+    expect(stripBoundaryLeakage('回复内容</user_message>')).toBe('回复内容')
+    expect(stripBoundaryLeakage('<user_message/>开场')).toBe('开场')
+    expect(stripBoundaryLeakage('<user_message>无属性标签')).toBe('无属性标签')
+  })
+
+  it("ordinary <tag> text and code content are untouched (no false positives)", () => {
+    expect(stripBoundaryLeakage('请用 <div> 包裹，条件是 a < b && c > d')).toBe('请用 <div> 包裹，条件是 a < b && c > d')
+    const code = '渲染模板如下：\n<config version="1">\n  <item id="1"/>\n</config>'
+    expect(stripBoundaryLeakage(code)).toBe(code)
+    // 清洁文本按原样返回（不做多余 trim）。
+    const clean = '  前后空白保持  '
+    expect(stripBoundaryLeakage(clean)).toBe(clean)
+  })
+
+  it('end-to-end: a final reply echoing the boundary is delivered stripped', async () => {
+    const h = await makeHarness()
+    h.sendText('hi')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const session = { id: h.sessionIds[0] }
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '<user_message qq="10001" nickname="小明">\n你好\n</user_message>\n已收到你的消息。' }] },
+    }))
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    await vi.waitFor(() => {
+      expect(sentTexts(h.outbound).some(t => t.includes('已收到你的消息'))).toBe(true)
+    })
+    const texts = sentTexts(h.outbound).join('\n')
+    expect(texts).not.toContain('user_message')
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 60_000)
 })
