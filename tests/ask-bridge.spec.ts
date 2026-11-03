@@ -433,7 +433,7 @@ describe('T3-board foreground instant settle (user-questions/request waterfall)'
   // { remainingMs } frame while the wait is live (a claim that suppresses
   // the host deadline timer) and resolves its second next() when the wait
   // closes.
-  function makeForegroundHost(opts?: { attachMode?: 'hold' | 'zero' | 'throw'; fallbackTimeoutMs?: number; holdRemainingMs?: number }) {
+  function makeForegroundHost(opts?: { attachMode?: 'hold' | 'zero' | 'throw'; fallbackTimeoutMs?: number; holdRemainingMs?: number; /** T1-board: park the attach before its first frame (the registration window). */ attachGate?: Promise<void> }) {
     const NO_PROVIDER = Object.assign(new Error('no user-questions answerer accepted the request'), { code: 'NO_PROVIDER' })
     const ASK_TIMED_OUT = Object.assign(new Error('ask_user_question timed out before the user answered'), { code: 'ASK_TIMED_OUT' })
     type Listener = (request: unknown, next: () => Promise<unknown>) => Promise<unknown>
@@ -443,6 +443,7 @@ describe('T3-board foreground instant settle (user-questions/request waterfall)'
     const attachWait = vi.fn(async function * (_agent: unknown, callId: string, signal: AbortSignal) {
       if (opts?.attachMode === 'throw') throw new Error('attach refused')
       if (opts?.attachMode === 'zero') return
+      if (opts?.attachGate !== undefined) await opts.attachGate
       claims.push(signal)
       const wait = waits.get(callId)
       yield { remainingMs: opts?.holdRemainingMs ?? 5_000 }
@@ -585,5 +586,74 @@ describe('T3-board foreground instant settle (user-questions/request waterfall)'
     // Unload resolved the wait → the listener fell through → pending.
     await expect(ask).resolves.toEqual({ pending: true, callId: 'c2' })
     expect(host.claims[0]!.aborted).toBe(true)
+  })
+
+  // T1-board discriminator: a QQ reply landing INSIDE the attach window.
+  // The pre-fix order (await attach → Map.set) had no entry registered while
+  // the attach was in flight, so deliverForegroundAnswer missed it and the
+  // reply degraded to the answer()/followup path (notice never sent, ask
+  // → pending). The fixed order registers the wait synchronously before the
+  // await, so the in-window reply settles instantly. Mutation check: restore
+  // the set-after-await order → the ANSWER_ACCEPTED_NOTICE waitFor fails.
+  it('settles a QQ reply that lands inside the attach window (registration precedes the attach await)', async () => {
+    let releaseAttach!: () => void
+    const attachGate = new Promise<void>(resolve => { releaseAttach = resolve })
+    const host = makeForegroundHost({ attachGate })
+    const { h } = await bootForegroundRelay(host)
+    const ask = host.service.askTimed(
+      { questions: [{ id: 'q1', question: '选哪个方案？', options: [] }], agent: { session: { id: h.sessionIds[0] } } },
+      'c2', 300_000,
+    )
+    // The listener is parked inside the attach await — the old set-after-
+    // await order leaves the wait unregistered exactly here.
+    await vi.waitFor(() => expect(host.service.attachWait).toHaveBeenCalledTimes(1))
+    h.sendText('1,2')
+    await vi.waitFor(() => expect(sentTexts(h.outbound).some(t => t.includes(ANSWER_ACCEPTED_NOTICE))).toBe(true))
+    releaseAttach()
+    await expect(ask).resolves.toEqual({ answers: [{ id: 'q1', selected: ['方案A', '方案B'] }] })
+    // Settled on the waterfall — the pending answer() path stayed idle.
+    expect(host.service.answer).not.toHaveBeenCalled()
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  // T2-board discriminator: a foreground wait that registers WHILE the
+  // registry is unloading. stop() order = registry.stop (per-chat abandon
+  // pass, then dispose) → deferred.stopAll → the release loop. A waterfall
+  // request landing between the abandon pass and chats.clear() is invisible
+  // to the abandon pass — only the stop() release loop drains it. Mutation
+  // check: remove the release loop (bridge.ts stop()) → the ask never
+  // resolves and the claim never aborts → this test times out.
+  it('stop() drains a foreground wait that registers during the registry teardown', async () => {
+    const host = makeForegroundHost({ holdRemainingMs: 30_000 })
+    const { h } = await bootForegroundRelay(host)
+    // Park stop() inside the chat dispose: onChatRemoved (the abandon pass)
+    // has already run for this chat, but registry.stop has not finished.
+    let disposeEntered = false
+    let releaseDispose!: () => void
+    const disposeGate = new Promise<void>(resolve => { releaseDispose = resolve })
+    const chat = h.chats().get('private:10001') as unknown as { dispose: () => Promise<void> }
+    chat.dispose = async () => { disposeEntered = true; await disposeGate }
+    const stop = h.bridge.stop()
+    await vi.waitFor(() => expect(disposeEntered).toBe(true))
+    // The ask races the unload: the chat is still indexed (chats.clear()
+    // runs after the loop), so chatIdForAgent resolves it and the listener
+    // registers a wait the abandon pass will never revisit.
+    const ask = host.service.askTimed(
+      { questions: [{ id: 'q1', question: '选哪个方案？', options: [] }], agent: { session: { id: h.sessionIds[0] } } },
+      'c3', 300_000,
+    )
+    await vi.waitFor(() => expect(host.service.attachWait).toHaveBeenCalledTimes(1))
+    releaseDispose()
+    await stop
+    // stop() drained the late wait → the listener fell through → pending,
+    // and the claim did not outlive the unload.
+    await expect(ask).resolves.toEqual({ pending: true, callId: 'c3' })
+    expect(host.claims[0]!.aborted).toBe(true)
+
+    h.client.close()
+    await h.connection.stop()
   })
 })

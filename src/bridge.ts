@@ -29,7 +29,7 @@ import { registerTools } from './tools.js'
 import { tryHandleCommand as routeCommand, STEER_ACCEPTED_NOTICE, type CommandContext } from './commands.js'
 import { relayHostCards as relayCards, type CardRelayContext, type RelayQuestionCall } from './card-relay.js'
 import { ASK_USER_TIMEOUT_SECONDS, registerAskUserTool, type AskUserAnswer, type UserQuestionsPort } from './ask-tool.js'
-import { holdForegroundWait, type AttachWaitPort, type ForegroundQuestionRequest } from './ask-foreground.js'
+import { holdForegroundWait, type AttachWaitPort, type ForegroundHold, type ForegroundQuestionRequest } from './ask-foreground.js'
 import { parseQuestionAnswer } from './question-answer.js'
 import { OutboundPipeline } from './outbound.js'
 import type { OutboundSegment, SendOptions } from './outbound.js'
@@ -906,12 +906,20 @@ export class ChatBridge {
     const attachPort = service !== undefined && typeof (service as Partial<AttachWaitPort>).attachWait === 'function'
       ? service as AttachWaitPort
       : undefined
-    const hold = attachPort === undefined ? undefined : await holdForegroundWait(attachPort, request.agent, callId, signal)
-
+    // T1-board: register the wait SYNCHRONOUSLY, before the attach await.
+    // The previous order (await attach → Map.set) left a window where a
+    // settle (deliverForegroundAnswer) or a cleanup (abandonForegroundWaits
+    // / stop) could run between the two steps and miss the listener
+    // entirely. holdForegroundWait never throws (it catches internally) and
+    // the finally below still owns the teardown, so the early entry cannot
+    // leak; a settle or abandon landing during the attach await resolves the
+    // delivery early and the race below picks it up unchanged.
     const delivery = Promise.withResolvers<AskUserAnswer[] | undefined>()
     this.foregroundWaits.set(callId, { chatId, questions: questions.map(id => ({ id })), resolve: delivery.resolve })
     let timer: ReturnType<typeof setTimeout> | undefined
+    let hold: ForegroundHold | undefined
     try {
+      hold = attachPort === undefined ? undefined : await holdForegroundWait(attachPort, request.agent, callId, signal)
       const giveUp = new Promise<undefined>(resolve => {
         if (signal.aborted) {
           resolve(undefined)
