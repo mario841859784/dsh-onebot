@@ -61,8 +61,11 @@ export declare class InjectChannel {
     /** Whether this channel intercepts outbound writes (dry-run mode). */
     get intercepting(): boolean;
     /** Skip the lines that already existed at startup (recorded + reported),
-     * then start polling. */
-    start(): void;
+     * then start polling. The skip is awaited BEFORE the poll timer is armed:
+     * armed-first (the old behavior) let a line written immediately after
+     * start() lose the race against skipHistory's readFile and be swallowed as
+     * "history" under load (full-suite flake). */
+    start(): Promise<void>;
     stop(): Promise<void>;
     private skipHistory;
     private tick;

@@ -15,8 +15,8 @@ import { MediaStore } from '../src/media.js'
 import { makeCmdHarness } from './helpers/bridge-harness.js'
 
 describe('commands', () => {
-  it('packageVersion resolves 0.9.10 under ESM (no "?")', () => {
-    expect(packageVersion()).toBe('0.9.10')
+  it('packageVersion resolves 0.9.11 under ESM (no "?")', () => {
+    expect(packageVersion()).toBe('0.9.11')
   })
 
   it('routes slash commands before the model: /new opens a fresh session', async () => {

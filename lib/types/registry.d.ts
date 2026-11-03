@@ -79,6 +79,12 @@ export interface ChatSettings {
      * ephemeral UI state — survives /new like every field here but never
      * persisted, and bounded by the lazy 5-minute TTL instead. */
     pendingSelection?: PendingSelection;
+    /** T3-board /silent: the chat's silence-window end (epoch ms). Survives
+     * /new like every field here (silence is a property of the CHAT, not the
+     * session) and rides the chat-sessions.json persistence, so a plugin
+     * restart no longer lifts the mute. A bare /silent clears the field
+     * explicitly. Expired values are dropped at persist time. */
+    silentUntil?: number;
 }
 /** One live per-chat agent. */
 export interface ChatAgent {
@@ -154,7 +160,7 @@ export interface RegistryDeps {
     agentPresets: AgentPresetsLike | undefined;
     defaultModel: (() => ModelSelection | undefined) | undefined;
     /** The only config fields the registry reads. */
-    config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>;
+    config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'agentPresetGroup' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>;
     log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void;
     /** Bridge stop flag (guards the resume loop). */
     isStopping(): boolean;
@@ -196,6 +202,13 @@ export declare class ChatRegistry {
     constructor(deps: RegistryDeps);
     /** The (lazy-created) settings entry for one chat. */
     getSettings(chatId: ChatId): ChatSettings;
+    /** T3-board /silent: the still-open silence windows across all chats
+     * (expired entries excluded). The bridge replays these into its in-memory
+     * Map after loadMapping so a restart does not lift a running mute. */
+    silenceWindows(): Array<{
+        chatId: ChatId;
+        until: number;
+    }>;
     /** C2: default-model wiring shared by the create and resume assembly paths
      * — the agent options for the registry call only (the deployment default
      * rides in as `provider`/`model`; dsh 0.2.2 carries the mutable selection

@@ -15,6 +15,7 @@ import type { MediaStore } from './media.js';
 import type { Transcriber } from './stt.js';
 import type { ChatId } from './chat.js';
 import type { AccessPolicyConfig } from './chat.js';
+import { type UserQuestionsPort } from './ask-tool.js';
 import type { OutboundSegment, SendOptions } from './outbound.js';
 import type { TraceSink } from './trace.js';
 import type { InjectChannel } from './inject.js';
@@ -25,6 +26,12 @@ import type { TraceStage } from './trace.js';
  * turn (the flag resets at turn/end) so a burst of queued messages never
  * spams the chat. Exported for the deterministic text wait in tests. */
 export declare const QUEUE_NOTICE_TEXT = "\u23F3 \u5F53\u524D\u4EFB\u52A1\u8FD0\u884C\u4E2D\uFF0C\u65B0\u6D88\u606F\u5DF2\u6392\u961F\uFF0C\u5C06\u5728\u5F53\u524D\u4EFB\u52A1\u7ED3\u675F\u540E\u4F9D\u6B21\u5904\u7406\u3002";
+/** T2-B2: how long a relayed ask_user_question batch stays interceptable —
+ * after this the bridge stops treating plain replies as answers (the host's
+ * continued-state question may still be answered from the Web card). */
+export declare const QUESTION_TTL_MS: number;
+/** T2-B3: the auto-receipt sent when a QQ reply settles an ask_user_question batch. */
+export declare const ANSWER_ACCEPTED_NOTICE = "\u2714 \u5DF2\u63D0\u4EA4\u56DE\u7B54";
 /** Resolved runtime configuration for the bridge. */
 export interface BridgeConfig {
     botQQ: string;
@@ -69,6 +76,15 @@ export interface BridgeConfig {
     /** T2 (P1): preferred mono family names for code text (t2i); absent → t2i platform defaults. */
     monoFamilies?: readonly string[];
     agentPreset: string;
+    /** 权限分档 A3: 群聊粗档 preset——设置后群聊会话优先使用该 preset id（私聊
+     * 仍用 agentPreset）；absent/空串 = 现行为（群私同源 agentPreset）。 */
+    agentPresetGroup?: string;
+    /** 权限分档 A2: 成员档位工具权限。'none'（缺省）= 成员（非管理员）回合
+     * 内全部 qq_* 工具在 execute 前被硬拦截；'all' = 不限。fail-closed：
+     * 字段缺失按 'none' 处理。 */
+    permissions?: {
+        memberTools?: 'none' | 'all';
+    };
     workspacePath: string;
     /** Max inbound file bytes fetched via QQ direct link / base64 (0 = no cap). */
     maxInboundFileBytes: number;
@@ -236,6 +252,11 @@ export interface BridgeDeps {
     workspaceRegistry: WorkspaceRegistryLike | undefined;
     agentDefaultModel: AgentDefaultModelLike | undefined;
     defaultModel: (() => ModelSelection | undefined) | undefined;
+    /** T2-B3: the host userQuestions service — settles intercepted QQ replies
+     * against the chat's continued-state ask_user_question. Absent (test
+     * assemblies / unexpected hosts) = answer interception stays disabled and
+     * every reply flows into the conversation normally. */
+    userQuestions?: UserQuestionsPort | undefined;
     config: BridgeConfig & TraceBridgeConfig;
     policy: AccessPolicyConfig;
     /** W1/T5 health: the ALREADY-redacted plugin config snapshot (secrets
@@ -284,6 +305,13 @@ export declare class ChatBridge {
      * would orphan exactly that reply's outbound events. One entry per chat
      * id (bounded by the chat population), so growth is not a concern. */
     private readonly traceByChat;
+    /** T3-board /silent: per-chat silence window (epoch-ms until; no entry =
+     * not silenced). The Map is the hot-path READ cache (the QQ message probe
+     * stays IO-free); the durable copy is ChatSettings.silentUntil (registry),
+     * which rides chat-sessions.json — a restart re-arms a running window and
+     * /new keeps it. Writes go through setSilentUntilImpl (memory + settings +
+     * debounced save); a bare /silent clears both copies explicitly. */
+    private readonly silentUntil;
     /** W1/T5: chatId → the traceId of the chat's unsettled INJECTED round
      * (independent of the trace sink, so the dry-run guard covers the async
      * agent reply even with tracing off). Cleared by a real dispatch to the
@@ -293,6 +321,18 @@ export declare class ChatBridge {
      * running turn (one notice per turn; cleared at turn/end and on chat
      * removal — bounded by the chat population). */
     private readonly queueNoticeChats;
+    /** T2-B2: the chat's outstanding ask_user_question batch, keyed by chat id
+     * (memory only — a restart loses it and the model re-asks). Populated from
+     * the card relay's onQuestionCall, consumed by interceptQuestionAnswer,
+     * cleared on settle (user-question-reply event), chat removal and the TTL. */
+    private readonly activeQuestion;
+    /** T3-board: live foreground answerers keyed by callId — the
+     * 'user-questions/request' waterfall listener waits on these for the QQ
+     * answer (instant settle: the ask tool returns instead of timing out to
+     * pending). Populated by onForegroundQuestionRequest, delivered by
+     * interceptQuestionAnswer, cleared on settle, chat removal, bridge stop,
+     * and each listener's own deadline/host-signal race. */
+    private readonly foregroundWaits;
     /** Plugin version + git commit, read once for /ver. */
     private pluginVersion;
     private pluginCommit;
@@ -310,6 +350,15 @@ export declare class ChatBridge {
      * channels) are trusted by default (A1 scoping). Unknown states fail closed
      * as member. */
     canEditFiles(sessionId: string): boolean;
+    /**
+     * 权限分档 A2（工具硬防线）：one tool-call's permission decision. Reuses the
+     * M1-A2 turn-level role (frozen at turn/start, fail-closed member) via
+     * canEditFiles; a caller with no QQ session mapping (Web/other channels) is
+     * outside the tier semantics and stays allowed; permissions.memberTools
+     * === 'all' disables the gate entirely. Absent config fails closed to
+     * 'none' (members blocked).
+     */
+    memberToolsAllowed(sessionId: string | undefined): boolean;
     /**
      * Outbound media fence roots for one agent session's current turn (M1-A3b):
      * the plugin media dir always, plus the chat's workspace directory when the
@@ -384,8 +433,49 @@ export declare class ChatBridge {
     /** Tool calls whose host-plane UI has no QQ equivalent; relay them to the chat. */
     private relayHostCards;
     /** The CardRelayContext handed to the card relay (D1-PR2): the outbound
-     * send path plus the bridge log — the only capabilities the relay touches. */
+     * send path plus the bridge log — the only capabilities the relay touches.
+     * T2-B2 adds onQuestionCall to record the outstanding batch. */
     private get cardRelayCtx();
+    /** T2-B2: the chat's outstanding ask_user_question batch, or undefined when
+     * there is none or the TTL (QUESTION_TTL_MS) has expired (expired entries
+     * are dropped lazily — no timer needed). */
+    private activeQuestionFor;
+    /**
+     * T2-B3: intercept a plain QQ message that parses as a reply to the chat's
+     * outstanding ask_user_question batch (选项选择 / 答:前缀 / 跳过 — see
+     * question-answer.ts) and settle it through the host userQuestions service
+     * (the chat's live root agent). Runs in the inbound pipeline before the
+     * busy-turn seam. Any failure — no active batch, not an answer shape, no
+     * userQuestions service, BAD_ANSWER / REPLY_QUEUED / returned false —
+     * falls through so the message reaches the conversation normally.
+     * @param chatId - the chat the reply arrived in.
+     * @param text - raw parsed inbound text.
+     * @returns true when the message was consumed as an answer.
+     */
+    private interceptQuestionAnswer;
+    /** T3-board: the chat whose live root agent is `agent` (identity first,
+     * then the session id as a defensive fallback). */
+    private chatIdForAgent;
+    /** T3-board: try to settle a live foreground wait with a parsed QQ answer
+     * batch (instant settle). Only a wait whose question ids are exactly
+     * covered by the parsed answers accepts the delivery; anything else stays
+     * for the answer() (pending) path. */
+    private deliverForegroundAnswer;
+    /** T3-board: resolve-and-drop every foreground wait belonging to `chatId`;
+     * each listener sees undefined, releases its claim and falls through. */
+    private abandonForegroundWaits;
+    /**
+     * T3-board: the per-agent 'user-questions/request' waterfall listener
+     * (registered from installChannelScope). The host dispatches timed asks as
+     * `{ ...request, agent, signal: wait.signal, wait: { callId, timed: true } }`
+     * with the innermost noAnswerer (NO_PROVIDER) last; the Web forwarder is
+     * the listener registered before us, so we only see asks the Web layer did
+     * not settle. Answering = returning { answers } (vetoing next()); anything
+     * else — not timed, no callId, no matching QQ chat, attach failed, deadline
+     * reached, host wait closed, aborted — falls through via next() so the
+     * existing 300s→pending→inbound answer() path stays intact (fail-open).
+     */
+    private onForegroundQuestionRequest;
     /**
      * Slash-command router. Commands are admin-only (the Hermes member
      * slash-command block) and are matched on the first word; a leading
@@ -406,6 +496,14 @@ export declare class ChatBridge {
      * invocation (the llm catalog especially must stay a live service lookup).
      */
     private get commandCtx();
+    /** T3-board /silent: the chat's silence-window end (in-memory read cache). */
+    private getSilentUntil;
+    /** T3-board /silent: write BOTH copies of the silence window — the
+     * in-memory hot-path cache and the durable ChatSettings.silentUntil (the
+     * debounced mapping save; persistEntry drops already-expired values).
+     * `undefined` clears. Survives /new (silence belongs to the chat, not the
+     * session); a bare /silent clears both copies explicitly. */
+    private setSilentUntilImpl;
     /** Read the chat→session mapping file (for /id and /status when no live chat). */
     private sessionIdFromMapping;
     /**

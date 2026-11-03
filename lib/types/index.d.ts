@@ -93,6 +93,19 @@ type Context = CordisContext & {
             };
         }>;
     };
+    /** T2-B1/B3: the host userQuestions service (dsh-base registers it). Not in
+     * the inject list on purpose — a deployment without it must degrade to "no
+     * ask_user_question tool / no answer interception", never block the load. */
+    userQuestions?: {
+        askTimed(request: unknown, callId: string, timeoutMs: number): Promise<unknown>;
+        answer(agent: unknown, callId: string, payload: {
+            answers: Array<{
+                id: string;
+                selected: string[];
+                custom?: string;
+            }>;
+        }): Promise<boolean>;
+    };
 };
 export declare const name = "dsh-onebot";
 export declare const inject: string[];
@@ -164,6 +177,12 @@ export interface Config {
     fontFamilies: string[];
     monoFamilies: string[];
     agentPreset: string;
+    /** 权限分档 A3: 群聊粗档 preset——设置后群聊会话优先使用该 preset id；空串=现行为。 */
+    agentPresetGroup: string;
+    /** 权限分档 A2: 成员档位工具权限（none=成员回合禁用全部 qq_* 工具，默认；all=不限）。 */
+    permissions: {
+        memberTools: 'none' | 'all';
+    };
     workspacePath: string;
     inboundFileMaxBytes: number;
     /** @deprecated D4a alias of inboundFileMaxBytes; honored for one release. */
