@@ -14,6 +14,7 @@ import type { ChatBridge } from './bridge.js'
 import type { OneBotConnection } from './connection.js'
 import { fileToBase64, isUrl } from './media.js'
 import { splitChatId } from './chat.js'
+import { stripMarkdown } from './split.js'
 import type { OneBotSegment } from './cq.js'
 import { parseMessage, cqUnescape } from './cq.js'
 
@@ -348,11 +349,16 @@ export function registerTools(
       const intervalMs = typeof a.intervalMs === 'number' && Number.isFinite(a.intervalMs)
         ? clampSegmentsInterval(a.intervalMs)
         : sendSegmentsConfig.intervalMs
+      // #23 点 1: 分段工具绕过了 outbound 的 stripMarkdown，** 加粗 ** 这类标记
+      // 会原样发到 QQ 里。出站正文清洗只挂在 Bridge.sendText 那条路径上，这里
+      // 直连 sendSegments，所以要按同一套规则清洗（清洗后为空的段直接丢掉）。
+      const cleaned = texts.map(t => stripMarkdown(t).trim()).filter(t => t !== '')
+      if (cleaned.length === 0) throw new Error('qq_send_segments: 去掉 Markdown 后没有可发送内容')
       const chatId = resolveChat(bridge, exec, a.chat_id)
       const messageIds: Array<string | null> = []
-      for (let i = 0; i < texts.length; i++) {
+      for (let i = 0; i < cleaned.length; i++) {
         if (i > 0) await wait(intervalMs)
-        const id = await bridge.sendSegments(chatId, [{ type: 'text', data: { text: texts[i] } }])
+        const id = await bridge.sendSegments(chatId, [{ type: 'text', data: { text: cleaned[i] } }])
         messageIds.push(id ?? null)
       }
       return { sent: true, count: messageIds.length, messageIds }

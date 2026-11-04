@@ -331,6 +331,19 @@ describe('qq_send_segments (T10 #6)', () => {
       .toEqual(['第一段', '第二段', '第三段'])
   })
 
+  it('#23 point 1: strips Markdown from each segment before sending', async () => {
+    const h = await makeHarness()
+    const sessionId = 'group-seg-md'
+    h.seed(sessionId, 'admin')
+    const result = await h.tool('qq_send_segments').execute({
+      segments: ['**加粗**的段', '# 标题段', '带 \x60代码\x60 的段'],
+    }, h.exec(sessionId)) as { count: number }
+    expect(result.count).toBe(3)
+    const sends = h.calls.filter(c => c.action === 'send_msg')
+    expect(sends.map(s => (s.params.message as Array<{ data: { text: string } }>)[0].data.text))
+      .toEqual(['加粗的段', '标题段', '带 代码 的段'])
+  })
+
   it('rejects empty, over-count, and over-length inputs without sending', async () => {
     const h = await makeHarness()
     h.seed('group-seg-2', 'admin')
