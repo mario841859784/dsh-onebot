@@ -26,6 +26,7 @@ import {
   RESTRICTED_PREFIX, sanitizeNickname, splitChatId, wrapUserMessage,
 } from './chat.js'
 import type { BridgeConfig } from './bridge.js'
+import { resolveNoticeText } from './notices.js'
 import type { ChatSettings } from './registry.js'
 import { describeError } from './errors.js'
 import { currentTrace, TRACE_REASONS } from './trace.js'
@@ -201,7 +202,7 @@ export interface InboundContext {
   /** The only config fields the inbound pipeline reads. The W2-② dedup
    * window rides as an optional intersection member so the bridge's
    * BridgeConfig type stays untouched (absent → the default window). */
-  config: Pick<BridgeConfig, 'botQQ' | 'ignoreSelf' | 'requireMention' | 'rateLimitPerMinute' | 'restrictedMemberPrefix' | 'maxInboundFileBytes'> & Partial<{
+  config: Pick<BridgeConfig, 'botQQ' | 'ignoreSelf' | 'requireMention' | 'rateLimitPerMinute' | 'restrictedMemberPrefix' | 'maxInboundFileBytes' | 'notices'> & Partial<{
     /** W2-② (chatId, message_id) dedup window in seconds; 0 disables. */
     dedupWindowSeconds: number
   }>
@@ -481,7 +482,11 @@ export class InboundPipeline {
     currentTrace()?.emit('ratelimit', { ok: false, reason: TRACE_REASONS.inboundRateLimited })
     if (chat.rateLimitNoticeAt === undefined || now - chat.rateLimitNoticeAt >= 60_000) {
       chat.rateLimitNoticeAt = now
-      void this.ctx.sendToChat(chatId, '⏳ 消息太频繁，请稍后再试。').catch((error: unknown) => {
+      // T1 (#27): notices.rateLimited — false/'' = 不发，非空 string =
+      // 自定义文案，true/缺省 = 默认文案；每窗口至多一条的语义不变。
+      const notice = resolveNoticeText(this.ctx.config.notices?.rateLimited, '⏳ 消息太频繁，请稍后再试。')
+      if (notice === null) return true
+      void this.ctx.sendToChat(chatId, notice).catch((error: unknown) => {
         this.ctx.log('debug', '限流提示发送失败: ' + describeError(error))
         currentTrace()?.emit('ratelimit', { ok: false, reason: TRACE_REASONS.inboundRateNoticeFailed })
       })

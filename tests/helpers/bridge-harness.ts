@@ -21,6 +21,7 @@ import { Transcriber } from '../../src/stt.js'
 import { TraceSink } from '../../src/trace.js'
 import { InboundRecorder } from '../../src/record.js'
 import { InjectChannel } from '../../src/inject.js'
+import type { NoticeTexts } from '../../src/notices.js'
 
 /** dsh 0.2.2 host-faithful Agent.model stub: current() returns the last
  * recorded selection, else the agentOptions fallback (provider/model), else
@@ -116,7 +117,7 @@ export function makeFakeAgents(
 }
 
 /** Full bridge + WS harness: inbound via real WebSocket, outbound captured. */
-export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; log?: (level: string, message: string) => void; notices?: { steerAccepted?: boolean, queue?: boolean }; monoFamilies?: readonly string[]; allowPrivateHosts?: boolean; respond?: Record<string, (params: Record<string, unknown>) => unknown>; userQuestions?: unknown }) {
+export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; log?: (level: string, message: string) => void; notices?: NoticeTexts; monoFamilies?: readonly string[]; allowPrivateHosts?: boolean; respond?: Record<string, (params: Record<string, unknown>) => unknown>; userQuestions?: unknown }) {
   const ctx = new Context()
   const sessionIds: string[] = []
   const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[], agentListeners: [] as Array<{ event: string; listener: (request: unknown, next: () => Promise<unknown>) => unknown }> }
@@ -239,7 +240,7 @@ export async function makeCmdHarness(opts?: {
   /** T4 (P3): optional log capture for reference-number assertions. */
   log?: (level: string, message: string) => void
   /** T8: auto-receipt notice override (absent = both on). */
-  notices?: { steerAccepted?: boolean, queue?: boolean }
+  notices?: NoticeTexts
   monoFamilies?: readonly string[]
 }) {
   const ctx = new Context()

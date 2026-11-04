@@ -27,6 +27,7 @@ import type { AccessPolicyConfig } from './chat.js'
 import { buildPlatformPrompt } from './prompt.js'
 import { registerTools } from './tools.js'
 import { tryHandleCommand as routeCommand, STEER_ACCEPTED_NOTICE, type CommandContext } from './commands.js'
+import { resolveNoticeText, type NoticeTexts } from './notices.js'
 import { relayHostCards as relayCards, type CardRelayContext, type RelayQuestionCall } from './card-relay.js'
 import { ASK_USER_TIMEOUT_SECONDS, registerAskUserTool, type AskUserAnswer, type UserQuestionsPort } from './ask-tool.js'
 import { holdForegroundWait, type AttachWaitPort, type ForegroundHold, type ForegroundQuestionRequest } from './ask-foreground.js'
@@ -83,12 +84,13 @@ export interface BridgeConfig {
    * with the final text only). Absent/true = the full recall behavior. */
   interimRecall?: boolean
   sendErrorNotice: boolean
-  /** T8 (#3): auto-receipt notice switches — absent → both on (0.9.x
-   * behavior unchanged). steerAccepted gates the steer-mode auto receipt;
-   * queue gates the once-per-running-turn queue notice. The explicit /steer
-   * command confirmation is a command reply, not an auto receipt, and stays
-   * on regardless of this knob. */
-  notices?: { steerAccepted?: boolean, queue?: boolean }
+  /** T8/#27: auto-receipt notice switches / custom texts — absent or `true`
+   * → the default text (0.9.x behavior unchanged); `false` or `''` → not
+   * sent; a non-empty string → the custom text. steerAccepted gates the
+   * steer-mode auto receipt AND customizes the /steer command confirmation
+   * (which stays on regardless — it is a command reply, not an auto
+   * receipt); queue gates the once-per-running-turn queue notice. */
+  notices?: NoticeTexts
   /** B7: per-chat per-minute sliding-window cap for normal (non-command)
    * messages; absent → 30, 0 disables. */
   rateLimitPerMinute?: number
@@ -465,6 +467,9 @@ export class ChatBridge {
       },
       mediaDir: deps.config.mediaDir,
       timeoutMs: deps.config.deferredTimeoutMs ?? DEFAULT_DEFERRED_TIMEOUT_MS,
+      // T1 (#27): notices ride through so the timeout notice can be
+      // switched/customized (notices.deferredTimeout).
+      notices: deps.config.notices,
       isStopping: () => this.stopping,
     })
   }
@@ -809,9 +814,7 @@ export class ChatBridge {
     // the result instead of timing out to pending. Falls through to the
     // answer() path when no wait matches (the pending state).
     if (this.deliverForegroundAnswer(chatId, answers)) {
-      this.sendToChat(chatId, ANSWER_ACCEPTED_NOTICE).catch((error: unknown) => {
-        this.deps.log('debug', '回答回执发送失败: ' + describeError(error))
-      })
+      this.sendAnswerNotice(chatId)
       return true
     }
     try {
@@ -824,10 +827,18 @@ export class ChatBridge {
       return false
     }
     this.activeQuestion.delete(chatId)
-    this.sendToChat(chatId, ANSWER_ACCEPTED_NOTICE).catch((error: unknown) => {
+    this.sendAnswerNotice(chatId)
+    return true
+  }
+
+  /** T1 (#27): the answer-accepted auto receipt — notices.answerAccepted
+   * resolves the text (false/'' = not sent, string = custom text). */
+  private sendAnswerNotice(chatId: ChatId): void {
+    const notice = resolveNoticeText(this.deps.config.notices?.answerAccepted, ANSWER_ACCEPTED_NOTICE)
+    if (notice === null) return
+    this.sendToChat(chatId, notice).catch((error: unknown) => {
       this.deps.log('debug', '回答回执发送失败: ' + describeError(error))
     })
-    return true
   }
 
   /** T3-board: the chat whose live root agent is `agent` (identity first,
@@ -974,6 +985,8 @@ export class ChatBridge {
     return {
       sendToChat: (chatId, text) => bridge.sendToChat(chatId, text),
       log: (level, message) => bridge.deps.log(level, message),
+      // T1 (#27): /steer 的命令确认文案取 notices.steerAccepted（自定义时）。
+      notices: bridge.deps.config.notices,
       isAdmin: userId => classifyUserRole(userId, bridge.deps.policy.adminUsers) === 'admin',
       getChat: chatId => bridge.chats.get(chatId),
       hasChat: chatId => bridge.chats.has(chatId),
@@ -1151,10 +1164,11 @@ export class ChatBridge {
     if ((this.deps.config.newMessagePolicy ?? 'queue') === 'steer' && plain && !restricted && autoSteerAllowed) {
       this.steerMessage(chatId, text)
       currentTrace()?.emit('dispatch', { ok: true, reason: TRACE_REASONS.busyTurnSteered })
-      // T8 (#3): the auto receipt is switchable (notices.steerAccepted);
-      // the steer itself always happens.
-      if (this.deps.config.notices?.steerAccepted ?? true) {
-        this.sendToChat(chatId, STEER_ACCEPTED_NOTICE).catch((error: unknown) => {
+      // T8/#27: the auto receipt is switchable and customizable
+      // (notices.steerAccepted); the steer itself always happens.
+      const steerNotice = resolveNoticeText(this.deps.config.notices?.steerAccepted, STEER_ACCEPTED_NOTICE)
+      if (steerNotice !== null) {
+        this.sendToChat(chatId, steerNotice).catch((error: unknown) => {
           this.deps.log('debug', '插话提交提示发送失败: ' + describeError(error))
           currentTrace()?.emit('notice', { ok: false, reason: '插话提交提示发送失败: ' + describeError(error) })
         })
@@ -1163,11 +1177,13 @@ export class ChatBridge {
     }
     await this.dispatchFollowup(chatId, text, role, nickname)
     currentTrace()?.emit('dispatch', { ok: true, reason: TRACE_REASONS.busyTurnQueued })
-    // T8 (#3): the once-per-running-turn queue notice is switchable
-    // (notices.queue); the queueing itself always happens.
-    if ((this.deps.config.notices?.queue ?? true) && !this.queueNoticeChats.has(chatId)) {
+    // T8/#27: the once-per-running-turn queue notice is switchable and
+    // customizable (notices.queue); the queueing itself always happens and
+    // the dedup (one notice per running turn) is unchanged.
+    const queueNotice = resolveNoticeText(this.deps.config.notices?.queue, QUEUE_NOTICE_TEXT)
+    if (queueNotice !== null && !this.queueNoticeChats.has(chatId)) {
       this.queueNoticeChats.add(chatId)
-      this.sendToChat(chatId, QUEUE_NOTICE_TEXT).catch((error: unknown) => {
+      this.sendToChat(chatId, queueNotice).catch((error: unknown) => {
         this.deps.log('debug', '排队提示发送失败: ' + describeError(error))
         currentTrace()?.emit('notice', { ok: false, reason: '排队提示发送失败: ' + describeError(error) })
       })

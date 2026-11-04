@@ -28,6 +28,7 @@ import { TRACE_REASONS } from './trace.js'
 import { OneBotActionError, OneBotNotConnectedError } from './connection.js'
 import { describeError } from './errors.js'
 import { failureRefSuffix } from './ref.js'
+import { resolveNoticeText, type NoticeTexts } from './notices.js'
 
 /** The registry file name inside the media dir (one JSON entry per line). */
 export const DEFERRED_REGISTRY_FILE = 'deferred-delivery.jsonl'
@@ -100,6 +101,9 @@ export interface DeferredContext {
   mediaDir: string
   /** The resolved timeout window (ms); 0 disables the whole feature. */
   timeoutMs: number
+  /** T1 (#27): notices ride through — the timeout notice text resolves from
+   * notices.deferredTimeout (absent/true = default, false/'' = not sent). */
+  notices?: NoticeTexts
   isStopping(): boolean
 }
 
@@ -344,7 +348,10 @@ export class DeferredDelivery {
     this.ctx.log('info', '等待模型回复超时，已登记超时补发跟踪: chat=' + chatId + ' session=' + sessionId)
     this.ctx.trace?.(chatId, { stage: 'notice', ok: true, reason: TRACE_REASONS.deferredRegistered, data: { sessionId } })
     const seconds = Math.round(this.ctx.timeoutMs / 1000)
-    const notice = '⏳ 等待模型回复超时（已静默等待约 ' + seconds + ' 秒），任务仍在后台运行；完成后将自动补发最终结果。如需停止请发送 /stop。'
+    // T1 (#27): notices.deferredTimeout — false/'' = 不发，非空 string =
+    // 自定义文案，true/缺省 = 默认文案（0.9.x 行为不变）。
+    const notice = resolveNoticeText(this.ctx.notices?.deferredTimeout, '⏳ 等待模型回复超时（已静默等待约 ' + seconds + ' 秒），任务仍在后台运行；完成后将自动补发最终结果。如需停止请发送 /stop。')
+    if (notice === null) return
     void this.ctx.sendToChat(chatId, notice, { queuable: true }).catch((error: unknown) => {
       this.ctx.log('debug', '超时提醒发送失败: ' + describeError(error))
       this.ctx.trace?.(chatId, { stage: 'notice', ok: false, reason: TRACE_REASONS.deferredNoticeFailed + ': ' + describeError(error) })

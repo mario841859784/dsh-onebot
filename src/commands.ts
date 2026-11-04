@@ -24,6 +24,7 @@ import type { AgentDefaultModelLike, AgentPresetsLike, BridgeConfig, BridgeDeps,
 import { describeError } from './errors.js'
 import { failureRefSuffix, isFailureRef } from './ref.js'
 import type { TraceStage } from './trace.js'
+import { resolveNoticeText, type NoticeSetting } from './notices.js'
 
 /** Narrow view of a live chat the command handlers may read or mutate —
  * the structural subset of the bridge's internal ChatAgent that the
@@ -48,6 +49,9 @@ export interface CommandContext {
   sendToChat(chatId: ChatId, text: string): Promise<string[]>
   /** Bridge log line callback. */
   log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void
+  /** T1 (#27): /steer 确认文案取 notices.steerAccepted（非空 string=自定义）；
+   * 缺省/true/false → 默认文案（命令确认是命令回执，不受 false 关闭影响）。 */
+  notices?: { steerAccepted?: NoticeSetting }
   /** Router entry gate: the admin check against the policy allowlist. */
   isAdmin(userId: string): boolean
   /** Live chat lookup / existence probe. */
@@ -418,7 +422,13 @@ async function handleSteerCommand(ctx: CommandContext, chatId: ChatId, arg: stri
     return
   }
   ctx.log('info', 'slash /steer for ' + chatId)
-  await ctx.sendToChat(chatId, STEER_ACCEPTED_NOTICE)
+  // T1 (#27): the command confirmation is a command reply, not an auto
+  // receipt — `false` keeps the default text; only a non-empty custom
+  // string replaces it (resolveNoticeText maps '' → null = 不发).
+  const notice = ctx.notices?.steerAccepted === false
+    ? STEER_ACCEPTED_NOTICE
+    : resolveNoticeText(ctx.notices?.steerAccepted, STEER_ACCEPTED_NOTICE)
+  if (notice !== null) await ctx.sendToChat(chatId, notice)
 }
 
 /** R2: TTL of a pending serial-number selection — judged lazily at the next

@@ -137,8 +137,8 @@ export interface Config {
   /** M3-D2b: interim recall degrade switch (false = send-only interims). */
   interimRecall: boolean
   sendErrorNotice: boolean
-  /** T8: auto-receipt notice switches (default true keeps existing behavior). */
-  notices: { steerAccepted: boolean, queue: boolean }
+  /** T8/#27: auto-receipt notice switches — boolean, or a custom text string. */
+  notices: { steerAccepted?: boolean | string, queue?: boolean | string, answerAccepted?: boolean | string, deferredTimeout?: boolean | string, rateLimited?: boolean | string }
   /** T14 (#6 补充): qq_send_segments 插件页开关与分段发送间隔（呼吸感）。 */
   segments: { enabled: boolean, intervalMs: number }
   /** Per-chat per-minute sliding-window cap for normal (non-command) messages; 0 disables. */
@@ -279,12 +279,20 @@ export const Config: Z<Config> = z.object({
   sendErrorNotice: z.boolean().default(true)
     .description('一轮运行出错时向用户发送 ⚠️ 错误提示'),
   notices: z.object({
-    steerAccepted: z.boolean().default(true)
-      .description('steer 模式下补充指令受理后的自动回执开关；/steer 命令的手动确认回复不受影响'),
-    queue: z.boolean().default(true)
-      .description('消息排队提示开关（每个运行回合至多一条）'),
+    // T1 (#27)：各键语义统一——false=不发；true/缺省=默认文案（0.9.x 行为不变）；
+    // 非空 string=自定义文案；空串=不发。解析见 src/notices.ts resolveNoticeText。
+    steerAccepted: z.union([z.boolean(), z.string()]).default(true)
+      .description('steer 模式下补充指令受理后的自动回执文案：false=不发自动回执；true/缺省=默认文案；非空 string=自定义文案（/steer 命令确认同样改用，false 时不影响命令确认）；空串=不发'),
+    queue: z.union([z.boolean(), z.string()]).default(true)
+      .description('消息排队提示文案（每个运行回合至多一条）：false=不发；true/缺省=默认文案；非空 string=自定义文案；空串=不发'),
+    answerAccepted: z.union([z.boolean(), z.string()]).default(true)
+      .description('问题回答回执（✔ 已提交回答）文案：false=不发；true/缺省=默认文案；非空 string=自定义文案；空串=不发'),
+    deferredTimeout: z.union([z.boolean(), z.string()]).default(true)
+      .description('等待模型回复超时提示文案：false=不发；true/缺省=默认文案；非空 string=自定义文案；空串=不发'),
+    rateLimited: z.union([z.boolean(), z.string()]).default(true)
+      .description('消息太频繁频控提示文案（每窗口至多一条）：false=不发；true/缺省=默认文案；非空 string=自定义文案；空串=不发'),
   }).default({})
-    .description('自动回执开关集合；缺省全部开启（与 0.9.x 行为一致）'),
+    .description('自动回执开关/自定义文案集合；缺省全部为默认文案开启（与 0.9.x 行为一致）'),
   segments: z.object({
     enabled: z.boolean().default(true)
       .description('qq_send_segments 分段发送工具开关（T14）：true（默认）=工具可用；false=工具下线（模型不可见，无法调用）'),
@@ -570,7 +578,7 @@ export function apply(ctx: Context, config: Config): void {
       interimRecallMs: config.interimRecallMs,
       interimRecall: config.interimRecall,
       sendErrorNotice: config.sendErrorNotice,
-      notices: { steerAccepted: config.notices.steerAccepted, queue: config.notices.queue },
+      notices: config.notices,
       rateLimitPerMinute: config.rateLimitPerMinute,
       restrictedMemberPrefix: config.restrictedMemberPrefix,
       sensitivePatterns: config.sensitivePatterns,
