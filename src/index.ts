@@ -179,6 +179,8 @@ export interface Config {
   chatIdleEvictDays: number
   /** Escape hatch: skip the download private-address check (local reverse proxy). */
   allowPrivateHosts: boolean
+  /** Optional CIDR allowlist for trusted private download targets. */
+  allowCidrs: string[]
   /** W2-②: inbound (chatId, message_id) dedup window in seconds; 0 disables. */
   dedupWindowSeconds: number
   /** W2-③: bridge-wide proactive-write (qq_send_* tools) cap per minute; 0 disables. */
@@ -348,6 +350,8 @@ export const Config: Z<Config> = z.object({
     .description('[deprecated] 旧名别名（现 inboundFileMaxBytes）：QQ 入站文件最大字节数；本版兼容读取，新配置请用新名'),
   allowPrivateHosts: z.boolean().default(false)
     .description('下载 SSRF 防护逃生门：默认拒绝解析到私网/环回/链路本地地址的下载目标（协议仅 http/https、重定向逐跳复检仍生效）；NapCat 文件服务器或反代部署在本机/内网时置 true 跳过私网检查'),
+  allowCidrs: z.array(z.string()).default([])
+    .description('可选 CIDR 白名单（IPv4/IPv6，如 100.64.0.0/10、fd7a:115c:a1e0::/48）：只放行这些私网段，其他私网/环回仍拒绝；空数组保持原行为'),
   chatIdleEvictDays: z.number().default(7)
     .description('会话空闲淘汰天数：chat 超过该天数无任何活动时，在下一条入站消息处理前清理其 agent（会话先落盘 flush、映射保留，之后同一 chat 的消息可 resume 恢复原会话）；0 = 禁用'),
   dedupWindowSeconds: z.number().default(300)
@@ -466,7 +470,7 @@ export function apply(ctx: Context, config: Config): void {
       log,
     },
   )
-  const media = new MediaStore(mediaDir, config.tempTtlHours, config.inboundImageMaxPx, { maxBytes: config.inboundFileMaxBytes, allowPrivateHosts: config.allowPrivateHosts })
+  const media = new MediaStore(mediaDir, config.tempTtlHours, config.inboundImageMaxPx, { maxBytes: config.inboundFileMaxBytes, allowPrivateHosts: config.allowPrivateHosts, allowCidrs: config.allowCidrs })
   // W1: the trace sink exists only when explicitly enabled — default off
   // means no sink, no traceIds, no jsonl, zero behavior difference.
   const traceSink = config.traceEnabled

@@ -207,6 +207,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `maxFileBytes` | `20971520` | 出站视频/文件大小上限（字节） |
 | `inboundFileMaxBytes` | `20971520` | QQ 入站文件大小上限（字节）：超限文件拒收并提示（旧名 `maxInboundFileBytes` deprecated，本版兼容读取） |
 | `allowPrivateHosts` | `false` | 下载媒体 URL 时允许私网/环回地址（仅跳过私网检查，协议白名单与限长仍生效）；仅本机反代等可信场景开启，公网部署保持 `false` |
+| `allowCidrs` | `[]` | 可选 CIDR 白名单（如 `100.64.0.0/10`、`fd7a:115c:a1e0::/48`）：只放行这些私网段，其他私网仍拒绝；空数组保持原行为；格式错误启动即报错 |
 | `agentPreset` | 空 | 会话挂载的 agent preset（留空=默认） |
 | `agentPresetGroup` | 空 | 群聊会话的 agent preset id（粗档，0.9.11 起）：设置后群聊会话优先使用它，私聊仍用 `agentPreset`；留空=群私同源。`/preset` 的 per-chat 覆盖仍最优先 |
 | `permissions.memberTools` | `none` | 成员档位（非管理员）的工具权限（0.9.11 起）：`none`（默认）= 成员回合禁用全部 `qq_*` 工具（插件硬拦截，无需模型自觉）；`all` = 不限。缺省配置 fail-closed 为 `none`；无 QQ 会话映射的调用方（Web 等其他通道）不受此档位约束 |

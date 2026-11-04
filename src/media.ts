@@ -36,6 +36,8 @@ export interface MediaStoreDownloadOptions {
   maxBytes?: number
   /** Escape hatch for local/NAT reverse-proxy deployments: skip the private-address check (protocol whitelist still applies). */
   allowPrivateHosts?: boolean
+  /** Optional CIDR allowlist for trusted private targets (empty = none); only these private addresses pass the fence. */
+  allowCidrs?: string[]
 }
 
 /**
@@ -48,6 +50,7 @@ export class MediaStore {
   private readonly imageMaxSize: number
   private readonly downloadMaxBytes: number
   private readonly allowPrivateHosts: boolean
+  private readonly allowCidrs: Cidr[]
 
   /**
    * @param dir - absolute scratch directory (created on demand).
@@ -63,6 +66,7 @@ export class MediaStore {
     this.imageMaxSize = imageMaxSize
     this.downloadMaxBytes = download.maxBytes ?? 0
     this.allowPrivateHosts = download.allowPrivateHosts ?? false
+    this.allowCidrs = (download.allowCidrs ?? []).map(parseCidr)
   }
 
   /** Ensure the scratch directory exists. */
@@ -202,7 +206,7 @@ export class MediaStore {
     const deadline = Date.now() + DOWNLOAD_TIMEOUT_MS
     let current = url
     for (let hops = 0; ; hops += 1) {
-      await assertDownloadableUrl(current, this.allowPrivateHosts)
+      await assertDownloadableUrl(current, this.allowPrivateHosts, this.allowCidrs)
       const response = await fetch(current, { redirect: 'manual', signal: AbortSignal.timeout(Math.max(0, deadline - Date.now())) })
       if (isRedirectStatus(response.status)) {
         const location = response.headers.get('location')
@@ -246,6 +250,76 @@ function isRedirectStatus(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308
 }
 
+/** One parsed CIDR entry for the optional allowCidrs escape hatch. */
+interface Cidr {
+  bytes: Uint8Array
+  prefix: number
+}
+
+function ipv4Bytes(input: string): Uint8Array | undefined {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(input)
+  if (match === null) return undefined
+  const bytes = match.slice(1).map(Number)
+  return bytes.every(n => n >= 0 && n <= 255) ? Uint8Array.from(bytes) : undefined
+}
+
+function ipv6Bytes(input: string): Uint8Array | undefined {
+  let text = input.toLowerCase()
+  if (text.includes('%')) text = text.slice(0, text.indexOf('%'))
+  if (text.includes('.')) {
+    const at = text.lastIndexOf(':')
+    const v4 = at >= 0 ? ipv4Bytes(text.slice(at + 1)) : undefined
+    if (v4 === undefined) return undefined
+    text = text.slice(0, at + 1) + ((v4[0] << 8) | v4[1]).toString(16) + ':' + ((v4[2] << 8) | v4[3]).toString(16)
+  }
+  const [leftText, rightText] = text.split('::')
+  const left = leftText === '' ? [] : leftText.split(':')
+  const right = rightText === undefined || rightText === '' ? [] : rightText.split(':')
+  const missing = 8 - left.length - right.length
+  if (missing < 0) return undefined
+  if (!text.includes('::') && missing !== 0) return undefined
+  const groups = [...left, ...Array(missing).fill('0'), ...right]
+  if (groups.length !== 8) return undefined
+  const bytes = new Uint8Array(16)
+  for (let i = 0; i < 8; i += 1) {
+    if (!/^[0-9a-f]{1,4}$/.test(groups[i])) return undefined
+    const value = Number.parseInt(groups[i], 16)
+    bytes[i * 2] = value >> 8
+    bytes[i * 2 + 1] = value & 255
+  }
+  return bytes
+}
+
+/** Parse one IPv4/IPv6 CIDR; throws on malformed input so bad config fails at startup. */
+function parseCidr(input: string): Cidr {
+  const [address, prefixText, ...rest] = input.split('/')
+  if (address === undefined || prefixText === undefined || rest.length > 0) throw new Error('invalid allowCidrs entry: ' + input)
+  const prefix = Number(prefixText)
+  const isV6 = address.includes(':')
+  const bytes = isV6 ? ipv6Bytes(address) : ipv4Bytes(address)
+  const max = isV6 ? 128 : 32
+  if (bytes === undefined || !Number.isInteger(prefix) || prefix < 0 || prefix > max) throw new Error('invalid allowCidrs entry: ' + input)
+  return { bytes, prefix }
+}
+
+function matchesCidr(address: string, cidrs: Cidr[]): boolean {
+  if (cidrs.length === 0) return false
+  const isV6 = address.includes(':')
+  const bytes = isV6 ? ipv6Bytes(address) : ipv4Bytes(address)
+  if (bytes === undefined) return false
+  return cidrs.some(cidr => {
+    if (cidr.bytes.length !== bytes.length) return false
+    let remaining = cidr.prefix
+    for (let i = 0; i < bytes.length && remaining > 0; i += 1) {
+      const bits = Math.min(8, remaining)
+      const mask = bits === 8 ? 255 : (255 << (8 - bits)) & 255
+      if ((bytes[i] & mask) !== (cidr.bytes[i] & mask)) return false
+      remaining -= bits
+    }
+    return true
+  })
+}
+
 /**
  * Refuse download targets that are not plain http(s) or that point at a
  * private/loopback/link-local address (SSRF fence for sender-controlled
@@ -254,7 +328,7 @@ function isRedirectStatus(status: number): boolean {
  * lookup and are judged by their resolved address. `allowPrivate` skips
  * only the private-address check — the protocol whitelist always applies.
  */
-async function assertDownloadableUrl(rawUrl: string, allowPrivate: boolean): Promise<void> {
+async function assertDownloadableUrl(rawUrl: string, allowPrivate: boolean, allowCidrs: Cidr[]): Promise<void> {
   let parsed: URL
   try {
     parsed = new URL(rawUrl)
@@ -266,7 +340,7 @@ async function assertDownloadableUrl(rawUrl: string, allowPrivate: boolean): Pro
   }
   if (allowPrivate) return
   const host = parsed.hostname.replace(/^\[/, '').replace(/\]$/, '')
-  if (isPrivateIp(host)) {
+  if (isPrivateIp(host) && !matchesCidr(host, allowCidrs)) {
     throw new Error('download refused: private/loopback address not allowed: ' + rawUrl)
   }
   let addresses: Array<{ address: string }>
@@ -275,7 +349,7 @@ async function assertDownloadableUrl(rawUrl: string, allowPrivate: boolean): Pro
   } catch (cause) {
     throw new Error('download refused: DNS lookup failed for ' + host + ': ' + describeError(cause))
   }
-  if (addresses.some(entry => isPrivateIp(entry.address))) {
+  if (addresses.some(entry => isPrivateIp(entry.address) && !matchesCidr(entry.address, allowCidrs))) {
     throw new Error('download refused: ' + host + ' resolves to a private/loopback address: ' + rawUrl)
   }
 }
