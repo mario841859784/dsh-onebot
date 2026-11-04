@@ -410,6 +410,17 @@ describe('T9: stripBoundaryLeakage', () => {
     expect(stripBoundaryLeakage('<user_message>无属性标签')).toBe('无属性标签')
   })
 
+  it('#26: a trailing full wrapper after other prose is dropped with its content', () => {
+    // 尾部整包裹 = 泄漏签名（模型把用户消息原文回显在回复末尾）：连内容删除。
+    expect(stripBoundaryLeakage('好的，我查一下……<user_message qq="10001" nickname="小明">\n帮我看下今天天气\n</user_message>')).toBe('好的，我查一下……')
+    // 包裹与正文之间有空行/换行同样适用。
+    expect(stripBoundaryLeakage('好的，我查一下……\n\n<user_message qq="10001" nickname="小明">\n帮我看下今天天气\n</user_message>')).toBe('好的，我查一下……')
+    // 只有空白前导时不算「前面还有正文」→ 仍按 T9 保留内容。
+    expect(stripBoundaryLeakage('  \n<user_message qq="10001" nickname="小明">帮我看下今天天气</user_message>')).toBe('帮我看下今天天气')
+    // 中段包裹（后面还有正文）是有意引用 → 内容保留。
+    expect(stripBoundaryLeakage('好的，你刚才说：\n<user_message qq="10001" nickname="小明">你好</user_message>，对吧？')).toBe('好的，你刚才说：\n你好，对吧？')
+  })
+
   it("ordinary <tag> text and code content are untouched (no false positives)", () => {
     expect(stripBoundaryLeakage('请用 <div> 包裹，条件是 a < b && c > d')).toBe('请用 <div> 包裹，条件是 a < b && c > d')
     const code = '渲染模板如下：\n<config version="1">\n  <item id="1"/>\n</config>'

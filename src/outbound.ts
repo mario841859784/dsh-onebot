@@ -60,10 +60,21 @@ export interface SendOptions {
  * full wrapper loses just its tags (the enclosed content stays), stray
  * opening/closing/self-closing tags are dropped verbatim. Clean text is
  * returned unchanged (no re-trim side effects).
+ *
+ * #26: a trailing full wrapper after other reply prose is the echo signature
+ * of a message that reached the model mid-turn (steer policy) or of the
+ * question being answered — the model repeats the wrapped user text at the
+ * very end of its reply, and keeping the enclosed content then appends the
+ * user's message verbatim. That trailing block is dropped whole (tags AND
+ * content). A wrapper still carrying the entire reply keeps its content
+ * (T9), and a mid-reply wrapper keeps its content (an intentional quote).
  */
 export function stripBoundaryLeakage(text: string): string {
   if (!/<\/?user_message[\s/>]/i.test(text)) return text
   return text
+    // #26: trailing full wrapper preceded by other prose — drop the whole
+    // block including the enclosed content (leakage, not a quote).
+    .replace(/^(.*\S)\s*<user_message\s[^>]*>[\s\S]*<\/user_message\s*>\s*$/i, '$1')
     // Full wrapper: drop the tags, keep the enclosed content (inner edge
     // whitespace trimmed so the removal leaves no doubled blank lines).
     .replace(/<user_message\s[^>]*?>\s*([\s\S]*?)\s*<\/user_message\s*>/gi, '$1')
