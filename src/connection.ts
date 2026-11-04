@@ -7,6 +7,7 @@
  */
 
 import { randomUUID, timingSafeEqual } from 'node:crypto'
+import type { IncomingMessage } from 'node:http'
 import WebSocket, { WebSocketServer } from 'ws'
 
 import { describeError, errorStack } from './errors.js'
@@ -309,6 +310,30 @@ export class OneBotConnection {
 
   // ------------------------------------------------------------------ reverse
 
+  /** Reverse dial-in auth: accept the token as either the OneBot v11
+   * `Authorization: Bearer` header or an `?access_token=` query parameter
+   * (SnowLuma's WS clients attach the token to the connect URL). Both
+   * comparisons are timing-safe; a wrong token of either form is rejected. */
+  private reverseTokenOk(request: IncomingMessage): boolean {
+    const expected = Buffer.from(this.config.accessToken, 'utf8')
+    const header = request.headers.authorization
+    if (typeof header === 'string' && header !== '') {
+      const bearer = Buffer.from('Bearer ' + this.config.accessToken, 'utf8')
+      const provided = Buffer.from(header, 'utf8')
+      if (bearer.length === provided.length && timingSafeEqual(bearer, provided)) return true
+    }
+    try {
+      const queryToken = new URL(request.url ?? '/', 'http://localhost').searchParams.get('access_token')
+      if (queryToken !== null && queryToken !== '') {
+        const provided = Buffer.from(queryToken, 'utf8')
+        if (provided.length === expected.length && timingSafeEqual(provided, expected)) return true
+      }
+    } catch {
+      // Malformed upgrade URL: fall through to the rejection below.
+    }
+    return false
+  }
+
   private startReverseServer(): void {
     if (this.config.accessToken === '') {
       throw new Error('reverse mode requires a non-empty accessToken')
@@ -327,9 +352,7 @@ export class OneBotConnection {
       this.log('error', 'reverse WS server error: ' + describeError(error) + (ref !== undefined ? '（参考号 ' + ref + '）' : '') + errorStack(error))
     })
     server.on('connection', (socket, request) => {
-      const expected = Buffer.from('Bearer ' + this.config.accessToken, 'utf8')
-      const provided = Buffer.from(request.headers.authorization ?? '', 'utf8')
-      if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) {
+      if (!this.reverseTokenOk(request)) {
         this.log('warn', 'rejecting reverse WS client: bad access token')
         socket.close(4401, 'unauthorized')
         return

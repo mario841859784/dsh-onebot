@@ -72,11 +72,16 @@ export function makeFakeAgents(
       if (typeof options.setup === 'function') {
         // Agent setup receives the agent's own scope: platform prompt section
         // + qq_* tools must register here (installChannelScope), never on the
-        // plugin context.
+        // plugin context. T2-B1: a userQuestions stub is present so the timed
+        // ask_user_question tool registers (captured.channelTools asserts it).
         const agentCtx = {
-          on: () => () => undefined,
+          on: (event: string, listener: (request: unknown, next: () => Promise<unknown>) => unknown) => {
+            captured.agentListeners?.push({ event, listener })
+            return () => undefined
+          },
           systemPrompt: { section: (s: { name: string }) => { captured.channelSections?.push(s.name); return () => undefined } },
           tools: { register: (t: { name: string }) => { captured.channelTools?.push(t.name); return () => undefined } },
+          userQuestions: { askTimed: async () => ({ answers: [] }), answer: async () => false },
         }
         await options.setup(agentCtx)
       }
@@ -102,7 +107,7 @@ export function makeFakeAgents(
         whenIdle: async () => undefined,
       }
       if (typeof options.setup === 'function') {
-        await options.setup({ on: () => () => undefined, systemPrompt: { section: () => () => undefined }, tools: { register: () => () => undefined } })
+        await options.setup({ on: () => () => undefined, systemPrompt: { section: () => () => undefined }, tools: { register: () => () => undefined }, userQuestions: { askTimed: async () => ({ answers: [] }), answer: async () => false } })
       }
       return { agent, dispose: async () => undefined }
     }),
@@ -111,10 +116,10 @@ export function makeFakeAgents(
 }
 
 /** Full bridge + WS harness: inbound via real WebSocket, outbound captured. */
-export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; log?: (level: string, message: string) => void }) {
+export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; log?: (level: string, message: string) => void; notices?: { steerAccepted?: boolean, queue?: boolean }; monoFamilies?: readonly string[]; allowPrivateHosts?: boolean; respond?: Record<string, (params: Record<string, unknown>) => unknown>; userQuestions?: unknown }) {
   const ctx = new Context()
   const sessionIds: string[] = []
-  const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[] }
+  const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[], agentListeners: [] as Array<{ event: string; listener: (request: unknown, next: () => Promise<unknown>) => unknown }> }
   const agents = makeFakeAgents(sessionIds, captured, opts)
   const sessions = { flush: vi.fn(async () => undefined) }
   const mediaDir = opts?.mediaDir ?? mkdtempSync(join(tmpdir(), 'onebot-test-'))
@@ -124,13 +129,15 @@ export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: st
   const bridge = new ChatBridge({
     ctx,
     connection,
-    media: new MediaStore(join(mediaDir, 'media'), 6),
+    media: new MediaStore(join(mediaDir, 'media'), 6, 0, { allowPrivateHosts: opts?.allowPrivateHosts === true }),
     transcriber: opts?.transcriber ?? new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
     agents: agents as never,
     sessions: sessions as never,
     agentPresets: undefined as never,
     workspaceRegistry: undefined as never,
     defaultModel: undefined,
+    // T2-B3: the host userQuestions service stub (absent = no interception).
+    ...(opts?.userQuestions !== undefined ? { userQuestions: opts.userQuestions } : {}),
     config: {
       botQQ: '10002', ignoreSelf: opts?.ignoreSelf ?? false, requireMention: true,
       interimMessages: opts?.interimMessages ?? true, sendErrorNotice: true, restrictedMemberPrefix: false,
@@ -142,6 +149,10 @@ export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: st
       ...(opts?.newMessagePolicy !== undefined ? { newMessagePolicy: opts.newMessagePolicy } : {}),
       // T3 (P2): deferred-delivery timeout override (absent = the 10min default).
       ...(opts?.deferredTimeoutMs !== undefined ? { deferredTimeoutMs: opts.deferredTimeoutMs } : {}),
+      // T8: auto-receipt notice override (absent = both on).
+      ...(opts?.notices !== undefined ? { notices: opts.notices } : {}),
+      // T2/T11: preferred mono families for t2i code text (absent = undefined).
+      ...(opts?.monoFamilies !== undefined ? { monoFamilies: opts.monoFamilies } : {}),
       // W1: optional decision-trace sink (absent = tracing off).
       trace: opts?.trace,
       // W1/T5: optional recorder / inject channel (absent = feature off).
@@ -154,6 +165,16 @@ export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: st
     },
     log: (level: string, message: string) => opts?.log?.(level, message),
   })
+  if (opts?.respond !== undefined) {
+    // Action-level canned responses (SnowLuma adaptation tests): intercept
+    // before the real WS round-trip, same seam as makeCmdHarness's ocr stub.
+    const real = connection.call.bind(connection)
+    connection.call = (async (action: string, params: Record<string, unknown>) => {
+      const respond = opts.respond?.[action]
+      if (respond !== undefined) return respond(params)
+      return await real(action, params)
+    }) as never
+  }
   connection.onMessage = event => {
     void bridge.handleInbound(event)
   }
@@ -207,6 +228,8 @@ export async function makeCmdHarness(opts?: {
   allowAllUsers?: boolean
   agentDefaultModel?: unknown
   workspaceRegistry?: unknown
+  /** T2-B3: the host userQuestions service stub (absent = no interception). */
+  userQuestions?: unknown
   /** /session list previews: a SessionPersistenceLike stub (stat probe +
    * open read handles). Absent = the bridge sees no persistence service and
    * the list renders preview-less items. */
@@ -215,13 +238,16 @@ export async function makeCmdHarness(opts?: {
   trace?: TraceSink
   /** T4 (P3): optional log capture for reference-number assertions. */
   log?: (level: string, message: string) => void
+  /** T8: auto-receipt notice override (absent = both on). */
+  notices?: { steerAccepted?: boolean, queue?: boolean }
+  monoFamilies?: readonly string[]
 }) {
   const ctx = new Context()
   const sessionIds: string[] = []
   const capturedMeta: Array<{ cwd?: string; agentPreset?: string }> = []
   // T2 (P1): steers are captured alongside followups so the /steer and
   // 'steer'-policy tests can assert the exact steered text.
-  const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, createdMeta: capturedMeta }
+  const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, createdMeta: capturedMeta, agentListeners: [] as Array<{ event: string; listener: (request: unknown, next: () => Promise<unknown>) => unknown }> }
   const agents = makeFakeAgents(sessionIds, captured)
   const sessions = { flush: vi.fn(async () => undefined) }
   const mediaDir = opts?.mediaDir ?? mkdtempSync(join(tmpdir(), 'onebot-test-'))
@@ -249,6 +275,7 @@ export async function makeCmdHarness(opts?: {
     sessionPersistence: (opts?.sessionPersistence ?? undefined) as never,
     workspaceRegistry: (opts?.workspaceRegistry ?? undefined) as never,
     agentDefaultModel: (opts?.agentDefaultModel ?? undefined) as never,
+    ...(opts?.userQuestions !== undefined ? { userQuestions: opts.userQuestions } : {}),
     defaultModel: () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
     config: {
       botQQ: '10002', ignoreSelf: false, requireMention: true,
@@ -258,6 +285,10 @@ export async function makeCmdHarness(opts?: {
       ...(opts?.interimRecall !== undefined ? { interimRecall: opts.interimRecall } : {}),
       ...(opts?.rateLimitPerMinute !== undefined ? { rateLimitPerMinute: opts.rateLimitPerMinute } : {}),
       sendErrorNotice: true,
+      // T8: auto-receipt notice override (absent = both on).
+      ...(opts?.notices !== undefined ? { notices: opts.notices } : {}),
+      // T2/T11: preferred mono families for t2i code text (absent = undefined).
+      ...(opts?.monoFamilies !== undefined ? { monoFamilies: opts.monoFamilies } : {}),
       ...(opts?.restrictedMemberPrefix !== undefined ? { restrictedMemberPrefix: opts.restrictedMemberPrefix } : {}),
       ...(opts?.newMessagePolicy !== undefined ? { newMessagePolicy: opts.newMessagePolicy } : {}),
       ...(opts?.autoSteerPolicy !== undefined ? { autoSteerPolicy: opts.autoSteerPolicy } : {}),

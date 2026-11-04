@@ -98,9 +98,10 @@ export declare function sanitizeNickname(nickname: string): string;
  * @param nickname - sender display name.
  * @param userId - sender QQ number.
  * @param mentioned - whether the bot was mentioned.
+ * @param role - the sender's tier (权限分档 A1): admin → ·管理员, member → ·成员.
  * @returns the prefix string (never empty: always at least the time stamp).
  */
-export declare function buildGroupMessagePrefix(nickname: string, userId: string, mentioned: boolean): string;
+export declare function buildGroupMessagePrefix(nickname: string, userId: string, mentioned: boolean, role: UserRole): string;
 /** Soft-cap prefix for restricted (member-role) group users. */
 export declare const RESTRICTED_PREFIX = "[\u53D7\u9650\u7528\u6237:\u4EC5\u95EE\u7B54] ";
 /**

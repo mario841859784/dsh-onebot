@@ -107,6 +107,12 @@ export interface InboundContext {
      * nickname (T9-A): pre-sanitized sender display name for the /steer
      * <user_message> boundary attribute. */
     tryHandleCommand(chatId: ChatId, text: string, userId: string, nickname?: string): Promise<boolean>;
+    /** T3-board /silent: silence-window probe (bridge-owned per-chat state).
+     * True = normal messages are dropped silently. Checked right AFTER the
+     * command router returns false, so all slash commands (including /silent
+     * itself) bypass the mute and the unlock can never be swallowed. Optional:
+     * absent = the host has no silencing wiring (pre-T3 behavior). */
+    isSilenced?(chatId: ChatId): boolean;
     /** Message body assembly (bridge facade: overridable, see the pipeline-order test). */
     buildBody(text: string, media: MediaRef[], chatId: ChatId): Promise<string>;
     /** Quote expansion via the overridable bridge facade; a verified response
@@ -124,6 +130,14 @@ export interface InboundContext {
      * media-bearing messages always queue, never steer). Optional: absent =
      * the pre-T2 pipeline (0.8.1 behavior for every message). */
     interceptBusyTurn?(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean): Promise<boolean>;
+    /** T2-B3: ask_user_question answer seam — invoked for every plain message
+     * after ALL gates and BEFORE interceptBusyTurn. Parses the raw text as a
+     * reply to the chat's outstanding ask_user_question batch (纯选项选择 /
+     * 答:前缀 / 跳过 — see question-answer.ts) and settles it through the host
+     * userQuestions service. Returns true when consumed as an answer; any
+     * failure (no active batch, non-answer text, settle error/REPLY_QUEUED)
+     * returns false so the message reaches the conversation normally. */
+    interceptQuestionAnswer?(chatId: ChatId, text: string): Promise<boolean>;
     /** Outbound facade (the B7 rate-limit notice). */
     sendToChat(chatId: ChatId, text: string): Promise<string[]>;
     /** Bridge log line callback. */
@@ -204,7 +218,10 @@ export declare class InboundPipeline {
     /**
      * Fetch an inbound QQ file to a local path. NapCat's get_file may return
      * container-internal paths unreachable from this host, so:
-     *   1. prefer the private-file direct link (get_private_file_url → HTTP
+     *   0. group chats prefer the group direct link (get_group_file_url —
+     *      SnowLuma's get_file covers only image/voice caches, so group files
+     *      must go through the standard group-file action);
+     *   1. then the private-file direct link (get_private_file_url → HTTP
      *      CDN download, works for private chats);
      *   2. fall back to get_file base64 / http-url payloads.
      * Returns the [文件:path] annotation, or '' when disabled/failed.

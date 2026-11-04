@@ -79,6 +79,12 @@ export interface ChatSettings {
      * ephemeral UI state — survives /new like every field here but never
      * persisted, and bounded by the lazy 5-minute TTL instead. */
     pendingSelection?: PendingSelection;
+    /** T3-board /silent: the chat's silence-window end (epoch ms). Survives
+     * /new like every field here (silence is a property of the CHAT, not the
+     * session) and rides the chat-sessions.json persistence, so a plugin
+     * restart no longer lifts the mute. A bare /silent clears the field
+     * explicitly. Expired values are dropped at persist time. */
+    silentUntil?: number;
 }
 /** One live per-chat agent. */
 export interface ChatAgent {
@@ -154,7 +160,7 @@ export interface RegistryDeps {
     agentPresets: AgentPresetsLike | undefined;
     defaultModel: (() => ModelSelection | undefined) | undefined;
     /** The only config fields the registry reads. */
-    config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>;
+    config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'agentPresetGroup' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>;
     log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void;
     /** Bridge stop flag (guards the resume loop). */
     isStopping(): boolean;
@@ -196,6 +202,13 @@ export declare class ChatRegistry {
     constructor(deps: RegistryDeps);
     /** The (lazy-created) settings entry for one chat. */
     getSettings(chatId: ChatId): ChatSettings;
+    /** T3-board /silent: the still-open silence windows across all chats
+     * (expired entries excluded). The bridge replays these into its in-memory
+     * Map after loadMapping so a restart does not lift a running mute. */
+    silenceWindows(): Array<{
+        chatId: ChatId;
+        until: number;
+    }>;
     /** C2: default-model wiring shared by the create and resume assembly paths
      * — the agent options for the registry call only (the deployment default
      * rides in as `provider`/`model`; dsh 0.2.2 carries the mutable selection
@@ -233,6 +246,11 @@ export declare class ChatRegistry {
     private restoreEvictedSettings;
     /** Resume persisted chats from the mapping file (best-effort). */
     loadMapping(): Promise<void>;
+    /** T4 (#15): quarantine an unparsable/structurally invalid mapping file —
+     * warn, copy it to `<chat-sessions.json>.bak` (an existing .bak is never
+     * overwritten: the earliest post-corruption copy wins), and leave the load
+     * with an empty mapping so the chat stays usable. */
+    private quarantineCorruptMapping;
     /** Resume one persisted chat from its recorded session id (shared by
      * loadMapping and the B8c evicted-chat resume). */
     private resumeChat;
@@ -263,6 +281,10 @@ export declare class ChatRegistry {
     /** Permanently retire a session id: in-memory plus durable on-disk record,
      * so a restart never reuses an id whose log collides with a fresh session. */
     private retireSession;
+    /** T4 (#15): the run's hard-retired (broken) session count, straight from
+     * the retire record — the /session list surfaces it so broken history
+     * stays visible to the admin. */
+    brokenSessionCount(): number;
     /** Whether the persistence layer already owns a durable log for this id —
      * true means reusing the id would collide (stale on-disk log or live entry).
      * A read failure counts as no log so the caller falls back to the normal

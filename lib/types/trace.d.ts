@@ -58,12 +58,14 @@ export declare const TRACE_REASONS: {
     readonly inboundReplyOtherAuthor: "引用消息作者不是机器人，已忽略";
     readonly quoteInvalidId: "引用消息 ID 无效，已跳过查询";
     readonly inboundCommand: "消息已由命令处理";
+    readonly inboundSilenced: "静音窗口内，普通消息已忽略";
     readonly inboundDedup: "消息在去重窗口内重复投递，已跳过";
     readonly inboundRateLimited: "消息频率超限，已丢弃";
     readonly inboundRateNoticeFailed: "限流提示发送失败";
     readonly inboundEmptyContent: "消息展开后无有效文本内容，已丢弃";
     readonly busyTurnQueued: "任务运行中，新消息已入队等待当前回合结束";
     readonly busyTurnSteered: "任务运行中，新消息已作为补充指令插话";
+    readonly questionAnswered: "消息已作为问题回答结算（ask_user_question）";
     readonly mediaResolveFailed: "媒体解析失败，占位符保留原文";
     readonly nasFileTooLarge: "QQ 文件超过大小上限，已跳过获取";
     readonly nasFileFailed: "QQ 文件获取失败：无可用来源";

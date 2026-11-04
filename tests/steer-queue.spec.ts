@@ -335,3 +335,44 @@ describe('/steer 命令（仅管理员，两种模式下均可用）', () => {
     await h.connection.stop()
   }, 60_000)
 })
+
+describe('T8：自动回执开关（notices）', () => {
+  it('notices.queue=false：排队照常，但不发排队提示；缺省（true）行为不变由上方既有用例覆盖', async () => {
+    const h = await makeCmdHarness({ notices: { queue: false } })
+    h.sendText('启动任务')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    setRunning(h)
+
+    h.sendText('排队消息一')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    h.sendText('排队消息二')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(3))
+
+    await new Promise(resolve => setTimeout(resolve, 150))
+    expect(sentTexts(h.outbound).filter(t => t.includes(QUEUE_NOTICE_TEXT))).toHaveLength(0)
+    expect(h.outbound.filter(f => f.action === 'send_msg')).toHaveLength(0)
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 60_000)
+
+  it('notices.steerAccepted=false：steer 照常受理，但不发提交提示', async () => {
+    const h = await makeCmdHarness({ newMessagePolicy: 'steer', notices: { steerAccepted: false } })
+    h.sendText('启动任务')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    setRunning(h)
+
+    h.sendText('补充指令 A')
+    await vi.waitFor(() => expect(h.captured.steers).toHaveLength(1))
+    expect(h.captured.steers[0].text).toContain('补充指令 A')
+
+    await new Promise(resolve => setTimeout(resolve, 150))
+    expect(sentTexts(h.outbound).filter(t => t.includes(STEER_ACCEPTED_NOTICE))).toHaveLength(0)
+    expect(h.outbound.filter(f => f.action === 'send_msg')).toHaveLength(0)
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 60_000)
+})

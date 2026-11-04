@@ -28,6 +28,20 @@ export interface OutboundSegment {
   data: Record<string, unknown>
 }
 
+/**
+ * SnowLuma's send_msg validates text segments: `text === ''` is treated as a
+ * compatibility placeholder and a whitespace-only text still goes through
+ * normal validation — both get rejected. Strip empty/whitespace-only text
+ * segments before the wire; non-text segments pass untouched.
+ */
+export function filterBlankTextSegments(segments: OutboundSegment[]): OutboundSegment[] {
+  return segments.filter(seg => {
+    if (seg.type !== 'text') return true
+    const text = seg.data?.text
+    return !(typeof text === 'string' && text.trim() === '')
+  })
+}
+
 /** Options for an explicit outbound send (from tools). */
 export interface SendOptions {
   replyTo?: string
@@ -35,6 +49,30 @@ export interface SendOptions {
    * connection is down. Only for model final replies; interim sends carry
    * recall timers + bookkeeping and must never be replayed. */
   queuable?: boolean
+}
+
+/**
+ * T9 (#2): strip a leaked <user_message> boundary. wrapUserMessage (chat.ts)
+ * wraps every inbound payload in `<user_message qq="…" nickname="…">…</user_message>`,
+ * and a model may echo those markers back inside its reply. Only the literal
+ * `user_message` tag name is recognized, in attribute-constrained shapes, so
+ * ordinary angle-bracket text (`<tag>`, XML, `a < b`) passes untouched: a
+ * full wrapper loses just its tags (the enclosed content stays), stray
+ * opening/closing/self-closing tags are dropped verbatim. Clean text is
+ * returned unchanged (no re-trim side effects).
+ */
+export function stripBoundaryLeakage(text: string): string {
+  if (!/<\/?user_message[\s/>]/i.test(text)) return text
+  return text
+    // Full wrapper: drop the tags, keep the enclosed content (inner edge
+    // whitespace trimmed so the removal leaves no doubled blank lines).
+    .replace(/<user_message\s[^>]*?>\s*([\s\S]*?)\s*<\/user_message\s*>/gi, '$1')
+    // Stray tags without a matching pair: opening (with attrs), bare
+    // opening, closing, and self-closing forms.
+    .replace(/<\/?user_message(?:\s[^>]*?)?\/?>/gi, '')
+    // Collapse blank-line runs the removal left behind.
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }
 
 /** Narrow view of a live chat the outbound pipeline may touch — the
@@ -73,7 +111,7 @@ export interface OutboundContext {
   /** The only config fields the outbound pipeline reads. The W2-③ write-gate
    * fields ride as optional intersection members so the bridge's BridgeConfig
    * type stays untouched (absent → the defaults below). */
-  config: Pick<BridgeConfig, 'botQQ' | 'sensitivePatterns' | 'textImageThreshold' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies'> & Partial<{
+  config: Pick<BridgeConfig, 'botQQ' | 'sensitivePatterns' | 'textImageThreshold' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies' | 'monoFamilies'> & Partial<{
     /** Audit file directory (W2-③: mediaDir/qq-actions.log); absent → no audit. */
     mediaDir: string
     /** W2-③ bridge-wide proactive-write cap per sliding minute; 0 disables. */
@@ -146,6 +184,10 @@ export class OutboundPipeline {
       }
       const ids: string[] = []
       const { body, nodes } = extractForwardBlocks(text, '助手')
+      // T9 (#2): the model may echo the <user_message> boundary that
+      // wrapUserMessage injected — strip the markers before delivery so both
+      // the t2i card and the plain-text branch stay clean.
+      const clean = stripBoundaryLeakage(body)
       if (nodes.length > 0) {
         // Passive reply path: [[qq_forward]] blocks inside a turn reply are
         // NOT gated as proactive writes (see the W2-③ 口径 note).
@@ -154,17 +196,18 @@ export class OutboundPipeline {
       }
       let sentCard = false
       const threshold = this.ctx.config.textImageThreshold
-      if (threshold > 0 && body.length > threshold) {
+      if (threshold > 0 && clean.length > threshold) {
         try {
           const chat = this.ctx.getChat(chatId)
           const title = chat !== undefined && chat.lastNickname !== ''
             ? 'To ' + chat.lastNickname
             : undefined
-          const png = renderTextImage(body, {
+          const png = renderTextImage(clean, {
             title,
             footerBrand: this.ctx.config.cardFooter,
             fontFiles: this.ctx.config.fontFiles,
             fontFamilies: this.ctx.config.fontFamilies,
+            monoFamilies: this.ctx.config.monoFamilies,
           })
           const b64 = 'base64://' + png.toString('base64')
           if (b64.length <= this.ctx.config.maxImageBytes) {
@@ -181,7 +224,7 @@ export class OutboundPipeline {
         }
       }
       if (!sentCard) {
-        const plain = stripMarkdown(body)
+        const plain = stripMarkdown(clean)
         if (plain !== '') {
           const id = await this.sendMsg(chatId, [{ type: 'text', data: { text: plain } }], options)
           if (id !== undefined) ids.push(id)
@@ -384,9 +427,18 @@ export class OutboundPipeline {
     }
     if (ref.kind === 'group') params.group_id = target
     else params.user_id = target
-    params.message = segments
+    // SnowLuma rejects empty/whitespace-only text segments — strip them at
+    // the single wire chokepoint (both the pipeline and the tools funnel
+    // through here).
+    const filtered = filterBlankTextSegments(segments)
+    if (filtered.length === 0 && options.replyTo === undefined) {
+      this.ctx.log('debug', '过滤空白文本段后无有效消息段，未发送: ' + chatId)
+      this.ctx.trace?.(chatId, { stage: 'outbound', ok: false, reason: TRACE_REASONS.outboundEmptyText })
+      return undefined
+    }
+    params.message = filtered
     if (options.replyTo !== undefined) {
-      params.message = [{ type: 'reply', data: { id: options.replyTo } }, ...segments]
+      params.message = [{ type: 'reply', data: { id: options.replyTo } }, ...filtered]
     }
     const data = await this.ctx.call('send_msg', params, chatId) as { message_id?: number | string }
     return data.message_id !== undefined ? String(data.message_id) : undefined

@@ -97,6 +97,39 @@ describe('MediaStore.downloadUrl SSRF guards (M1-A5)', () => {
     }
   })
 
+  it('only allows private addresses inside allowCidrs', async () => {
+    const scoped = new MediaStore(guardDir, 6, 0, { allowCidrs: ['100.64.0.0/10'] })
+    mockedLookup.mockResolvedValue([{ address: '100.64.1.2', family: 4 }])
+    const fetchSpy = vi.fn(async () => new Response('x', { status: 200 }))
+    vi.stubGlobal('fetch', fetchSpy)
+    await expect(scoped.downloadUrl('http://100.64.1.2/x', '.bin')).resolves.toBeTruthy()
+    await expect(scoped.downloadUrl('http://10.0.0.1/x', '.bin')).rejects.toThrow(/private\/loopback address not allowed/)
+  })
+
+  it('supports IPv6 allowCidrs prefixes', async () => {
+    const scoped = new MediaStore(guardDir, 6, 0, { allowCidrs: ['fd7a:115c:a1e0::/48'] })
+    mockedLookup.mockResolvedValue([{ address: 'fd7a:115c:a1e0::1', family: 6 }])
+    const fetchSpy = vi.fn(async () => new Response('x', { status: 200 }))
+    vi.stubGlobal('fetch', fetchSpy)
+    await expect(scoped.downloadUrl('http://[fd7a:115c:a1e0::1]/x', '.bin')).resolves.toBeTruthy()
+  })
+
+  it('rejects a hostname with any private address outside allowCidrs', async () => {
+    const scoped = new MediaStore(guardDir, 6, 0, { allowCidrs: ['100.64.0.0/10'] })
+    mockedLookup.mockResolvedValue([
+      { address: '100.64.1.2', family: 4 },
+      { address: '10.0.0.1', family: 4 },
+    ])
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    await expect(scoped.downloadUrl('http://mixed.example.com/x', '.bin')).rejects.toThrow(/resolves to a private\/loopback/)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('rejects malformed allowCidrs entries at construction', () => {
+    expect(() => new MediaStore(guardDir, 6, 0, { allowCidrs: ['not-a-cidr'] })).toThrow(/invalid allowCidrs/)
+  })
+
   it('rejects a hostname that resolves to a private address (mocked DNS)', async () => {
     mockedLookup.mockResolvedValue([{ address: '10.9.8.7', family: 4 }])
     const fetchSpy = vi.fn()
@@ -213,6 +246,29 @@ describe('resolveContainedPath fence (M1-A3a)', () => {
     await expect(resolveContainedPath([fence], join(fence, 'missing.txt'))).resolves.toBeNull()
     await expect(resolveContainedPath([join(fence, 'no-such-root')], join(fence, 'a.txt'))).resolves.toBeNull()
     await expect(resolveContainedPath([join(fence, 'no-such-root'), fence], join(fence, 'a.txt'))).resolves.toBe(join(fence, 'a.txt'))
+  })
+})
+
+describe('file:// refs (inbound media)', () => {
+  it('only copies refs inside fileRefRoots and denies by default', async () => {
+    const inside = mkdtempSync(join(tmpdir(), 'media-ref-in-'))
+    const outside = mkdtempSync(join(tmpdir(), 'media-ref-out-'))
+    await writeFile(join(inside, 'ok.txt'), 'ok')
+    await writeFile(join(outside, 'secret.txt'), 'secret')
+
+    const scoped = new MediaStore(inside, 6, 0, { fileRefRoots: [inside] })
+    const allowed = await scoped.resolve({ kind: 'image', file: 'file://' + join(inside, 'ok.txt') }, async () => undefined)
+    expect(allowed?.path).toBeTruthy()
+    const denied = await scoped.resolve({ kind: 'image', file: 'file://' + join(outside, 'secret.txt') }, async () => undefined)
+    expect(denied).toBeUndefined()
+
+    const defaultStore = new MediaStore(inside, 6, 0)
+    const defaultDenied = await defaultStore.resolve({ kind: 'image', file: 'file://' + join(inside, 'ok.txt') }, async () => undefined)
+    expect(defaultDenied).toBeUndefined()
+
+    await symlink(join(outside, 'secret.txt'), join(inside, 'link.txt'))
+    const escaped = await scoped.resolve({ kind: 'image', file: 'file://' + join(inside, 'link.txt') }, async () => undefined)
+    expect(escaped).toBeUndefined()
   })
 })
 
