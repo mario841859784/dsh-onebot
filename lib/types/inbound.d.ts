@@ -145,7 +145,7 @@ export interface InboundContext {
     /** The only config fields the inbound pipeline reads. The W2-② dedup
      * window rides as an optional intersection member so the bridge's
      * BridgeConfig type stays untouched (absent → the default window). */
-    config: Pick<BridgeConfig, 'botQQ' | 'ignoreSelf' | 'requireMention' | 'rateLimitPerMinute' | 'restrictedMemberPrefix' | 'maxInboundFileBytes'> & Partial<{
+    config: Pick<BridgeConfig, 'botQQ' | 'ignoreSelf' | 'requireMention' | 'rateLimitPerMinute' | 'restrictedMemberPrefix' | 'maxInboundFileBytes' | 'notices'> & Partial<{
         /** W2-② (chatId, message_id) dedup window in seconds; 0 disables. */
         dedupWindowSeconds: number;
     }>;

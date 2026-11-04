@@ -1,4 +1,5 @@
 import type { TraceStage } from './trace.js';
+import { type NoticeTexts } from './notices.js';
 /** The registry file name inside the media dir (one JSON entry per line). */
 export declare const DEFERRED_REGISTRY_FILE = "deferred-delivery.jsonl";
 /** Default wait-for-model-reply timeout (ms): conservative 10 minutes. */
@@ -77,6 +78,9 @@ export interface DeferredContext {
     mediaDir: string;
     /** The resolved timeout window (ms); 0 disables the whole feature. */
     timeoutMs: number;
+    /** T1 (#27): notices ride through — the timeout notice text resolves from
+     * notices.deferredTimeout (absent/true = default, false/'' = not sent). */
+    notices?: NoticeTexts;
     isStopping(): boolean;
 }
 /** Injectable clock + timer pair (tests inject fake ones). */

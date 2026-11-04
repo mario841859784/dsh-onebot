@@ -14,6 +14,7 @@ import { type ChatId, type UserRole } from './chat.js';
 import type { PendingSelection, SessionSwitchOutcome, SwitchableSession } from './registry.js';
 import type { AgentDefaultModelLike, AgentPresetsLike, BridgeConfig, BridgeDeps, LlmCatalogPort, SessionPersistenceLike, SessionPreviewEvent, WorkspaceRegistryLike } from './bridge.js';
 import type { TraceStage } from './trace.js';
+import { type NoticeSetting } from './notices.js';
 /** Narrow view of a live chat the command handlers may read or mutate —
  * the structural subset of the bridge's internal ChatAgent that the
  * pre-split handlers actually touched. */
@@ -40,6 +41,11 @@ export interface CommandContext {
     sendToChat(chatId: ChatId, text: string): Promise<string[]>;
     /** Bridge log line callback. */
     log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void;
+    /** T1 (#27): /steer 确认文案取 notices.steerAccepted（非空 string=自定义）；
+     * 缺省/true/false → 默认文案（命令确认是命令回执，不受 false 关闭影响）。 */
+    notices?: {
+        steerAccepted?: NoticeSetting;
+    };
     /** Router entry gate: the admin check against the policy allowlist. */
     isAdmin(userId: string): boolean;
     /** Live chat lookup / existence probe. */

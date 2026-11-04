@@ -141,10 +141,13 @@ export interface Config {
     /** M3-D2b: interim recall degrade switch (false = send-only interims). */
     interimRecall: boolean;
     sendErrorNotice: boolean;
-    /** T8: auto-receipt notice switches (default true keeps existing behavior). */
+    /** T8/#27: auto-receipt notice switches — boolean, or a custom text string. */
     notices: {
-        steerAccepted: boolean;
-        queue: boolean;
+        steerAccepted?: boolean | string;
+        queue?: boolean | string;
+        answerAccepted?: boolean | string;
+        deferredTimeout?: boolean | string;
+        rateLimited?: boolean | string;
     };
     /** T14 (#6 补充): qq_send_segments 插件页开关与分段发送间隔（呼吸感）。 */
     segments: {

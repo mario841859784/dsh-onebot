@@ -15,6 +15,7 @@ import type { MediaStore } from './media.js';
 import type { Transcriber } from './stt.js';
 import type { ChatId } from './chat.js';
 import type { AccessPolicyConfig } from './chat.js';
+import { type NoticeTexts } from './notices.js';
 import { type UserQuestionsPort } from './ask-tool.js';
 import type { OutboundSegment, SendOptions } from './outbound.js';
 import type { TraceSink } from './trace.js';
@@ -51,15 +52,13 @@ export interface BridgeConfig {
      * with the final text only). Absent/true = the full recall behavior. */
     interimRecall?: boolean;
     sendErrorNotice: boolean;
-    /** T8 (#3): auto-receipt notice switches — absent → both on (0.9.x
-     * behavior unchanged). steerAccepted gates the steer-mode auto receipt;
-     * queue gates the once-per-running-turn queue notice. The explicit /steer
-     * command confirmation is a command reply, not an auto receipt, and stays
-     * on regardless of this knob. */
-    notices?: {
-        steerAccepted?: boolean;
-        queue?: boolean;
-    };
+    /** T8/#27: auto-receipt notice switches / custom texts — absent or `true`
+     * → the default text (0.9.x behavior unchanged); `false` or `''` → not
+     * sent; a non-empty string → the custom text. steerAccepted gates the
+     * steer-mode auto receipt AND customizes the /steer command confirmation
+     * (which stays on regardless — it is a command reply, not an auto
+     * receipt); queue gates the once-per-running-turn queue notice. */
+    notices?: NoticeTexts;
     /** B7: per-chat per-minute sliding-window cap for normal (non-command)
      * messages; absent → 30, 0 disables. */
     rateLimitPerMinute?: number;
@@ -453,6 +452,9 @@ export declare class ChatBridge {
      * @returns true when the message was consumed as an answer.
      */
     private interceptQuestionAnswer;
+    /** T1 (#27): the answer-accepted auto receipt — notices.answerAccepted
+     * resolves the text (false/'' = not sent, string = custom text). */
+    private sendAnswerNotice;
     /** T3-board: the chat whose live root agent is `agent` (identity first,
      * then the session id as a defensive fallback). */
     private chatIdForAgent;
