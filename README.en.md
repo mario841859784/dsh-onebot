@@ -4,7 +4,9 @@
 
 A QQ channel for DeepSeek Harness. 给 DeepSeek Harness 加上 QQ 通道。
 
-This plugin turns dsh into a QQ bot (**OneBot 11 protocol**, compatible with NapCat / Lagrange / LLOneBot / go-cqhttp).
+This plugin turns dsh into a QQ bot (**OneBot 11 protocol**, compatible with NapCat / Lagrange / LLOneBot / go-cqhttp;
+since 0.9.12 also compatible with the [SnowLuma](https://github.com/SnowLuma/SnowLuma) protocol implementation —
+forward mode connects to its `wsServers` (Bearer header or `?access_token=`, zero-config compatible), and the reverse-mode server accepts both the Bearer header and the `?access_token=` query parameter),
 Like [dsh-vision](https://github.com/dsh-external/dsh-vision), it ships as an external plugin: **zero Python, pure
 TypeScript, a native Cordis plugin** mounted into the dsh host process, with no core code changes.
 
@@ -43,7 +45,7 @@ User(QQ) ←→ NapCat ←→ dsh-onebot plugin ←→ dsh Agent (one per chat)
 |---|---|
 | dsh | ≥ 0.1.5-rc.1 (`engines.dsh`: full 0.1.5/0.1.6/0.1.7 lines + 0.2.0 line ≥0.2.0-rc.1; @deepseek-ai/* peer deps same range, JsonValue provided by dsh-util-values) |
 | Node.js | ≥ 22 |
-| OneBot 11 impl | NapCat / Lagrange / LLOneBot / go-cqhttp (reverse or forward WebSocket) |
+| OneBot 11 impl | NapCat / Lagrange / LLOneBot / go-cqhttp / SnowLuma (reverse or forward WebSocket) |
 | Optional deps | Voice transcription needs ffmpeg + whisper CLI; t2i text images need Noto CJK fonts on Linux |
 
 Last verified: 2026-10-12 (0.9.0 release batch W1–W3 five features: v4 command audit / verify health-check script / queue+steer with autoSteerPolicy / deferred delivery on timeout / diagnostic reference IDs — npx tsc --noEmit clean, 532/532 vitest green; M0 security semantics unchanged: reverse mode refuses an empty accessToken and defaults to 127.0.0.1, see the BREAKING note under the config table).

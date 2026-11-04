@@ -4,7 +4,8 @@
 
 给 DeepSeek Harness 加上 QQ 通道。A QQ channel for dsh.
 
-本插件把 dsh 变成一个 QQ 机器人（**OneBot 11 协议**，兼容 NapCat / Lagrange / LLOneBot / go-cqhttp），
+本插件把 dsh 变成一个 QQ 机器人（**OneBot 11 协议**，兼容 NapCat / Lagrange / LLOneBot / go-cqhttp；
+0.9.12 起新增兼容 [SnowLuma](https://github.com/SnowLuma/SnowLuma) 协议端——forward 模式对接其 `wsServers`（Bearer 头或 `?access_token=`，零改动兼容），reverse 模式服务端同时接受 Bearer 头与 `?access_token=` query 鉴权），
 与 [dsh-vision](https://github.com/dsh-external/dsh-vision) 同款的外部插件形态：**零 Python、纯 TS、
 原生 Cordis 插件**，挂载进 dsh 宿主进程，不改任何核心代码。
 
@@ -43,7 +44,7 @@
 |---|---|
 | dsh | ≥ 0.1.5-rc.1（`engines.dsh`：0.1.5/0.1.6/0.1.7 全线 + 0.2.0 线 ≥0.2.0-rc.1；@deepseek-ai/* peer 依赖同范围，JsonValue 由 dsh-util-values 提供） |
 | Node.js | ≥ 22 |
-| OneBot 11 实现 | NapCat / Lagrange / LLOneBot / go-cqhttp（reverse 或 forward WebSocket） |
+| OneBot 11 实现 | NapCat / Lagrange / LLOneBot / go-cqhttp / SnowLuma（reverse 或 forward WebSocket） |
 | 可选依赖 | 语音转写需 ffmpeg + whisper CLI；t2i 文字图在 Linux 需 Noto CJK 字体 |
 
 最后验证：2026-10-12（0.9.0 发版批次 W1–W3 五特性：v4 命令审计 / verify 体检脚本 / 排队插话+autoSteerPolicy / 超时补发 / 诊断参考号——npx tsc --noEmit 零错误、vitest 532 用例全绿；M0 安全语义保持：reverse 空 token 拒绝启动、默认仅监听 127.0.0.1 为 BREAKING 变更，见下方配置表说明）。
