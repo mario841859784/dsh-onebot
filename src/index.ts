@@ -179,6 +179,8 @@ export interface Config {
   chatIdleEvictDays: number
   /** Escape hatch: skip the download private-address check (local reverse proxy). */
   allowPrivateHosts: boolean
+  /** Roots allowed for inbound file:// refs; empty rejects all. */
+  fileRefRoots: string[]
   /** Optional CIDR allowlist for trusted private download targets. */
   allowCidrs: string[]
   /** W2-②: inbound (chatId, message_id) dedup window in seconds; 0 disables. */
@@ -350,6 +352,8 @@ export const Config: Z<Config> = z.object({
     .description('[deprecated] 旧名别名（现 inboundFileMaxBytes）：QQ 入站文件最大字节数；本版兼容读取，新配置请用新名'),
   allowPrivateHosts: z.boolean().default(false)
     .description('下载 SSRF 防护逃生门：默认拒绝解析到私网/环回/链路本地地址的下载目标（协议仅 http/https、重定向逐跳复检仍生效）；NapCat 文件服务器或反代部署在本机/内网时置 true 跳过私网检查'),
+  fileRefRoots: z.array(z.string()).default([])
+    .description('允许复制的 file:// 源根目录列表；空数组（默认）拒绝所有入站 file:// ref；路径按 realpath 校验，必须在这些根目录内'),
   allowCidrs: z.array(z.string()).default([])
     .description('可选 CIDR 白名单（IPv4/IPv6，如 100.64.0.0/10、fd7a:115c:a1e0::/48）：只放行这些私网段，其他私网/环回仍拒绝；空数组保持原行为'),
   chatIdleEvictDays: z.number().default(7)
@@ -470,7 +474,7 @@ export function apply(ctx: Context, config: Config): void {
       log,
     },
   )
-  const media = new MediaStore(mediaDir, config.tempTtlHours, config.inboundImageMaxPx, { maxBytes: config.inboundFileMaxBytes, allowPrivateHosts: config.allowPrivateHosts, allowCidrs: config.allowCidrs })
+  const media = new MediaStore(mediaDir, config.tempTtlHours, config.inboundImageMaxPx, { maxBytes: config.inboundFileMaxBytes, allowPrivateHosts: config.allowPrivateHosts, fileRefRoots: config.fileRefRoots, allowCidrs: config.allowCidrs })
   // W1: the trace sink exists only when explicitly enabled — default off
   // means no sink, no traceIds, no jsonl, zero behavior difference.
   const traceSink = config.traceEnabled

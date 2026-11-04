@@ -249,6 +249,29 @@ describe('resolveContainedPath fence (M1-A3a)', () => {
   })
 })
 
+describe('file:// refs (inbound media)', () => {
+  it('only copies refs inside fileRefRoots and denies by default', async () => {
+    const inside = mkdtempSync(join(tmpdir(), 'media-ref-in-'))
+    const outside = mkdtempSync(join(tmpdir(), 'media-ref-out-'))
+    await writeFile(join(inside, 'ok.txt'), 'ok')
+    await writeFile(join(outside, 'secret.txt'), 'secret')
+
+    const scoped = new MediaStore(inside, 6, 0, { fileRefRoots: [inside] })
+    const allowed = await scoped.resolve({ kind: 'image', file: 'file://' + join(inside, 'ok.txt') }, async () => undefined)
+    expect(allowed?.path).toBeTruthy()
+    const denied = await scoped.resolve({ kind: 'image', file: 'file://' + join(outside, 'secret.txt') }, async () => undefined)
+    expect(denied).toBeUndefined()
+
+    const defaultStore = new MediaStore(inside, 6, 0)
+    const defaultDenied = await defaultStore.resolve({ kind: 'image', file: 'file://' + join(inside, 'ok.txt') }, async () => undefined)
+    expect(defaultDenied).toBeUndefined()
+
+    await symlink(join(outside, 'secret.txt'), join(inside, 'link.txt'))
+    const escaped = await scoped.resolve({ kind: 'image', file: 'file://' + join(inside, 'link.txt') }, async () => undefined)
+    expect(escaped).toBeUndefined()
+  })
+})
+
 describe('fileToBase64 allowedRoots (M1-A3a)', () => {
   it('refuses outside paths and accepts contained ones', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'media-b64-'))
