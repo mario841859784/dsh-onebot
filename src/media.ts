@@ -79,12 +79,19 @@ export class MediaStore {
     try {
       const real = await resolveContainedPath(this.fileRefRoots, source)
       if (real === null) return undefined
+      const info = await stat(real)
+      if (this.exceedsLocalCap(info.size)) return undefined
       const path = this.freshPath(extForKind(kind))
       await copyFile(real, path)
       return path
     } catch {
       return undefined
     }
+  }
+
+  /** Whether a local (non-download) payload exceeds the configured cap. */
+  private exceedsLocalCap(bytes: number): boolean {
+    return this.downloadMaxBytes > 0 && bytes > this.downloadMaxBytes
   }
 
   /** Ensure the scratch directory exists. */
@@ -165,8 +172,10 @@ export class MediaStore {
       }
       const file = ref.file ?? ''
       if (file.startsWith('base64://')) {
+        const data = Buffer.from(file.slice('base64://'.length), 'base64')
+        if (this.exceedsLocalCap(data.length)) return undefined
         const path = this.freshPath(extForKind(ref.kind))
-        await writeFile(path, Buffer.from(file.slice('base64://'.length), 'base64'))
+        await writeFile(path, data)
         return { path, kind: ref.kind }
       }
       if (file.startsWith('file://')) {

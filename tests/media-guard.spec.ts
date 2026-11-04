@@ -272,6 +272,22 @@ describe('file:// refs (inbound media)', () => {
   })
 })
 
+describe('local media size caps', () => {
+  it('caps base64 and file:// payloads with the configured maxBytes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'media-local-cap-'))
+    const store = new MediaStore(dir, 6, 0, { maxBytes: 10 })
+    const big = 'base64://' + Buffer.alloc(100, 1).toString('base64')
+    await expect(store.resolve({ kind: 'image', file: big }, async () => undefined)).resolves.toBeUndefined()
+
+    const p = join(dir, 'big.bin')
+    await writeFile(p, Buffer.alloc(100, 1))
+    await expect(store.resolve({ kind: 'image', file: 'file://' + p }, async () => undefined)).resolves.toBeUndefined()
+
+    const small = 'base64://' + Buffer.alloc(5, 1).toString('base64')
+    await expect(store.resolve({ kind: 'image', file: small }, async () => undefined)).resolves.toBeTruthy()
+  })
+})
+
 describe('fileToBase64 allowedRoots (M1-A3a)', () => {
   it('refuses outside paths and accepts contained ones', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'media-b64-'))
