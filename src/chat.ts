@@ -139,14 +139,16 @@ export function sanitizeNickname(nickname: string): string {
  * @param nickname - sender display name.
  * @param userId - sender QQ number.
  * @param mentioned - whether the bot was mentioned.
+ * @param role - the sender's tier (权限分档 A1): admin → ·管理员, member → ·成员.
  * @returns the prefix string (never empty: always at least the time stamp).
  */
-export function buildGroupMessagePrefix(nickname: string, userId: string, mentioned: boolean): string {
+export function buildGroupMessagePrefix(nickname: string, userId: string, mentioned: boolean, role: UserRole): string {
   const now = new Date()
   const hh = String(now.getHours()).padStart(2, '0')
   const mm = String(now.getMinutes()).padStart(2, '0')
   const mention = mentioned ? '[@我]' : ''
-  return '[' + hh + ':' + mm + ' ' + nickname + '(' + userId + ')]' + mention + ' '
+  const tier = role === 'admin' ? '管理员' : '成员'
+  return '[' + hh + ':' + mm + ' ' + nickname + '(' + userId + ')·' + tier + ']' + mention + ' '
 }
 
 /** Soft-cap prefix for restricted (member-role) group users. */

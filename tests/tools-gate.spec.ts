@@ -26,10 +26,14 @@ interface SendTool {
  * T14: `segments` installs the qq_send_segments page switches BEFORE tool
  * registration (undefined = module default: enabled, no interval).
  * `respond` lets a test override the canned response per action (e.g.
- * get_group_msg_history). */
+ * get_group_msg_history).
+ * 权限分档 A2: `memberTools` defaults to 'all' here so the media-fence tests
+ * below stay purely about the fence; the member-tier gate itself is exercised
+ * in its own describe with the production default 'none'. */
 async function makeHarness(opts: {
   segments?: { enabled: boolean; intervalMs: number }
   respond?: Record<string, (params: Record<string, unknown>) => unknown>
+  memberTools?: 'none' | 'all'
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'tools-gate-'))
   const mediaDir = join(root, 'media')
@@ -65,6 +69,7 @@ async function makeHarness(opts: {
       maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
       textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
       agentPreset: 'standard', workspacePath: workspace, maxInboundFileBytes: 0,
+      permissions: { memberTools: opts.memberTools ?? 'all' },
     },
     policy: {
       dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
@@ -231,6 +236,82 @@ describe('ChatBridge.mediaSendRoots (M1-A3b roots口径)', () => {
       roots: [realpathSync(h.mediaDir)],
       isTurnAdmin: true,
     })
+  })
+})
+
+/**
+ * 权限分档 A2（工具硬防线）：成员（非管理员）回合内全部 qq_* 工具在 execute
+ * 前被拦截——守卫先于参数校验/媒体栅栏/发送，任何 qq_* 工具一视同仁；
+ * 管理员回合与 permissions.memberTools='all' 不受限；无 QQ 会话映射的调用方
+ * （Web 等其他通道）不受限。守卫复用 M1-A2 turn-level 角色（seed 即
+ * activeTurnRole，fail-closed member）。
+ */
+describe('qq_* member-tier tool gate (权限分档 A2)', () => {
+  it('rejects a member-turn tool call before any send, on every qq_* tool shape', async () => {
+    const h = await makeHarness({ memberTools: 'none' })
+    const sessionId = 'sess-gate-member'
+    h.seed(sessionId, 'member')
+    const target = join(h.mediaDir, 'allowed.jpg')
+    await writeFile(target, 'bytes')
+    for (const [name, args] of [
+      ['qq_send_image', { sources: [target] }],
+      ['qq_send_file', { path: target }],
+      ['qq_send_forward', { messages: [{ name: 'a', content: 'b' }] }],
+      ['qq_napcat_api', { action: 'get_group_member_list', params: { group_id: 1 } }],
+      ['qq_group_history', { chat_id: 'group:20002' }],
+    ] as Array<[string, Record<string, unknown>]>) {
+      await expect(h.tool(name).execute(args, h.exec(sessionId)))
+        .rejects.toThrow('当前发言人为成员档位，无工具权限：qq_* 工具仅管理员回合可用')
+    }
+    expect(h.calls).toHaveLength(0)
+  })
+
+  it('fires before argument validation (permission error, not the validation error)', async () => {
+    const h = await makeHarness({ memberTools: 'none' })
+    const sessionId = 'sess-gate-early'
+    h.seed(sessionId, 'member')
+    await expect(h.tool('qq_send_segments').execute({ segments: [] }, h.exec(sessionId)))
+      .rejects.toThrow('当前发言人为成员档位')
+    expect(h.calls).toHaveLength(0)
+  })
+
+  it('leaves admin turns unrestricted', async () => {
+    const h = await makeHarness({ memberTools: 'none' })
+    const sessionId = 'sess-gate-admin'
+    h.seed(sessionId, 'admin')
+    const target = join(h.mediaDir, 'admin.jpg')
+    await writeFile(target, 'admin-bytes')
+    const result = await h.tool('qq_send_image').execute({ sources: [target] }, h.exec(sessionId)) as { sent: boolean }
+    expect(result.sent).toBe(true)
+    expect(h.sentSegment()).toMatchObject({ type: 'image' })
+  })
+
+  it("permissions.memberTools='all' disables the gate for members", async () => {
+    const h = await makeHarness({ memberTools: 'all' })
+    const sessionId = 'sess-gate-open'
+    h.seed(sessionId, 'member')
+    const target = join(h.mediaDir, 'open.jpg')
+    await writeFile(target, 'open-bytes')
+    const result = await h.tool('qq_send_image').execute({ sources: [target] }, h.exec(sessionId)) as { sent: boolean }
+    expect(result.sent).toBe(true)
+  })
+
+  it('trusts callers with no QQ session mapping (Web/other channels)', async () => {
+    const h = await makeHarness({ memberTools: 'none' })
+    // 显式 chat_id + 未映射会话：守卫放行（无 QQ 会话映射不在档位语义内）。
+    const result = await h.tool('qq_send_image').execute({ sources: ['https://example.com/pic.jpg'], chat_id: 'group:30001' }, h.exec('some-web-session')) as { sent: boolean }
+    expect(result.sent).toBe(true)
+    expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(1)
+  })
+
+  it('absent config fails closed: member is blocked even without the permissions key', async () => {
+    const h = await makeHarness({ memberTools: 'none' })
+    delete (h.bridge as unknown as { deps: { config: { permissions?: unknown } } }).deps.config.permissions
+    const sessionId = 'sess-gate-absent'
+    h.seed(sessionId, 'member')
+    await expect(h.tool('qq_send_image').execute({ sources: ['https://example.com/pic.jpg'] }, h.exec(sessionId)))
+      .rejects.toThrow('当前发言人为成员档位')
+    expect(h.calls).toHaveLength(0)
   })
 })
 

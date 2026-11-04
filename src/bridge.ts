@@ -27,7 +27,10 @@ import type { AccessPolicyConfig } from './chat.js'
 import { buildPlatformPrompt } from './prompt.js'
 import { registerTools } from './tools.js'
 import { tryHandleCommand as routeCommand, STEER_ACCEPTED_NOTICE, type CommandContext } from './commands.js'
-import { relayHostCards as relayCards, type CardRelayContext } from './card-relay.js'
+import { relayHostCards as relayCards, type CardRelayContext, type RelayQuestionCall } from './card-relay.js'
+import { ASK_USER_TIMEOUT_SECONDS, registerAskUserTool, type AskUserAnswer, type UserQuestionsPort } from './ask-tool.js'
+import { holdForegroundWait, type AttachWaitPort, type ForegroundHold, type ForegroundQuestionRequest } from './ask-foreground.js'
+import { parseQuestionAnswer } from './question-answer.js'
 import { OutboundPipeline } from './outbound.js'
 import type { OutboundSegment, SendOptions } from './outbound.js'
 import { ChatRegistry } from './registry.js'
@@ -53,6 +56,13 @@ import type { TraceStage } from './trace.js'
  * turn (the flag resets at turn/end) so a burst of queued messages never
  * spams the chat. Exported for the deterministic text wait in tests. */
 export const QUEUE_NOTICE_TEXT = '⏳ 当前任务运行中，新消息已排队，将在当前任务结束后依次处理。'
+
+/** T2-B2: how long a relayed ask_user_question batch stays interceptable —
+ * after this the bridge stops treating plain replies as answers (the host's
+ * continued-state question may still be answered from the Web card). */
+export const QUESTION_TTL_MS = 15 * 60 * 1000
+/** T2-B3: the auto-receipt sent when a QQ reply settles an ask_user_question batch. */
+export const ANSWER_ACCEPTED_NOTICE = '✔ 已提交回答'
 
 /** Resolved runtime configuration for the bridge. */
 export interface BridgeConfig {
@@ -95,6 +105,13 @@ export interface BridgeConfig {
   /** T2 (P1): preferred mono family names for code text (t2i); absent → t2i platform defaults. */
   monoFamilies?: readonly string[]
   agentPreset: string
+  /** 权限分档 A3: 群聊粗档 preset——设置后群聊会话优先使用该 preset id（私聊
+   * 仍用 agentPreset）；absent/空串 = 现行为（群私同源 agentPreset）。 */
+  agentPresetGroup?: string
+  /** 权限分档 A2: 成员档位工具权限。'none'（缺省）= 成员（非管理员）回合
+   * 内全部 qq_* 工具在 execute 前被硬拦截；'all' = 不限。fail-closed：
+   * 字段缺失按 'none' 处理。 */
+  permissions?: { memberTools?: 'none' | 'all' }
   workspacePath: string
   /** Max inbound file bytes fetched via QQ direct link / base64 (0 = no cap). */
   maxInboundFileBytes: number
@@ -250,6 +267,11 @@ export interface BridgeDeps {
   workspaceRegistry: WorkspaceRegistryLike | undefined
   agentDefaultModel: AgentDefaultModelLike | undefined
   defaultModel: (() => ModelSelection | undefined) | undefined
+  /** T2-B3: the host userQuestions service — settles intercepted QQ replies
+   * against the chat's continued-state ask_user_question. Absent (test
+   * assemblies / unexpected hosts) = answer interception stays disabled and
+   * every reply flows into the conversation normally. */
+  userQuestions?: UserQuestionsPort | undefined
   config: BridgeConfig & TraceBridgeConfig
   policy: AccessPolicyConfig
   /** W1/T5 health: the ALREADY-redacted plugin config snapshot (secrets
@@ -299,6 +321,13 @@ export class ChatBridge {
    * would orphan exactly that reply's outbound events. One entry per chat
    * id (bounded by the chat population), so growth is not a concern. */
   private readonly traceByChat = new Map<ChatId, string>()
+  /** T3-board /silent: per-chat silence window (epoch-ms until; no entry =
+   * not silenced). The Map is the hot-path READ cache (the QQ message probe
+   * stays IO-free); the durable copy is ChatSettings.silentUntil (registry),
+   * which rides chat-sessions.json — a restart re-arms a running window and
+   * /new keeps it. Writes go through setSilentUntilImpl (memory + settings +
+   * debounced save); a bare /silent clears both copies explicitly. */
+  private readonly silentUntil = new Map<ChatId, number>()
   /** W1/T5: chatId → the traceId of the chat's unsettled INJECTED round
    * (independent of the trace sink, so the dry-run guard covers the async
    * agent reply even with tracing off). Cleared by a real dispatch to the
@@ -308,6 +337,22 @@ export class ChatBridge {
    * running turn (one notice per turn; cleared at turn/end and on chat
    * removal — bounded by the chat population). */
   private readonly queueNoticeChats = new Set<ChatId>()
+  /** T2-B2: the chat's outstanding ask_user_question batch, keyed by chat id
+   * (memory only — a restart loses it and the model re-asks). Populated from
+   * the card relay's onQuestionCall, consumed by interceptQuestionAnswer,
+   * cleared on settle (user-question-reply event), chat removal and the TTL. */
+  private readonly activeQuestion = new Map<ChatId, RelayQuestionCall & { askedAt: number }>()
+  /** T3-board: live foreground answerers keyed by callId — the
+   * 'user-questions/request' waterfall listener waits on these for the QQ
+   * answer (instant settle: the ask tool returns instead of timing out to
+   * pending). Populated by onForegroundQuestionRequest, delivered by
+   * interceptQuestionAnswer, cleared on settle, chat removal, bridge stop,
+   * and each listener's own deadline/host-signal race. */
+  private readonly foregroundWaits = new Map<string, {
+    chatId: ChatId
+    questions: Array<{ id: string }>
+    resolve: (answers: AskUserAnswer[] | undefined) => void
+  }>()
   /** Plugin version + git commit, read once for /ver. */
   private pluginVersion: string | undefined
   private pluginCommit: string | undefined
@@ -332,6 +377,11 @@ export class ChatBridge {
         this.traceByChat.delete(chat.chatId)
         this.injectRoundByChat.delete(chat.chatId)
         this.queueNoticeChats.delete(chat.chatId)
+        this.activeQuestion.delete(chat.chatId)
+        // T3-board: a removed chat cannot answer anymore — give up its
+        // foreground waits (listeners release their claims and fall through
+        // to the pending path).
+        this.abandonForegroundWaits(chat.chatId)
       },
       installChannelScope: agentCtx => this.installChannelScope(agentCtx),
     })
@@ -363,10 +413,24 @@ export class ChatBridge {
       transcriber: deps.transcriber,
       steerTranscript: (chatId, text) => this.steerTranscript(chatId, text),
       tryHandleCommand: (chatId, text, userId, nickname) => this.tryHandleCommand(chatId, text, userId, nickname),
+      // T3-board /silent: silence-window probe (reads the in-memory cache
+      // backfilled from the persisted ChatSettings at startup; expired
+      // entries are pruned from the cache lazily on read — the durable copy
+      // expires naturally and is dropped at persist time).
+      isSilenced: chatId => {
+        const until = this.silentUntil.get(chatId)
+        if (until === undefined) return false
+        if (until <= Date.now()) {
+          this.silentUntil.delete(chatId)
+          return false
+        }
+        return true
+      },
       buildBody: (text, media, chatId) => this.buildBody(text, media, chatId),
       expandQuote: (messageId, verifiedData) => this.expandQuote(messageId, verifiedData),
       dispatchFollowup: (chatId, text, role, nickname) => this.dispatchFollowup(chatId, text, role, nickname),
       interceptBusyTurn: (chatId, text, role, nickname, plain) => this.interceptBusyTurn(chatId, text, role, nickname, plain),
+      interceptQuestionAnswer: (chatId, text) => this.interceptQuestionAnswer(chatId, text),
       sendToChat: (chatId, text) => this.sendToChat(chatId, text),
       log: (level, message) => this.deps.log(level, message),
       config: deps.config,
@@ -423,6 +487,10 @@ export class ChatBridge {
       await this.registry.loadRetired()
       await this.registry.loadSwitchable()
       await this.registry.loadMapping()
+      // T3-board /silent: replay the persisted still-open silence windows
+      // into the in-memory read cache so a restart does not lift a running
+      // mute (expired windows were already dropped by loadMapping).
+      for (const { chatId, until } of this.registry.silenceWindows()) this.silentUntil.set(chatId, until)
       // T3 (P2): restore deferred-delivery tracking（未完结条目在该会话的
       // 下一次 turn/end 兑现；损坏行降级跳过）。
       await this.deferred.loadPersisted()
@@ -447,6 +515,11 @@ export class ChatBridge {
     // T3 (P2): disarm the deferred silent-wait timers（pending 条目已落盘，
     // 重启后 loadPersisted 恢复跟踪续投）。
     this.deferred.stopAll()
+    // T3-board: release every foreground wait claim; the listeners fall
+    // through (next() → NO_PROVIDER) and the host wait closes on its own
+    // deadline → pending, the pre-T3 path. No claim may outlive the bridge.
+    for (const wait of this.foregroundWaits.values()) wait.resolve(undefined)
+    this.foregroundWaits.clear()
   }
 
   /** Map an agent session id back to its chat (for model tools). */
@@ -463,6 +536,20 @@ export class ChatBridge {
     const chatId = this.bySession.get(sessionId)
     if (chatId === undefined) return true
     return this.chats.get(chatId)?.activeTurnRole === 'admin'
+  }
+
+  /**
+   * 权限分档 A2（工具硬防线）：one tool-call's permission decision. Reuses the
+   * M1-A2 turn-level role (frozen at turn/start, fail-closed member) via
+   * canEditFiles; a caller with no QQ session mapping (Web/other channels) is
+   * outside the tier semantics and stays allowed; permissions.memberTools
+   * === 'all' disables the gate entirely. Absent config fails closed to
+   * 'none' (members blocked).
+   */
+  memberToolsAllowed(sessionId: string | undefined): boolean {
+    if ((this.deps.config.permissions?.memberTools ?? 'none') === 'all') return true
+    if (sessionId === undefined) return true
+    return this.canEditFiles(sessionId)
   }
 
   /**
@@ -672,11 +759,191 @@ export class ChatBridge {
   }
 
   /** The CardRelayContext handed to the card relay (D1-PR2): the outbound
-   * send path plus the bridge log — the only capabilities the relay touches. */
+   * send path plus the bridge log — the only capabilities the relay touches.
+   * T2-B2 adds onQuestionCall to record the outstanding batch. */
   private get cardRelayCtx(): CardRelayContext {
     return {
       sendToChat: (chatId, text) => this.sendToChat(chatId, text),
       log: (level, message) => this.deps.log(level, message),
+      onQuestionCall: (chatId, call) => {
+        this.activeQuestion.set(chatId, { ...call, askedAt: Date.now() })
+      },
+    }
+  }
+
+  /** T2-B2: the chat's outstanding ask_user_question batch, or undefined when
+   * there is none or the TTL (QUESTION_TTL_MS) has expired (expired entries
+   * are dropped lazily — no timer needed). */
+  private activeQuestionFor(chatId: ChatId): RelayQuestionCall | undefined {
+    const entry = this.activeQuestion.get(chatId)
+    if (entry === undefined) return undefined
+    if (Date.now() - entry.askedAt > QUESTION_TTL_MS) {
+      this.activeQuestion.delete(chatId)
+      return undefined
+    }
+    return entry
+  }
+
+  /**
+   * T2-B3: intercept a plain QQ message that parses as a reply to the chat's
+   * outstanding ask_user_question batch (选项选择 / 答:前缀 / 跳过 — see
+   * question-answer.ts) and settle it through the host userQuestions service
+   * (the chat's live root agent). Runs in the inbound pipeline before the
+   * busy-turn seam. Any failure — no active batch, not an answer shape, no
+   * userQuestions service, BAD_ANSWER / REPLY_QUEUED / returned false —
+   * falls through so the message reaches the conversation normally.
+   * @param chatId - the chat the reply arrived in.
+   * @param text - raw parsed inbound text.
+   * @returns true when the message was consumed as an answer.
+   */
+  private async interceptQuestionAnswer(chatId: ChatId, text: string): Promise<boolean> {
+    if (this.deps.userQuestions === undefined) return false
+    const entry = this.activeQuestionFor(chatId)
+    if (entry === undefined) return false
+    const answers = parseQuestionAnswer(text, entry.questions)
+    if (answers === undefined) return false
+    const chat = this.chats.get(chatId)
+    if (chat === undefined) return false
+    // T3-board: a live foreground wait (the ask tool's waterfall answerer)
+    // settles instantly — the tool is still in its wait window and receives
+    // the result instead of timing out to pending. Falls through to the
+    // answer() path when no wait matches (the pending state).
+    if (this.deliverForegroundAnswer(chatId, answers)) {
+      this.sendToChat(chatId, ANSWER_ACCEPTED_NOTICE).catch((error: unknown) => {
+        this.deps.log('debug', '回答回执发送失败: ' + describeError(error))
+      })
+      return true
+    }
+    try {
+      const settled = await this.deps.userQuestions.answer(chat.agent, entry.callId, { answers })
+      if (settled !== true) return false
+    } catch (error: unknown) {
+      // BAD_ANSWER / REPLY_QUEUED / callId no longer continued → not ours to
+      // consume; the message continues into the conversation.
+      this.deps.log('debug', 'question answer settle failed: ' + describeError(error))
+      return false
+    }
+    this.activeQuestion.delete(chatId)
+    this.sendToChat(chatId, ANSWER_ACCEPTED_NOTICE).catch((error: unknown) => {
+      this.deps.log('debug', '回答回执发送失败: ' + describeError(error))
+    })
+    return true
+  }
+
+  /** T3-board: the chat whose live root agent is `agent` (identity first,
+   * then the session id as a defensive fallback). */
+  private chatIdForAgent(agent: unknown): ChatId | undefined {
+    if (agent === undefined || agent === null) return undefined
+    for (const chat of this.chats.values()) {
+      if (chat.agent === agent) return chat.chatId
+    }
+    const sessionId = (agent as { session?: { id?: unknown } } | undefined)?.session?.id
+    if (typeof sessionId === 'string') {
+      const chatId = this.bySession.get(sessionId as SessionId)
+      if (chatId !== undefined) return chatId
+    }
+    return undefined
+  }
+
+  /** T3-board: try to settle a live foreground wait with a parsed QQ answer
+   * batch (instant settle). Only a wait whose question ids are exactly
+   * covered by the parsed answers accepts the delivery; anything else stays
+   * for the answer() (pending) path. */
+  private deliverForegroundAnswer(chatId: ChatId, answers: ReadonlyArray<AskUserAnswer>): boolean {
+    if (this.foregroundWaits.size === 0) return false
+    const byId = new Map(answers.map(answer => [answer.id, answer]))
+    for (const [callId, wait] of this.foregroundWaits) {
+      if (wait.chatId !== chatId) continue
+      const batch = wait.questions.map(question => byId.get(question.id))
+      if (batch.some(answer => answer === undefined)) continue
+      this.foregroundWaits.delete(callId)
+      this.activeQuestion.delete(chatId)
+      wait.resolve(batch as AskUserAnswer[])
+      return true
+    }
+    return false
+  }
+
+  /** T3-board: resolve-and-drop every foreground wait belonging to `chatId`;
+   * each listener sees undefined, releases its claim and falls through. */
+  private abandonForegroundWaits(chatId: ChatId): void {
+    for (const [callId, wait] of this.foregroundWaits) {
+      if (wait.chatId !== chatId) continue
+      this.foregroundWaits.delete(callId)
+      wait.resolve(undefined)
+    }
+  }
+
+  /**
+   * T3-board: the per-agent 'user-questions/request' waterfall listener
+   * (registered from installChannelScope). The host dispatches timed asks as
+   * `{ ...request, agent, signal: wait.signal, wait: { callId, timed: true } }`
+   * with the innermost noAnswerer (NO_PROVIDER) last; the Web forwarder is
+   * the listener registered before us, so we only see asks the Web layer did
+   * not settle. Answering = returning { answers } (vetoing next()); anything
+   * else — not timed, no callId, no matching QQ chat, attach failed, deadline
+   * reached, host wait closed, aborted — falls through via next() so the
+   * existing 300s→pending→inbound answer() path stays intact (fail-open).
+   */
+  private async onForegroundQuestionRequest(request: ForegroundQuestionRequest, next: () => Promise<unknown>): Promise<unknown> {
+    const callId = request.wait?.callId
+    if (request.wait?.timed !== true || typeof callId !== 'string' || callId === '') return next()
+    const chatId = this.chatIdForAgent(request.agent)
+    if (chatId === undefined) return next()
+    const questions = (Array.isArray(request.questions) ? request.questions : [])
+      .map(question => (question !== null && typeof question === 'object' ? (question as { id?: unknown }).id : undefined))
+      .filter((id): id is string => typeof id === 'string')
+    if (questions.length === 0) return next()
+    // Without a host signal the wait cannot be bounded — never hold it.
+    const signal = request.signal
+    if (signal === undefined) return next()
+
+    // Hold the host's wait stream: the claim suppresses the host deadline
+    // timer while we wait for the QQ answer. No hold (attach yielded no
+    // frames / port lacks attachWait / attach threw) → the host timer keeps
+    // running and the signal-abort race still bounds this listener.
+    const service = this.deps.userQuestions as unknown
+    const attachPort = service !== undefined && typeof (service as Partial<AttachWaitPort>).attachWait === 'function'
+      ? service as AttachWaitPort
+      : undefined
+    // T1-board: register the wait SYNCHRONOUSLY, before the attach await.
+    // The previous order (await attach → Map.set) left a window where a
+    // settle (deliverForegroundAnswer) or a cleanup (abandonForegroundWaits
+    // / stop) could run between the two steps and miss the listener
+    // entirely. holdForegroundWait never throws (it catches internally) and
+    // the finally below still owns the teardown, so the early entry cannot
+    // leak; a settle or abandon landing during the attach await resolves the
+    // delivery early and the race below picks it up unchanged.
+    const delivery = Promise.withResolvers<AskUserAnswer[] | undefined>()
+    this.foregroundWaits.set(callId, { chatId, questions: questions.map(id => ({ id })), resolve: delivery.resolve })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let hold: ForegroundHold | undefined
+    try {
+      hold = attachPort === undefined ? undefined : await holdForegroundWait(attachPort, request.agent, callId, signal)
+      const giveUp = new Promise<undefined>(resolve => {
+        if (signal.aborted) {
+          resolve(undefined)
+          return
+        }
+        signal.addEventListener('abort', () => resolve(undefined), { once: true })
+        if (hold !== undefined) {
+          void hold.ended.then(() => resolve(undefined))
+          timer = setTimeout(() => resolve(undefined), hold.remainingMs)
+        }
+      })
+      const winner = await Promise.race([delivery.promise, giveUp])
+      if (winner === undefined) {
+        // Deadline reached / host closed the wait / aborted → release the
+        // claim (the host timer re-arms and closes the wait with
+        // ASK_TIMED_OUT → pending) and pass the request on; the innermost
+        // noAnswerer rejects NO_PROVIDER and askTimed maps it to pending.
+        return next()
+      }
+      return { answers: winner }
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+      this.foregroundWaits.delete(callId)
+      hold?.release()
     }
   }
 
@@ -772,8 +1039,37 @@ export class ChatBridge {
       // T4 (P3): command-plane failures (/retry) mint an MF- reference through
       // the bridge's single entry point (registry + trace + structured log).
       reportFailure: (chatId, stage, detail) => bridge.registerMessageFailure(chatId, stage, detail),
+      // T3-board /silent: read the in-memory cache; writes sync both copies
+      // (cache + durable ChatSettings field, debounced save).
+      silentUntil: chatId => bridge.getSilentUntil(chatId),
+      setSilentUntil: (chatId, untilMs) => bridge.setSilentUntilImpl(chatId, untilMs),
       config: { interimMessages: bridge.deps.config.interimMessages, maxImageBytes: bridge.deps.config.maxImageBytes, unknownCommand: bridge.deps.config.unknownCommand },
     }
+  }
+
+  /** T3-board /silent: the chat's silence-window end (in-memory read cache). */
+  private getSilentUntil(chatId: ChatId): number | undefined {
+    return this.silentUntil.get(chatId)
+  }
+
+  /** T3-board /silent: write BOTH copies of the silence window — the
+   * in-memory hot-path cache and the durable ChatSettings.silentUntil (the
+   * debounced mapping save; persistEntry drops already-expired values).
+   * `undefined` clears. Survives /new (silence belongs to the chat, not the
+   * session); a bare /silent clears both copies explicitly. */
+  private setSilentUntilImpl(chatId: ChatId, untilMs: number | undefined): void {
+    if (untilMs === undefined) this.silentUntil.delete(chatId)
+    else this.silentUntil.set(chatId, untilMs)
+    const settings = this.registry.getSettings(chatId)
+    if (untilMs === undefined) {
+      if (settings.silentUntil !== undefined) {
+        delete settings.silentUntil
+        this.registry.saveMappingDebounced()
+      }
+      return
+    }
+    settings.silentUntil = untilMs
+    this.registry.saveMappingDebounced()
   }
 
   /** Read the chat→session mapping file (for /id and /status when no live chat). */
@@ -1004,6 +1300,14 @@ export class ChatBridge {
     const chat = this.chats.get(chatId)
     if (chat === undefined || chat.sessionId !== session.id) return
     const trace = this.traceForChat(chatId)
+    if (event.type === 'user/message') {
+      // T2-B2: a user-question-reply user message (this bridge's settled
+      // answer, or a Web-side answer) means the outstanding batch is settled —
+      // drop it so later plain text stops being intercepted as answers.
+      const source = (event.data as { source?: { kind?: string } }).source
+      if (source?.kind === 'user-question-reply') this.activeQuestion.delete(chatId)
+      return
+    }
     if (event.type === 'turn/start') {
       trace?.emit('agent', { ok: true, reason: '模型回合开始' })
       // B8: a new turn begins — prune the previous turn's recalled-id
@@ -1211,6 +1515,21 @@ export class ChatBridge {
       maxVoiceBytes: this.deps.config.maxVoiceBytes,
       maxFileBytes: this.deps.config.maxFileBytes,
     })
+    // T2-B1: expose ask_user_question to QQ sessions (timed variant, 300s
+    // default). The host registers the tool only for preset/Web scopes, and
+    // the platform prompt previously banned the call on QQ; now QQ sessions
+    // get a scoped shadow whose pending/answer loop the bridge settles (B2/B3).
+    registerAskUserTool(agentCtx, {
+      timeoutSeconds: ASK_USER_TIMEOUT_SECONDS,
+      log: (level, message) => this.deps.log(level, message),
+    })
+    // T3-board: instant settle during the ask foreground wait — timed asks
+    // dispatch 'user-questions/request' as a waterfall (the Web forwarder is
+    // registered before us on the host root; the innermost noAnswerer last).
+    // This listener answers from QQ; every non-timed / non-QQ case falls
+    // through via next() (fail-open to the 300s→pending path).
+    ;(agentCtx as { on: (event: string, listener: (request: unknown, next: () => Promise<unknown>) => unknown) => () => void })
+      .on('user-questions/request', (request, next) => this.onForegroundQuestionRequest(request as ForegroundQuestionRequest, next))
   }
 
   // ------------------------------------------------------------ typing

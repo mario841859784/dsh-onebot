@@ -14,7 +14,11 @@
  *   该聊天的跟踪（其他聊天不受影响）。
  * - 正常完成（未超时）零注册表写入、零补发。
  * 时序纪律：单元用构造器注入假时钟/调度器；集成用小阈值真实定时器 +
- * vi.waitFor 文本确定性等待。
+ * vi.waitFor 文本确定性等待。T4 稳定化决策（R1：并发全量下本文件偶发 2 例
+ * 超时）：集成 harness 走真实 WebSocket + fs，vi.useFakeTimers 会破坏
+ * harness，不采用；改为放宽真实时钟等待边界至实测抖动上限的 ≥5 倍——
+ * 所有 vi.waitFor 显式 { timeout: 5_000 }（默认 1s，并发负载下被观测突破）、
+ * 零写入负向断言窗口 50ms→250ms（只放宽等待窗，断言判定不变、强度不降）。
  * @module dsh-onebot/tests/deferred
  */
 import { describe, expect, it, vi } from 'vitest'
@@ -122,11 +126,15 @@ describe('deferred 单元 — 发送失败分类与重试上限', () => {
     while (scheduler.active().length > 0) scheduler.runNext()
     await flush()
     expect(sendAttempts - before).toBe(DEFERRED_MAX_SEND_ATTEMPTS)
-    const entries = readRegistry(mediaDir)
-    expect(entries).toHaveLength(1)
-    expect(entries[0].state).toBe('failed')
-    expect(entries[0].attempts).toBe(3)
-    expect(entries[0].reason).toContain('发送明确失败')
+    // 落盘是真实异步 fs 链（FakeScheduler 只管定时器）：确定性等待终态落盘，
+    // 高并发下固定单次 flush 偶发读到写盘前的 pending（R1 实测抖点）
+    await vi.waitFor(() => {
+      const entries = readRegistry(mediaDir)
+      expect(entries).toHaveLength(1)
+      expect(entries[0].state).toBe('failed')
+      expect(entries[0].attempts).toBe(3)
+      expect(entries[0].reason).toContain('发送明确失败')
+    }, { timeout: 5_000 })
     // 退避间隔：2s → 10s
     expect(DEFERRED_RETRY_BACKOFF_MS).toEqual([2_000, 10_000])
   })
@@ -170,9 +178,12 @@ describe('deferred 单元 — 发送失败分类与重试上限', () => {
     while (scheduler.active().length > 0) scheduler.runNext()
     await flush()
     expect(sendAttempts - before).toBe(1) // 零自动重试
-    const entries = readRegistry(mediaDir)
-    expect(entries[0].state).toBe('uncertain')
-    expect(entries[0].reason).toContain('结果不确定')
+    // 同上：终态落盘为真实异步链，确定性等待而非固定单次 flush
+    await vi.waitFor(() => {
+      const entries = readRegistry(mediaDir)
+      expect(entries[0].state).toBe('uncertain')
+      expect(entries[0].reason).toContain('结果不确定')
+    }, { timeout: 5_000 })
   })
 
   it('非网关异常同样视为结果不确定：零自动重试', async () => {
@@ -202,7 +213,7 @@ describe('deferred 单元 — 发送失败分类与重试上限', () => {
     registerUnit(scheduler, delivery)
     delivery.onAssistantMessage('private:10001', 's-1', { id: 'm1', content: [{ type: 'text', text: '最终答案' }] })
     delivery.onTurnEnd('private:10001', 's-1', { kind: 'completed' })
-    await vi.waitFor(() => expect(readRegistry(mediaDir)[0]?.state).toBe('delivered'))
+    await vi.waitFor(() => expect(readRegistry(mediaDir)[0]?.state).toBe('delivered'), { timeout: 5_000 })
     const deferredSends = sends.filter(send => send.text.startsWith(DEFERRED_PREFIX))
     expect(deferredSends).toHaveLength(1)
     expect(deferredSends[0].text).toBe(DEFERRED_PREFIX + '最终答案')
@@ -234,7 +245,7 @@ describe('deferred 单元 — terminal 条目与 in-flight 守卫（T11/T12）',
     registerUnit(scheduler, delivery)
     delivery.onAssistantMessage('private:10001', 's-1', { id: 'm1', content: [{ type: 'text', text: '最终答案' }] })
     delivery.onTurnEnd('private:10001', 's-1', { kind: 'completed' })
-    await vi.waitFor(() => expect(delivery.snapshot()[0]?.state).toBe('delivered'))
+    await vi.waitFor(() => expect(delivery.snapshot()[0]?.state).toBe('delivered'), { timeout: 5_000 })
     expect(sends.filter(send => send.text.startsWith(DEFERRED_PREFIX))).toHaveLength(1)
     // 同会话后续回合（含错误回合）不再算 tracked：返回 false，bridge 照常发 ⚠️
     expect(delivery.onTurnEnd('private:10001', 's-1', { kind: 'error', error: { message: '新回合出错' } })).toBe(false)
@@ -274,7 +285,7 @@ describe('deferred 单元 — terminal 条目与 in-flight 守卫（T11/T12）',
     while (scheduler.active().length > 0) scheduler.runNext()
     await flush()
     expect(sends.filter(send => send.text.startsWith(DEFERRED_PREFIX))).toHaveLength(1) // 恰一次补发
-    await vi.waitFor(() => expect(readRegistry(mediaDir)[0]?.state).toBe('delivered')) // 落盘是异步链，确定性等待终态
+    await vi.waitFor(() => expect(readRegistry(mediaDir)[0]?.state).toBe('delivered'), { timeout: 5_000 }) // 落盘是异步链，确定性等待终态
     const entries = readRegistry(mediaDir)
     expect(entries).toHaveLength(1)
     expect(entries[0].attempts).toBe(2) // attempts 未被并发循环互相覆写
@@ -314,7 +325,7 @@ describe('deferred 单元 — terminal 条目与 in-flight 守卫（T11/T12）',
     const deferredSends = sends.filter(send => send.text.startsWith(DEFERRED_PREFIX))
     expect(deferredSends).toHaveLength(1)
     expect(deferredSends[0].text).toBe(DEFERRED_PREFIX + '回合A的最终答案')
-    await vi.waitFor(() => expect(readRegistry(mediaDir)[0]?.state).toBe('delivered'))
+    await vi.waitFor(() => expect(readRegistry(mediaDir)[0]?.state).toBe('delivered'), { timeout: 5_000 })
     const entries = readRegistry(mediaDir)
     expect(entries).toHaveLength(1)
     expect(entries[0].state).toBe('delivered')
@@ -405,7 +416,7 @@ describe('deferred 单元 — 计时器与静音语义', () => {
       const entries = readRegistry(mediaDir)
       expect(entries.find(entry => entry.sessionId === 's-1')?.state).toBe('cancelled')
       expect(entries.find(entry => entry.sessionId === 's-2')?.state).toBe('pending')
-    })
+    }, { timeout: 5_000 })
     // 已终止条目在 turn/end 不再兑现（零补发；此前的发送只有两条超时提醒）
     const before = sends.length
     expect(sends).toHaveLength(2)
@@ -475,13 +486,13 @@ describe('deferred 集成 — 超时→登记→完成→补发恰一次', () =>
     const sink = new TraceSink({ dir: mediaDir })
     const h = await makeHarness({ mediaDir, deferredTimeoutMs: 30, trace: sink })
     h.sendText('启动任务')
-    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1), { timeout: 5_000 })
     ;(h.bridge as unknown as { chats: Map<string, { agent: { status: string } }> }).chats.get('private:10001')!.agent.status = 'running'
     h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('turn/start', { turn: 1 }))
 
     // 超时：登记 + 超时提醒
-    await vi.waitFor(() => expect(readRegistry(mediaDir).some(entry => entry.state === 'pending')).toBe(true))
-    await vi.waitFor(() => expect(sentTexts(h.outbound).some(text => text.includes('等待模型回复超时'))).toBe(true))
+    await vi.waitFor(() => expect(readRegistry(mediaDir).some(entry => entry.state === 'pending')).toBe(true), { timeout: 5_000 })
+    await vi.waitFor(() => expect(sentTexts(h.outbound).some(text => text.includes('等待模型回复超时'))).toBe(true), { timeout: 5_000 })
     const pending = readRegistry(mediaDir).find(entry => entry.state === 'pending')!
     expect(pending.chatId).toBe('private:10001')
     expect(pending.sessionId).toBe(h.sessionIds[0])
@@ -495,13 +506,13 @@ describe('deferred 集成 — 超时→登记→完成→补发恰一次', () =>
 
     // 完成：补发恰一次（带「（超时补发）」前缀 + 最终文字）
     h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
-    await vi.waitFor(() => expect(sentTexts(h.outbound).some(text => text.includes('（超时补发）'))).toBe(true))
+    await vi.waitFor(() => expect(sentTexts(h.outbound).some(text => text.includes('（超时补发）'))).toBe(true), { timeout: 5_000 })
     const deferredSends = sentTexts(h.outbound).filter(text => text.includes('（超时补发）'))
     expect(deferredSends).toHaveLength(1)
     expect(deferredSends[0]).toContain('超时后的最终答案')
 
     // 终态落盘 + trace 中文 reason（登记 notice + 补发 queue）
-    await vi.waitFor(() => expect(readRegistry(mediaDir)[0]?.state).toBe('delivered'))
+    await vi.waitFor(() => expect(readRegistry(mediaDir)[0]?.state).toBe('delivered'), { timeout: 5_000 })
     await sink.flush()
     const traceText = readFileSync(join(mediaDir, 'qq-trace.jsonl'), 'utf8')
     expect(traceText).toContain('等待模型回复超时，已登记超时补发跟踪')
@@ -516,11 +527,11 @@ describe('deferred 集成 — 超时→登记→完成→补发恰一次', () =>
     const mediaDir = mkdtempSync(join(tmpdir(), 'deferred-restart-'))
     const h1 = await makeHarness({ mediaDir, deferredTimeoutMs: 30, resumeOk: true })
     h1.sendText('启动任务')
-    await vi.waitFor(() => expect(h1.captured.followups).toHaveLength(1))
+    await vi.waitFor(() => expect(h1.captured.followups).toHaveLength(1), { timeout: 5_000 })
     ;(h1.bridge as unknown as { chats: Map<string, { agent: { status: string } }> }).chats.get('private:10001')!.agent.status = 'running'
     const sessionId = h1.sessionIds[0]
     h1.ctx.emit('session/event', { id: sessionId } as never, makeEvent('turn/start', { turn: 1 }))
-    await vi.waitFor(() => expect(readRegistry(mediaDir).some(entry => entry.state === 'pending')).toBe(true))
+    await vi.waitFor(() => expect(readRegistry(mediaDir).some(entry => entry.state === 'pending')).toBe(true), { timeout: 5_000 })
 
     // 持久化 chat→session 映射（默认 2s 防抖，测试直接强制落盘），注入一行
     // 损坏数据后重启（坏行降级跳过，不影响其余条目恢复）
@@ -541,10 +552,10 @@ describe('deferred 集成 — 超时→登记→完成→补发恰一次', () =>
     }))
     expect(sentTexts(h2.outbound).some(text => text.includes('重启后的最终答案'))).toBe(false)
     h2.ctx.emit('session/event', { id: sessionId } as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
-    await vi.waitFor(() => expect(sentTexts(h2.outbound).some(text => text.includes('（超时补发）'))).toBe(true))
+    await vi.waitFor(() => expect(sentTexts(h2.outbound).some(text => text.includes('（超时补发）'))).toBe(true), { timeout: 5_000 })
     expect(sentTexts(h2.outbound).filter(text => text.includes('（超时补发）'))).toHaveLength(1)
     expect(sentTexts(h2.outbound).find(text => text.includes('（超时补发）'))).toContain('重启后的最终答案')
-    await vi.waitFor(() => expect(readRegistry(mediaDir).find(entry => entry.sessionId === sessionId)?.state).toBe('delivered'))
+    await vi.waitFor(() => expect(readRegistry(mediaDir).find(entry => entry.sessionId === sessionId)?.state).toBe('delivered'), { timeout: 5_000 })
 
     h2.client.close()
     await h2.bridge.stop()
@@ -558,13 +569,13 @@ describe('deferred 集成 — terminal 条目不吞错误通知 / 防双发抑�
     const mediaDir = mkdtempSync(join(tmpdir(), 'deferred-restart-terminal-'))
     const h1 = await makeHarness({ mediaDir, deferredTimeoutMs: 30, resumeOk: true })
     h1.sendText('启动任务')
-    await vi.waitFor(() => expect(h1.captured.followups).toHaveLength(1))
+    await vi.waitFor(() => expect(h1.captured.followups).toHaveLength(1), { timeout: 5_000 })
     ;(h1.bridge as unknown as { chats: Map<string, { agent: { status: string } }> }).chats.get('private:10001')!.agent.status = 'running'
     const sessionId = h1.sessionIds[0]
     h1.ctx.emit('session/event', { id: sessionId } as never, makeEvent('turn/start', { turn: 1 }))
-    await vi.waitFor(() => expect(readRegistry(mediaDir).some(entry => entry.sessionId === sessionId && entry.state === 'pending')).toBe(true))
+    await vi.waitFor(() => expect(readRegistry(mediaDir).some(entry => entry.sessionId === sessionId && entry.state === 'pending')).toBe(true), { timeout: 5_000 })
     h1.ctx.emit('session/event', { id: sessionId } as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
-    await vi.waitFor(() => expect(readRegistry(mediaDir).find(entry => entry.sessionId === sessionId)?.state).toBe('delivered'))
+    await vi.waitFor(() => expect(readRegistry(mediaDir).find(entry => entry.sessionId === sessionId)?.state).toBe('delivered'), { timeout: 5_000 })
     h1.client.close()
     await h1.bridge.stop()
     await h1.connection.stop()
@@ -575,7 +586,7 @@ describe('deferred 集成 — terminal 条目不吞错误通知 / 防双发抑�
     await (h2.bridge as unknown as { registry: { mappingLoaded: Promise<void> } }).registry.mappingLoaded
     h2.ctx.emit('session/event', { id: sessionId } as never, makeEvent('turn/start', { turn: 2 }))
     h2.ctx.emit('session/event', { id: sessionId } as never, makeEvent('turn/end', { turn: 2, reason: { kind: 'error', error: { message: '重启后的新错误' } } }))
-    await vi.waitFor(() => expect(sentTexts(h2.outbound).some(text => text.includes('⚠️ 运行出错：重启后的新错误'))).toBe(true))
+    await vi.waitFor(() => expect(sentTexts(h2.outbound).some(text => text.includes('⚠️ 运行出错：重启后的新错误'))).toBe(true), { timeout: 5_000 })
     expect(sentTexts(h2.outbound).filter(text => text.includes('（超时补发）'))).toHaveLength(0)
 
     h2.client.close()
@@ -586,16 +597,16 @@ describe('deferred 集成 — terminal 条目不吞错误通知 / 防双发抑�
   it('/stop cancelled 条目的收尾回合出错：⚠️ 运行出错照常发送（不被抑制）、零补发', async () => {
     const h = await makeCmdHarness({ deferredTimeoutMs: 30 })
     h.sendText('启动任务')
-    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1), { timeout: 5_000 })
     h.chats().get('private:10001')!.agent.status = 'running'
     h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('turn/start', { turn: 1 }))
-    await vi.waitFor(() => expect(readRegistry(h.mediaDir).some(entry => entry.state === 'pending')).toBe(true))
+    await vi.waitFor(() => expect(readRegistry(h.mediaDir).some(entry => entry.state === 'pending')).toBe(true), { timeout: 5_000 })
     // /stop：pending 条目转 cancelled
     h.sendText('/stop')
-    await vi.waitFor(() => expect(readRegistry(h.mediaDir).find(entry => entry.chatId === 'private:10001')?.state).toBe('cancelled'))
+    await vi.waitFor(() => expect(readRegistry(h.mediaDir).find(entry => entry.chatId === 'private:10001')?.state).toBe('cancelled'), { timeout: 5_000 })
     // 收尾回合出错：cancelled 条目只是快照 → ⚠️ 照常发送、零补发
     h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'error', error: { message: '停止后收尾出错' } } }))
-    await vi.waitFor(() => expect(sentTexts(h.outbound).some(text => text.includes('⚠️ 运行出错：停止后收尾出错'))).toBe(true))
+    await vi.waitFor(() => expect(sentTexts(h.outbound).some(text => text.includes('⚠️ 运行出错：停止后收尾出错'))).toBe(true), { timeout: 5_000 })
     expect(sentTexts(h.outbound).filter(text => text.includes('（超时补发）'))).toHaveLength(0)
 
     h.client.close()
@@ -606,12 +617,12 @@ describe('deferred 集成 — terminal 条目不吞错误通知 / 防双发抑�
   it('bridge 层防双发：deferred tracked 回合错误终态时 ⚠️ 运行出错被抑制，补发终态通知恰一条', async () => {
     const h = await makeCmdHarness({ deferredTimeoutMs: 30 })
     h.sendText('启动任务')
-    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1), { timeout: 5_000 })
     h.chats().get('private:10001')!.agent.status = 'running'
     h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('turn/start', { turn: 1 }))
-    await vi.waitFor(() => expect(readRegistry(h.mediaDir).some(entry => entry.state === 'pending')).toBe(true))
+    await vi.waitFor(() => expect(readRegistry(h.mediaDir).some(entry => entry.state === 'pending')).toBe(true), { timeout: 5_000 })
     h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'error', error: { message: '任务失败原因' } } }))
-    await vi.waitFor(() => expect(sentTexts(h.outbound).some(text => text.includes('（超时补发）') && text.includes('任务已结束：运行出错：任务失败原因'))).toBe(true))
+    await vi.waitFor(() => expect(sentTexts(h.outbound).some(text => text.includes('（超时补发）') && text.includes('任务已结束：运行出错：任务失败原因'))).toBe(true), { timeout: 5_000 })
     expect(sentTexts(h.outbound).filter(text => text.includes('（超时补发）'))).toHaveLength(1) // 补发恰一条
     expect(sentTexts(h.outbound).some(text => text.includes('⚠️ 运行出错'))).toBe(false) // 常规错误通知被抑制（无双发）
 
@@ -623,10 +634,10 @@ describe('deferred 集成 — terminal 条目不吞错误通知 / 防双发抑�
   it('退避窗口内新回合错误收尾：⚠️ 照常发送（不被让位路径吞掉）、回合 B 不产生补发、在途回合 A 补发仍恰一次（T12 🔴-3）', async () => {
     const h = await makeCmdHarness({ deferredTimeoutMs: 30 })
     h.sendText('启动任务')
-    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1), { timeout: 5_000 })
     h.chats().get('private:10001')!.agent.status = 'running'
     h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('turn/start', { turn: 1 }))
-    await vi.waitFor(() => expect(readRegistry(h.mediaDir).some(entry => entry.state === 'pending')).toBe(true))
+    await vi.waitFor(() => expect(readRegistry(h.mediaDir).some(entry => entry.state === 'pending')).toBe(true), { timeout: 5_000 })
     h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('assistant/message', {
       turn: 1, step: 2, message: { role: 'assistant', content: [{ type: 'text', text: '回合A的最终答案' }] },
     }))
@@ -671,25 +682,25 @@ describe('deferred 集成 — /stop 与零差异面', () => {
     const h = await makeCmdHarness({ deferredTimeoutMs: 30 })
     // 聊天 1（私聊）：超时登记
     h.sendText('启动任务')
-    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1), { timeout: 5_000 })
     h.chats().get('private:10001')!.agent.status = 'running'
     h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('turn/start', { turn: 1 }))
-    await vi.waitFor(() => expect(readRegistry(h.mediaDir).some(entry => entry.state === 'pending')).toBe(true))
+    await vi.waitFor(() => expect(readRegistry(h.mediaDir).some(entry => entry.state === 'pending')).toBe(true), { timeout: 5_000 })
     // 聊天 2（群聊）：同样超时登记
     h.sendGroupTextAs('启动群任务', 10001)
-    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2), { timeout: 5_000 })
     h.chats().get('group:888')!.agent.status = 'running'
     h.ctx.emit('session/event', { id: h.sessionIds[1] } as never, makeEvent('turn/start', { turn: 1 }))
-    await vi.waitFor(() => expect(readRegistry(h.mediaDir).filter(entry => entry.state === 'pending')).toHaveLength(2))
+    await vi.waitFor(() => expect(readRegistry(h.mediaDir).filter(entry => entry.state === 'pending')).toHaveLength(2), { timeout: 5_000 })
 
     // /stop：只终止当前聊天（私聊）的提交回合与补发跟踪
     h.sendText('/stop')
-    await vi.waitFor(() => expect(sentTexts(h.outbound).some(text => text.includes('已停止生成'))).toBe(true))
+    await vi.waitFor(() => expect(sentTexts(h.outbound).some(text => text.includes('已停止生成'))).toBe(true), { timeout: 5_000 })
     await vi.waitFor(() => {
       const entries = readRegistry(h.mediaDir)
       expect(entries.find(entry => entry.chatId === 'private:10001')?.state).toBe('cancelled')
       expect(entries.find(entry => entry.chatId === 'group:888')?.state).toBe('pending')
-    })
+    }, { timeout: 5_000 })
 
     // 私聊 turn/end：零补发；群聊 turn/end：正常补发
     h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('assistant/message', {
@@ -700,7 +711,7 @@ describe('deferred 集成 — /stop 与零差异面', () => {
       turn: 1, step: 2, message: { role: 'assistant', content: [{ type: 'text', text: '群聊答案' }] },
     }))
     h.ctx.emit('session/event', { id: h.sessionIds[1] } as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
-    await vi.waitFor(() => expect(sentTexts(h.outbound).some(text => text.includes('群聊答案'))).toBe(true))
+    await vi.waitFor(() => expect(sentTexts(h.outbound).some(text => text.includes('群聊答案'))).toBe(true), { timeout: 5_000 })
     const deferredSends = sentTexts(h.outbound).filter(text => text.includes('（超时补发）'))
     expect(deferredSends).toHaveLength(1)
     expect(deferredSends[0]).toContain('群聊答案')
@@ -714,16 +725,16 @@ describe('deferred 集成 — /stop 与零差异面', () => {
   it('正常完成（未超时）：零补发、零注册表写入，最终回复与基线一致', async () => {
     const h = await makeCmdHarness() // 缺省 deferredTimeoutMs = 10 分钟
     h.sendText('普通任务')
-    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1), { timeout: 5_000 })
     h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('turn/start', { turn: 1 }))
     h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('assistant/message', {
       turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '正常最终答案' }] },
     }))
     h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
-    await vi.waitFor(() => expect(sentTexts(h.outbound).some(text => text.includes('正常最终答案'))).toBe(true))
+    await vi.waitFor(() => expect(sentTexts(h.outbound).some(text => text.includes('正常最终答案'))).toBe(true), { timeout: 5_000 })
     expect(sentTexts(h.outbound).some(text => text.includes('（超时补发）'))).toBe(false)
     expect(sentTexts(h.outbound).some(text => text.includes('等待模型回复超时'))).toBe(false)
-    await new Promise(resolve => setTimeout(resolve, 50)) // 留出任何（不应存在的）异步写盘窗口
+    await new Promise(resolve => setTimeout(resolve, 250)) // 留出任何（不应存在的）异步写盘窗口（250ms ≥ 5× 实测抖动上限，负向断言只放宽等待窗、不放宽判定）
     expect(existsSync(join(h.mediaDir, DEFERRED_REGISTRY_FILE))).toBe(false)
 
     h.client.close()

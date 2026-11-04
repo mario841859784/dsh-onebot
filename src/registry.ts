@@ -106,6 +106,12 @@ export interface ChatSettings {
    * ephemeral UI state — survives /new like every field here but never
    * persisted, and bounded by the lazy 5-minute TTL instead. */
   pendingSelection?: PendingSelection
+  /** T3-board /silent: the chat's silence-window end (epoch ms). Survives
+   * /new like every field here (silence is a property of the CHAT, not the
+   * session) and rides the chat-sessions.json persistence, so a plugin
+   * restart no longer lifts the mute. A bare /silent clears the field
+   * explicitly. Expired values are dropped at persist time. */
+  silentUntil?: number
 }
 
 /** D4b: the persisted per-chat settings carried in one chat-sessions.json
@@ -113,25 +119,31 @@ export interface ChatSettings {
  * `workspacePath` joins the additive set so a per-chat /workspace override
  * survives a restart even when the session resume fails — loadMapping
  * restores it BEFORE the resume attempt (hole B), and the /workspace switch
- * path flushes the mapping (hole C). */
+ * path flushes the mapping (hole C). T3-board /silent: `silentUntil` joins
+ * the same additive set (epoch ms; a value at-or-before now counts as unset
+ * so expired windows never re-arm after a restart). */
 interface PersistedChatSettings {
   session: string
   interimOverride?: boolean
   goal?: string
   workspacePath?: string
+  silentUntil?: number
 }
 
 /** D4b: build one mapping entry — a bare session id when the chat carries no
  * persisted settings (byte-identical to the legacy format), else an object
- * with the optional mode/goal/workspace fields. An empty workspacePath counts
- * as unset (never persisted). */
-function persistEntry(sessionId: string, interimOverride: boolean | undefined, goal: string | undefined, workspacePath: string | undefined): string | PersistedChatSettings {
+ * with the optional mode/goal/workspace/silence fields. An empty
+ * workspacePath counts as unset (never persisted); a silentUntil at-or-before
+ * the current time counts as unset too (expired windows are not re-persisted). */
+function persistEntry(sessionId: string, interimOverride: boolean | undefined, goal: string | undefined, workspacePath: string | undefined, silentUntil: number | undefined): string | PersistedChatSettings {
   const ws = workspacePath !== undefined && workspacePath !== '' ? workspacePath : undefined
-  if (interimOverride === undefined && goal === undefined && ws === undefined) return sessionId
+  const silent = silentUntil !== undefined && silentUntil > Date.now() ? silentUntil : undefined
+  if (interimOverride === undefined && goal === undefined && ws === undefined && silent === undefined) return sessionId
   const entry: PersistedChatSettings = { session: sessionId }
   if (interimOverride !== undefined) entry.interimOverride = interimOverride
   if (goal !== undefined) entry.goal = goal
   if (ws !== undefined) entry.workspacePath = ws
+  if (silent !== undefined) entry.silentUntil = silent
   return entry
 }
 
@@ -208,7 +220,7 @@ export interface RegistryDeps {
   agentPresets: AgentPresetsLike | undefined
   defaultModel: (() => ModelSelection | undefined) | undefined
   /** The only config fields the registry reads. */
-  config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>
+  config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'agentPresetGroup' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>
   log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void
   /** Bridge stop flag (guards the resume loop). */
   isStopping(): boolean
@@ -261,6 +273,18 @@ export class ChatRegistry {
       this.chatSettings.set(chatId, settings)
     }
     return settings
+  }
+
+  /** T3-board /silent: the still-open silence windows across all chats
+   * (expired entries excluded). The bridge replays these into its in-memory
+   * Map after loadMapping so a restart does not lift a running mute. */
+  silenceWindows(): Array<{ chatId: ChatId; until: number }> {
+    const windows: Array<{ chatId: ChatId; until: number }> = []
+    const now = Date.now()
+    for (const [chatId, settings] of this.chatSettings) {
+      if (settings.silentUntil !== undefined && settings.silentUntil > now) windows.push({ chatId, until: settings.silentUntil })
+    }
+    return windows
   }
 
   // ------------------------------------------------------------ chat lifecycle
@@ -475,6 +499,9 @@ export class ChatRegistry {
     if (evicted.interimOverride !== undefined) settings.interimOverride = evicted.interimOverride
     if (evicted.goal !== undefined) settings.goal = evicted.goal
     if (evicted.workspacePath !== undefined && evicted.workspacePath !== '') settings.workspacePath = evicted.workspacePath
+    // T3-board /silent: only re-arm a window that is still open (expired
+    // values are never restored).
+    if (evicted.silentUntil !== undefined && evicted.silentUntil > Date.now()) settings.silentUntil = evicted.silentUntil
   }
 
   /** Resume persisted chats from the mapping file (best-effort). */
@@ -523,6 +550,9 @@ export class ChatRegistry {
         if (typeof entry.interimOverride === 'boolean') settings.interimOverride = entry.interimOverride
         if (typeof entry.goal === 'string' && entry.goal !== '') settings.goal = entry.goal
         if (typeof entry.workspacePath === 'string' && entry.workspacePath !== '') settings.workspacePath = entry.workspacePath
+        // T3-board /silent: restore a still-open silence window (expired
+        // values are dropped so a restart can never re-arm a stale mute).
+        if (typeof entry.silentUntil === 'number' && entry.silentUntil > Date.now()) settings.silentUntil = entry.silentUntil
       }
       // T3: a durably retired session id (recorded by resetChat's settings
       // snapshot) must never be resumed — the entry only carries the
@@ -634,6 +664,9 @@ export class ChatRegistry {
       interimOverride: settings.interimOverride ?? known?.interimOverride,
       goal: settings.goal ?? known?.goal,
       workspacePath,
+      // T3-board /silent: carry the still-open window into the snapshot so a
+      // settings-only save keeps it on disk (persistEntry drops expired ones).
+      silentUntil: settings.silentUntil ?? known?.silentUntil,
     })
   }
 
@@ -647,11 +680,16 @@ export class ChatRegistry {
         // reach the file (union semantics: a field kept in only one of the
         // two places still survives).
         const live = this.chatSettings.get(chatId)
-        mapping[chatId] = persistEntry(evicted.session, live?.interimOverride ?? evicted.interimOverride, live?.goal ?? evicted.goal, live?.workspacePath ?? evicted.workspacePath)
+        // T3-board /silent: the LIVE settings entry is authoritative for the
+        // silence window (undefined included) — otherwise a bare /silent
+        // lift while the chat is evicted would resurrect the snapshot's
+        // window on every save. The older fields keep the union semantics
+        // (a field kept in only one of the two places still survives).
+        mapping[chatId] = persistEntry(evicted.session, live?.interimOverride ?? evicted.interimOverride, live?.goal ?? evicted.goal, live?.workspacePath ?? evicted.workspacePath, live !== undefined ? live.silentUntil : evicted.silentUntil)
       }
       for (const chat of this.chats.values()) {
         const settings = this.chatSettings.get(chat.chatId)
-        mapping[chat.chatId] = persistEntry(chat.sessionId, settings?.interimOverride, settings?.goal, settings?.workspacePath)
+        mapping[chat.chatId] = persistEntry(chat.sessionId, settings?.interimOverride, settings?.goal, settings?.workspacePath, settings?.silentUntil)
       }
       // T3-R2: a chat that sits in neither evictedChats nor chats but owns
       // persisted settings must not be dropped from the file by a save —
@@ -660,8 +698,8 @@ export class ChatRegistry {
       // placeholder entries).
       for (const [chatId, settings] of this.chatSettings) {
         if (mapping[chatId] !== undefined) continue
-        if (settings.interimOverride === undefined && settings.goal === undefined && (settings.workspacePath === undefined || settings.workspacePath === '')) continue
-        mapping[chatId] = persistEntry(makeSessionId(sessionIdForChat(chatId)), settings.interimOverride, settings.goal, settings.workspacePath)
+        if (settings.interimOverride === undefined && settings.goal === undefined && (settings.workspacePath === undefined || settings.workspacePath === '') && (settings.silentUntil === undefined || settings.silentUntil <= Date.now())) continue
+        mapping[chatId] = persistEntry(makeSessionId(sessionIdForChat(chatId)), settings.interimOverride, settings.goal, settings.workspacePath, settings.silentUntil)
       }
       await writeFile(this.mappingPath(), JSON.stringify(mapping, null, 2), 'utf8')
     } catch (error) {
@@ -1083,7 +1121,15 @@ export class ChatRegistry {
     if (override !== undefined && override !== '') return override
     const presets = this.deps.agentPresets
     if (presets === undefined) return undefined
-    const configured = this.deps.config.agentPreset
+    // 权限分档 A3: 群聊粗档——配置了 agentPresetGroup 时群聊会话优先用它
+    // （私聊与未配置时维持 agentPreset/defaultId 行为不变；/preset override
+    // 仍然最优先）。
+    const groupPreset = this.deps.config.agentPresetGroup
+    const isGroupChat = chatId !== undefined && chatId.startsWith('group:')
+    const base = this.deps.config.agentPreset
+    const configured = isGroupChat && groupPreset !== undefined && groupPreset !== ''
+      ? groupPreset
+      : base
     const wanted = configured !== undefined && configured !== '' ? configured : presets.defaultId
     try {
       const preset = await presets.resolve(wanted)

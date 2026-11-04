@@ -57,13 +57,18 @@ describe('roles and policy', () => {
 
 describe('group prefix', () => {
   it('includes mention marker', () => {
-    const prefix = buildGroupMessagePrefix('小明', '10001', true)
-    expect(prefix).toMatch(/^\[\d{2}:\d{2} 小明\(10001\)\]\[@我\] $/)
+    const prefix = buildGroupMessagePrefix('小明', '10001', true, 'member')
+    expect(prefix).toMatch(/^\[\d{2}:\d{2} 小明\(10001\)·成员\]\[@我\] $/)
   })
   it('omits mention marker when not mentioned', () => {
-    const prefix = buildGroupMessagePrefix('小明', '10001', false)
-    expect(prefix).toMatch(/^\[\d{2}:\d{2} 小明\(10001\)\] $/)
+    const prefix = buildGroupMessagePrefix('小明', '10001', false, 'member')
+    expect(prefix).toMatch(/^\[\d{2}:\d{2} 小明\(10001\)·成员\] $/)
     expect(prefix).not.toContain('[@我]')
+  })
+  it('carries the sender tier (权限分档 A1): admin → ·管理员, member → ·成员', () => {
+    expect(buildGroupMessagePrefix('小明', '10001', false, 'admin')).toMatch(/^\[\d{2}:\d{2} 小明\(10001\)·管理员\] $/)
+    expect(buildGroupMessagePrefix('小明', '20002', false, 'member')).toContain('·成员')
+    expect(buildGroupMessagePrefix('小明', '20002', false, 'member')).not.toContain('·管理员')
   })
 })
 

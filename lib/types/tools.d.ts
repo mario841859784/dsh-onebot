@@ -29,7 +29,8 @@ export declare function clampSegmentsInterval(ms: number): number;
 export declare function configureSendSegments(config: SendSegmentsConfig | undefined): void;
 /**
  * Register all qq_* tools on the context. Registration is effect-based: the
- * returned disposer unregisters them.
+ * returned disposer unregisters them. Every tool's execute is wrapped with the
+ * 权限分档 A2 member-tier gate BEFORE any validation/read/send happens.
  * @param ctx - plugin context.
  * @param bridge - the chat bridge.
  * @param connection - the OneBot connection.
