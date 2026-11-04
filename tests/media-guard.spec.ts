@@ -11,7 +11,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
-import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -128,6 +128,15 @@ describe('MediaStore.downloadUrl SSRF guards (M1-A5)', () => {
 
   it('rejects malformed allowCidrs entries at construction', () => {
     expect(() => new MediaStore(guardDir, 6, 0, { allowCidrs: ['not-a-cidr'] })).toThrow(/invalid allowCidrs/)
+  })
+
+  it('rejects empty/non-numeric allowCidrs prefixes that would match any address', () => {
+    // Number('') === 0 / Number('+8') === 8 used to slip through and mint a
+    // prefix-0 entry (matches every IPv4); '::' doubling used to parse as a
+    // shorter address. All must fail construction instead.
+    for (const entry of ['10.0.0.0/', '10.0.0.0/ ', '10.0.0.0/+8', '10.0.0.0/abc', '10.0.0.0/1e2', '10.0.0.0/-1', 'fe80::1::/10']) {
+      expect(() => new MediaStore(guardDir, 6, 0, { allowCidrs: [entry] }), entry).toThrow(/invalid allowCidrs/)
+    }
   })
 
   it('rejects a hostname that resolves to a private address (mocked DNS)', async () => {
@@ -285,6 +294,20 @@ describe('local media size caps', () => {
 
     const small = 'base64://' + Buffer.alloc(5, 1).toString('base64')
     await expect(store.resolve({ kind: 'image', file: small }, async () => undefined)).resolves.toBeTruthy()
+  })
+
+  it('caps the get_record (hash-ref) base64 payload before decoding it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'media-hash-cap-'))
+    const store = new MediaStore(dir, 6, 0, { maxBytes: 10 })
+    // Oversized transcoded audio from resolveHash: refused, nothing written.
+    const big = 'base64://' + Buffer.alloc(100, 1).toString('base64')
+    await expect(store.resolve({ kind: 'voice', file: 'hash-big' }, async () => ({ file: big }))).resolves.toBeUndefined()
+    expect((await readdir(dir)).filter(name => name.startsWith('media_'))).toEqual([])
+    // Small payload: passes and is decoded verbatim.
+    const small = 'base64://' + Buffer.alloc(5, 1).toString('base64')
+    const ok = await store.resolve({ kind: 'voice', file: 'hash-small' }, async () => ({ file: small }))
+    expect(ok?.path).toBeTruthy()
+    await expect(readFile(ok!.path)).resolves.toEqual(Buffer.alloc(5, 1))
   })
 })
 

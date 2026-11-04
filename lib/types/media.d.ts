@@ -21,6 +21,10 @@ export interface MediaStoreDownloadOptions {
     maxBytes?: number;
     /** Escape hatch for local/NAT reverse-proxy deployments: skip the private-address check (protocol whitelist still applies). */
     allowPrivateHosts?: boolean;
+    /** Roots allowed for inbound file:// refs; empty (default) refuses all file:// refs. */
+    fileRefRoots?: string[];
+    /** Optional CIDR allowlist for trusted private targets (empty = none); only these private addresses pass the fence. */
+    allowCidrs?: string[];
 }
 /**
  * Media storage: a scratch directory under the plugin's media root.
@@ -32,6 +36,8 @@ export declare class MediaStore {
     private readonly imageMaxSize;
     private readonly downloadMaxBytes;
     private readonly allowPrivateHosts;
+    private readonly fileRefRoots;
+    private readonly allowCidrs;
     /**
      * @param dir - absolute scratch directory (created on demand).
      * @param ttlHours - files older than this are deleted on cleanup.
@@ -41,6 +47,10 @@ export declare class MediaStore {
      *   URL downloads and the allowPrivateHosts SSRF escape hatch.
      */
     constructor(dir: string, ttlHours: number, imageMaxSize?: number, download?: MediaStoreDownloadOptions);
+    /** Copy a file:// ref only when its real path is inside one configured root. */
+    private copyFileRef;
+    /** Whether a local (non-download) payload exceeds the configured cap. */
+    private exceedsLocalCap;
     /** Ensure the scratch directory exists. */
     ensure(): Promise<void>;
     /** A fresh scratch file path with the given extension. */

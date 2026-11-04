@@ -80,7 +80,10 @@ export class MediaStore {
       const real = await resolveContainedPath(this.fileRefRoots, source)
       if (real === null) return undefined
       const info = await stat(real)
-      if (this.exceedsLocalCap(info.size)) return undefined
+      if (this.exceedsLocalCap(info.size)) {
+        console.warn('[dsh-onebot] media resolve refused: file://' + real + ' is ' + info.size + ' bytes (limit ' + this.downloadMaxBytes + ')')
+        return undefined
+      }
       const path = this.freshPath(extForKind(kind))
       await copyFile(real, path)
       return path
@@ -173,7 +176,10 @@ export class MediaStore {
       const file = ref.file ?? ''
       if (file.startsWith('base64://')) {
         const data = Buffer.from(file.slice('base64://'.length), 'base64')
-        if (this.exceedsLocalCap(data.length)) return undefined
+        if (this.exceedsLocalCap(data.length)) {
+          console.warn('[dsh-onebot] media resolve refused: base64 payload is ' + data.length + ' bytes (limit ' + this.downloadMaxBytes + ')')
+          return undefined
+        }
         const path = this.freshPath(extForKind(ref.kind))
         await writeFile(path, data)
         return { path, kind: ref.kind }
@@ -197,8 +203,18 @@ export class MediaStore {
         // get_record (SnowLuma) may hand back server-transcoded audio as
         // base64 — same convention as the ref-level base64:// branch above.
         if (resolved.file !== undefined && resolved.file.startsWith('base64://')) {
+          // Estimate the decoded size before decoding so an oversized
+          // payload never allocates its buffer (floor(len*3/4), minus
+          // '=' padding which encodes no data).
+          const b64 = resolved.file.slice('base64://'.length)
+          const padding = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0
+          const decodedSize = Math.floor(b64.length * 3 / 4) - padding
+          if (this.exceedsLocalCap(decodedSize)) {
+            console.warn('[dsh-onebot] media resolve refused: base64 payload is ' + decodedSize + ' bytes (limit ' + this.downloadMaxBytes + ')')
+            return undefined
+          }
           const path = this.freshPath(extForKind(ref.kind))
-          await writeFile(path, Buffer.from(resolved.file.slice('base64://'.length), 'base64'))
+          await writeFile(path, Buffer.from(b64, 'base64'))
           return { path, kind: ref.kind }
         }
       }
@@ -291,7 +307,11 @@ function ipv6Bytes(input: string): Uint8Array | undefined {
     if (v4 === undefined) return undefined
     text = text.slice(0, at + 1) + ((v4[0] << 8) | v4[1]).toString(16) + ':' + ((v4[2] << 8) | v4[3]).toString(16)
   }
-  const [leftText, rightText] = text.split('::')
+  const halves = text.split('::')
+  // 'fe80::1::' would otherwise parse as 'fe80::1' — the extra empty part is
+  // silently dropped by destructuring, so refuse more than one '::' outright.
+  if (halves.length > 2) return undefined
+  const [leftText, rightText] = halves
   const left = leftText === '' ? [] : leftText.split(':')
   const right = rightText === undefined || rightText === '' ? [] : rightText.split(':')
   const missing = 8 - left.length - right.length
@@ -317,7 +337,10 @@ function parseCidr(input: string): Cidr {
   const isV6 = address.includes(':')
   const bytes = isV6 ? ipv6Bytes(address) : ipv4Bytes(address)
   const max = isV6 ? 128 : 32
-  if (bytes === undefined || !Number.isInteger(prefix) || prefix < 0 || prefix > max) throw new Error('invalid allowCidrs entry: ' + input)
+  // /^\d+$/ (not Number.isInteger) — Number('') === 0 and Number('+8') === 8
+  // would otherwise let '10.0.0.0/' or '10.0.0.0/+8' parse as prefix 0/8 and
+  // effectively allow any IPv4.
+  if (bytes === undefined || !/^\d+$/.test(prefixText) || prefix > max) throw new Error('invalid allowCidrs entry: ' + input)
   return { bytes, prefix }
 }
 
