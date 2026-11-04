@@ -111,7 +111,7 @@ export function makeFakeAgents(
 }
 
 /** Full bridge + WS harness: inbound via real WebSocket, outbound captured. */
-export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; log?: (level: string, message: string) => void; notices?: { steerAccepted?: boolean, queue?: boolean }; monoFamilies?: readonly string[] }) {
+export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; log?: (level: string, message: string) => void; notices?: { steerAccepted?: boolean, queue?: boolean }; monoFamilies?: readonly string[]; allowPrivateHosts?: boolean; respond?: Record<string, (params: Record<string, unknown>) => unknown> }) {
   const ctx = new Context()
   const sessionIds: string[] = []
   const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[] }
@@ -124,7 +124,7 @@ export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: st
   const bridge = new ChatBridge({
     ctx,
     connection,
-    media: new MediaStore(join(mediaDir, 'media'), 6),
+    media: new MediaStore(join(mediaDir, 'media'), 6, 0, { allowPrivateHosts: opts?.allowPrivateHosts === true }),
     transcriber: opts?.transcriber ?? new Transcriber({ enabled: false, engine: 'auto', command: '', args: [], model: 'small', timeoutMs: 10_000 }),
     agents: agents as never,
     sessions: sessions as never,
@@ -158,6 +158,16 @@ export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: st
     },
     log: (level: string, message: string) => opts?.log?.(level, message),
   })
+  if (opts?.respond !== undefined) {
+    // Action-level canned responses (SnowLuma adaptation tests): intercept
+    // before the real WS round-trip, same seam as makeCmdHarness's ocr stub.
+    const real = connection.call.bind(connection)
+    connection.call = (async (action: string, params: Record<string, unknown>) => {
+      const respond = opts.respond?.[action]
+      if (respond !== undefined) return respond(params)
+      return await real(action, params)
+    }) as never
+  }
   connection.onMessage = event => {
     void bridge.handleInbound(event)
   }

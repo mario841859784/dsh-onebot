@@ -15,6 +15,7 @@ import { Context } from '@deepseek-ai/cordis'
 
 import { ChatBridge } from '../src/bridge.js'
 import { configureSendSegments, registerTools, SEGMENTS_INTERVAL_MAX_MS } from '../src/tools.js'
+import { filterBlankTextSegments } from '../src/outbound.js'
 
 interface SendTool {
   name: string
@@ -23,8 +24,13 @@ interface SendTool {
 
 /** Real ChatBridge + registered qq_* tools with a recording connection stub.
  * T14: `segments` installs the qq_send_segments page switches BEFORE tool
- * registration (undefined = module default: enabled, no interval). */
-async function makeHarness(opts: { segments?: { enabled: boolean; intervalMs: number } } = {}) {
+ * registration (undefined = module default: enabled, no interval).
+ * `respond` lets a test override the canned response per action (e.g.
+ * get_group_msg_history). */
+async function makeHarness(opts: {
+  segments?: { enabled: boolean; intervalMs: number }
+  respond?: Record<string, (params: Record<string, unknown>) => unknown>
+} = {}) {
   const root = mkdtempSync(join(tmpdir(), 'tools-gate-'))
   const mediaDir = join(root, 'media')
   const workspace = join(root, 'workspace')
@@ -38,6 +44,8 @@ async function makeHarness(opts: { segments?: { enabled: boolean; intervalMs: nu
     connection: {
       call: async (action: string, params: Record<string, unknown>) => {
         calls.push({ action, params })
+        const respond = opts.respond?.[action]
+        if (respond !== undefined) return respond(params)
         return { message_id: 42 }
       },
     } as never,
@@ -86,7 +94,16 @@ async function makeHarness(opts: { segments?: { enabled: boolean; intervalMs: nu
     },
   } as never)
   configureSendSegments(opts.segments)
-  registerTools(ctx, bridge, {} as never, {
+  registerTools(ctx, bridge, {
+    // qq_group_history talks to the connection directly (send tools go
+    // through bridge.sendSegments): same recording + respond stub.
+    call: async (action: string, params: Record<string, unknown>) => {
+      calls.push({ action, params })
+      const respond = opts.respond?.[action]
+      if (respond !== undefined) return respond(params)
+      return { message_id: 42 }
+    },
+  } as never, {
     maxImageBytes: 1_000_000,
     maxVoiceBytes: 1_000_000,
     maxFileBytes: 1_000_000,
@@ -335,5 +352,88 @@ describe('qq_send_segments 开关与发送间隔 (T14 #6)', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+/**
+ * SnowLuma 适配第一批（T1）：qq_group_history 的翻页锚点必须以 message_id
+ * 发给协议端（SnowLuma 只认 message_id，不认 NapCat 旧名 message_seq），
+ * 以及 sendMsg 出站管线在协议端收口处过滤空/纯空白 text 段（SnowLuma
+ * 校验拒绝空白文本段）。
+ */
+describe('SnowLuma 适配：翻页锚点与空白 text 段 (T1 #2/#7)', () => {
+  it('qq_group_history sends the anchor as message_id (not message_seq) to the protocol side', async () => {
+    const h = await makeHarness({
+      respond: {
+        get_group_msg_history: () => ({
+          messages: [{
+            message_id: 7, time: 111, user_id: 10001,
+            sender: { user_id: 10001, nickname: '小明' },
+            message: '你好', raw_message: '你好',
+          }],
+        }),
+      },
+    })
+    h.seed('group-hist-1', 'admin')
+    const result = await h.tool('qq_group_history').execute({
+      chat_id: 'group:20001', count: 5, message_seq: 777,
+    }, h.exec('group-hist-1')) as Array<{ message_id: string }>
+    const call = h.calls.find(c => c.action === 'get_group_msg_history')
+    expect(call).toBeDefined()
+    expect(call!.params).toEqual({ group_id: 20001, count: 5, message_id: 777 })
+    expect(Object.hasOwn(call!.params, 'message_seq')).toBe(false)
+    expect(result).toEqual([{ message_id: '7', time: '111', user_id: '10001', nickname: '小明', text: '你好' }])
+  })
+
+  it('qq_group_history omits the anchor parameter entirely when message_seq is absent', async () => {
+    const h = await makeHarness({ respond: { get_group_msg_history: () => ({ messages: [] }) } })
+    h.seed('group-hist-2', 'admin')
+    await h.tool('qq_group_history').execute({}, h.exec('group-hist-2'))
+    const call = h.calls.find(c => c.action === 'get_group_msg_history')!
+    expect(call.params).toEqual({ group_id: 20001, count: 20 })
+    expect(Object.hasOwn(call.params, 'message_id')).toBe(false)
+    expect(Object.hasOwn(call.params, 'message_seq')).toBe(false)
+  })
+
+  it('filterBlankTextSegments drops empty/whitespace text segments and keeps the rest', () => {
+    const segs = [
+      { type: 'text', data: { text: '' } },
+      { type: 'text', data: { text: '   \n\t ' } },
+      { type: 'text', data: { text: '正文' } },
+      { type: 'image', data: { file: 'base64://x' } },
+      { type: 'text', data: { text: ' 保留 ' } },
+    ]
+    expect(filterBlankTextSegments(segs)).toEqual([
+      { type: 'text', data: { text: '正文' } },
+      { type: 'image', data: { file: 'base64://x' } },
+      { type: 'text', data: { text: ' 保留 ' } },
+    ])
+    // non-text segments always survive
+    expect(filterBlankTextSegments([{ type: 'face', data: { id: '1' } }])).toEqual([{ type: 'face', data: { id: '1' } }])
+  })
+
+  it('sendMsg on the wire strips blank text segments (mixed → only real content sent)', async () => {
+    const h = await makeHarness()
+    h.seed('group-blank-1', 'admin')
+    const id = await h.bridge.sendSegments('group:20001', [
+      { type: 'text', data: { text: '  ' } },
+      { type: 'text', data: { text: '' } },
+      { type: 'text', data: { text: ' SnowLuma 只认这个 ' } },
+    ])
+    expect(id).toBe('42')
+    const send = h.calls.find(c => c.action === 'send_msg')!
+    expect(send.params.group_id).toBe(20001)
+    expect(send.params.message).toEqual([{ type: 'text', data: { text: ' SnowLuma 只认这个 ' } }])
+  })
+
+  it('sendMsg with only blank text segments sends nothing (no send_msg recorded)', async () => {
+    const h = await makeHarness()
+    h.seed('group-blank-2', 'admin')
+    const id = await h.bridge.sendSegments('group:20001', [
+      { type: 'text', data: { text: '' } },
+      { type: 'text', data: { text: ' \n\t ' } },
+    ])
+    expect(id).toBeUndefined()
+    expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(0)
   })
 })

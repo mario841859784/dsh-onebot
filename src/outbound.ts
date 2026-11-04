@@ -28,6 +28,20 @@ export interface OutboundSegment {
   data: Record<string, unknown>
 }
 
+/**
+ * SnowLuma's send_msg validates text segments: `text === ''` is treated as a
+ * compatibility placeholder and a whitespace-only text still goes through
+ * normal validation — both get rejected. Strip empty/whitespace-only text
+ * segments before the wire; non-text segments pass untouched.
+ */
+export function filterBlankTextSegments(segments: OutboundSegment[]): OutboundSegment[] {
+  return segments.filter(seg => {
+    if (seg.type !== 'text') return true
+    const text = seg.data?.text
+    return !(typeof text === 'string' && text.trim() === '')
+  })
+}
+
 /** Options for an explicit outbound send (from tools). */
 export interface SendOptions {
   replyTo?: string
@@ -413,9 +427,18 @@ export class OutboundPipeline {
     }
     if (ref.kind === 'group') params.group_id = target
     else params.user_id = target
-    params.message = segments
+    // SnowLuma rejects empty/whitespace-only text segments — strip them at
+    // the single wire chokepoint (both the pipeline and the tools funnel
+    // through here).
+    const filtered = filterBlankTextSegments(segments)
+    if (filtered.length === 0 && options.replyTo === undefined) {
+      this.ctx.log('debug', '过滤空白文本段后无有效消息段，未发送: ' + chatId)
+      this.ctx.trace?.(chatId, { stage: 'outbound', ok: false, reason: TRACE_REASONS.outboundEmptyText })
+      return undefined
+    }
+    params.message = filtered
     if (options.replyTo !== undefined) {
-      params.message = [{ type: 'reply', data: { id: options.replyTo } }, ...segments]
+      params.message = [{ type: 'reply', data: { id: options.replyTo } }, ...filtered]
     }
     const data = await this.ctx.call('send_msg', params, chatId) as { message_id?: number | string }
     return data.message_id !== undefined ? String(data.message_id) : undefined

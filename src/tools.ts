@@ -369,7 +369,7 @@ export function registerTools(
     parameters: {
       chat_id: { type: 'string', description: '目标群会话 group:<群号>；省略时默认当前会话（须为群聊）' },
       count: { type: 'number', description: '拉取条数（≤50，默认 20）' },
-      message_seq: { type: 'number', description: '起始消息序号（翻页用，可选）' },
+      message_seq: { type: 'number', description: '翻页锚点：从这条消息 id 往前取（可选；作为 message_id 参数发给协议端）' },
     },
     output: {
       schema: {
@@ -389,7 +389,10 @@ export function registerTools(
       const groupId = Number(splitChatId(chatId).target)
       const count = Math.min(Math.max(typeof a.count === 'number' ? Math.floor(a.count) : 20, 1), 50)
       const params: Record<string, unknown> = { group_id: groupId, count }
-      if (typeof a.message_seq === 'number') params.message_seq = a.message_seq
+      // OneBot 锚点参数名是 message_id（NapCat 旧称 message_seq 协议端不识别，
+      // SnowLuma 的 get_group_msg_history 只认 message_id）；工具入参名保持
+      // message_seq 不变以兼容既有调用方。
+      if (typeof a.message_seq === 'number') params.message_id = a.message_seq
       const data = await connection.call('get_group_msg_history', params) as { messages?: unknown }
       const messages = Array.isArray(data.messages) ? data.messages : []
       return messages.map(m => {

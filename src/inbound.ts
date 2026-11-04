@@ -23,7 +23,7 @@ import { cqUnescape, detectExplicitMention, detectMention, parseMessage, segment
 import type { AccessPolicyConfig, ChatId, UserRole } from './chat.js'
 import {
   buildChatId, buildGroupMessagePrefix, classifyUserRole, dmAllowed, groupAllowed,
-  RESTRICTED_PREFIX, sanitizeNickname, wrapUserMessage,
+  RESTRICTED_PREFIX, sanitizeNickname, splitChatId, wrapUserMessage,
 } from './chat.js'
 import type { BridgeConfig } from './bridge.js'
 import type { ChatSettings } from './registry.js'
@@ -483,7 +483,7 @@ export class InboundPipeline {
   /** Resolve one media ref to a text annotation with a local path. */
   async resolveMediaRef(ref: MediaRef, chatId: ChatId): Promise<string> {
     if (ref.kind === 'file') {
-      return await this.resolveNasFile(ref)
+      return await this.resolveNasFile(ref, chatId)
     }
     const resolved = await this.ctx.media.resolve(ref, async (kind, file) => {
       if (kind === 'image') {
@@ -491,7 +491,13 @@ export class InboundPipeline {
         return { url: data.url, file: data.file }
       }
       if (kind === 'voice') {
-        const data = await this.ctx.call('get_record', { file, out_format: 'mp3' }) as { file?: string }
+        const data = await this.ctx.call('get_record', { file, out_format: 'mp3' }) as { file?: string; base64?: string }
+        // SnowLuma: with out_format the server transcodes and returns `base64`
+        // directly — prefer it and skip the url/file round-trip. NapCat keeps
+        // returning only `file`, which falls through to the usual path.
+        if (data.base64 !== undefined && data.base64 !== '') {
+          return { file: 'base64://' + data.base64 }
+        }
         return { file: data.file }
       }
       return undefined
@@ -573,12 +579,15 @@ export class InboundPipeline {
   /**
    * Fetch an inbound QQ file to a local path. NapCat's get_file may return
    * container-internal paths unreachable from this host, so:
-   *   1. prefer the private-file direct link (get_private_file_url → HTTP
+   *   0. group chats prefer the group direct link (get_group_file_url —
+   *      SnowLuma's get_file covers only image/voice caches, so group files
+   *      must go through the standard group-file action);
+   *   1. then the private-file direct link (get_private_file_url → HTTP
    *      CDN download, works for private chats);
    *   2. fall back to get_file base64 / http-url payloads.
    * Returns the [文件:path] annotation, or '' when disabled/failed.
    */
-  private async resolveNasFile(ref: MediaRef): Promise<string> {
+  private async resolveNasFile(ref: MediaRef, chatId: ChatId): Promise<string> {
     const name = ref.name !== undefined && ref.name !== '' ? ref.name : 'file'
     // The sender-controlled name never becomes the on-disk path (it could
     // otherwise overwrite chat-sessions.json etc.); only a whitelisted
@@ -588,6 +597,29 @@ export class InboundPipeline {
     const maxBytes = this.ctx.config.maxInboundFileBytes > 0 ? this.ctx.config.maxInboundFileBytes : undefined
     const fid = ref.fileId ?? ref.file ?? ''
     if (fid === '') return ''
+    // 0. Group-chat direct link: SnowLuma's get_file covers only image/voice
+    //    caches, so group files must go through the standard group-file
+    //    action. Failure (NapCat without it / no url) falls through below.
+    const chatRef = splitChatId(chatId)
+    if (chatRef.kind === 'group') {
+      try {
+        const group = await this.ctx.call('get_group_file_url', {
+          group_id: Number(chatRef.target),
+          file_id: fid,
+        }) as { url?: string }
+        if (group.url !== undefined && group.url !== '') {
+          try {
+            const localPath = await this.ctx.media.downloadUrl(group.url, ext, maxBytes)
+            this.ctx.log('info', 'qq group file fetched via direct link: ' + localPath)
+            return '[文件:' + localPath + ']'
+          } catch (error) {
+            this.ctx.log('warn', 'qq group file direct download failed: ' + describeError(error))
+          }
+        }
+      } catch (error) {
+        this.ctx.log('debug', 'get_group_file_url failed (falling back): ' + describeError(error))
+      }
+    }
     try {
       // 1. Private-chat direct link (works without any container access).
       const direct = await this.ctx.call('get_private_file_url', { file_id: fid }) as {
