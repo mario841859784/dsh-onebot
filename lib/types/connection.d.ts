@@ -137,6 +137,11 @@ export declare class OneBotConnection {
      * @throws OneBotNotConnectedError / OneBotActionError on failure or timeout.
      */
     call(action: string, params: Record<string, unknown>): Promise<unknown>;
+    /** Reverse dial-in auth: accept the token as either the OneBot v11
+     * `Authorization: Bearer` header or an `?access_token=` query parameter
+     * (SnowLuma's WS clients attach the token to the connect URL). Both
+     * comparisons are timing-safe; a wrong token of either form is rejected. */
+    private reverseTokenOk;
     private startReverseServer;
     /**
      * W2-①: EADDRINUSE is no longer a dead end. ws does not emit 'close' after

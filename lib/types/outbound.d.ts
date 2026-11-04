@@ -6,6 +6,13 @@ export interface OutboundSegment {
     type: string;
     data: Record<string, unknown>;
 }
+/**
+ * SnowLuma's send_msg validates text segments: `text === ''` is treated as a
+ * compatibility placeholder and a whitespace-only text still goes through
+ * normal validation — both get rejected. Strip empty/whitespace-only text
+ * segments before the wire; non-text segments pass untouched.
+ */
+export declare function filterBlankTextSegments(segments: OutboundSegment[]): OutboundSegment[];
 /** Options for an explicit outbound send (from tools). */
 export interface SendOptions {
     replyTo?: string;

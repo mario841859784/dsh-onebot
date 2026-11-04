@@ -218,7 +218,10 @@ export declare class InboundPipeline {
     /**
      * Fetch an inbound QQ file to a local path. NapCat's get_file may return
      * container-internal paths unreachable from this host, so:
-     *   1. prefer the private-file direct link (get_private_file_url → HTTP
+     *   0. group chats prefer the group direct link (get_group_file_url —
+     *      SnowLuma's get_file covers only image/voice caches, so group files
+     *      must go through the standard group-file action);
+     *   1. then the private-file direct link (get_private_file_url → HTTP
      *      CDN download, works for private chats);
      *   2. fall back to get_file base64 / http-url payloads.
      * Returns the [文件:path] annotation, or '' when disabled/failed.
