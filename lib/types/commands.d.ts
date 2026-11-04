@@ -74,6 +74,10 @@ export interface CommandContext {
      * a bare /workspace|/model|/preset|/session rendered; lazy 5-min TTL, see below). */
     /** /session: this chat's switchable retired sessions (newest first). */
     switchableSessions(chatId: ChatId): SwitchableSession[];
+    /** T4 (#15): broken (hard-retired) session count from the registry's
+     * retire record, surfaced by the /session list. Absent = the list omits
+     * the broken-count line (pre-T4 hosts/tests). */
+    brokenSessionCount?: (() => number) | undefined;
     /** /session <序号>: switch the chat back to a listed session. */
     switchSession(chatId: ChatId, targetSessionId: string): Promise<SessionSwitchOutcome>;
     /** /session list previews: the persistence port each retired session's
@@ -108,6 +112,13 @@ export interface CommandContext {
      * Mints an MF- reference through the bridge (registry + trace + structured
      * log) and returns it for the ⚠️ notice tail. */
     reportFailure?: ((chatId: ChatId, stage: TraceStage, detail: string) => string) | undefined;
+    /** T3-board /silent: per-chat silence window — epoch-ms until which the
+     * inbound pipeline ignores NORMAL messages (undefined = not silenced, or
+     * the window already expired). T3-board persistence: the durable copy is
+     * ChatSettings.silentUntil (chat-sessions.json) — the window survives a
+     * plugin restart and /new; a bare /silent clears it explicitly. */
+    silentUntil?: ((chatId: ChatId) => number | undefined) | undefined;
+    setSilentUntil?: ((chatId: ChatId, untilMs: number | undefined) => void) | undefined;
     /** The only config fields the commands read. */
     config: Pick<BridgeConfig, 'interimMessages' | 'maxImageBytes' | 'unknownCommand'>;
 }
@@ -131,6 +142,10 @@ export interface CommandDefinition {
     aliases?: string[];
     /** Admin-only flag; every current command is gated at the router entry. */
     adminOnly: boolean;
+    /** T3-board: member-visible command — a non-admin (group member) may
+     * invoke it; /help's member view lists ONLY these rows. The admin gate
+     * stays the default; this flag carves per-row exceptions. */
+    memberVisible?: boolean;
     /** /help line shown after "/name ": the usage-argument form (when the
      * command takes arguments) followed by the description, e.g.
      * "[路径|序号|list] 查看或切换工作区" or plain "本帮助". */
@@ -147,8 +162,10 @@ export declare const COMMANDS: CommandDefinition[];
 /** /help body: grouped multi-line card generated from the table — adding a
  * command stays a one-row change and its group header comes from the row
  * (unlisted groups append). The R1 tail line documents the unknown-command
- * behavior. Exported for the full-text snapshot gate in tests/commands.spec.ts. */
-export declare function helpText(): string;
+ * behavior. Exported for the full-text snapshot gate in tests/commands.spec.ts.
+ * T3-board: memberOnly=true renders the member view — only memberVisible
+ * rows, a neutral header, and a 「其余命令需管理员」 tail. */
+export declare function helpText(memberOnly?: boolean): string;
 /**
  * Slash-command router. Commands are admin-only (the Hermes member
  * slash-command block) and are matched on the first word; a leading
@@ -168,6 +185,11 @@ export declare function helpText(): string;
  * @returns true when the message was consumed by a command.
  */
 export declare function tryHandleCommand(ctx: CommandContext, chatId: ChatId, text: string, userId: string, nickname?: string): Promise<boolean>;
+/** T3-board /silent defaults and bounds: a bare /silent mutes for 30 minutes;
+ * the explicit form accepts 1–1440 minutes (one day) — beyond that a real
+ * schedule is the right surface, not a chat command. */
+export declare const SILENT_DEFAULT_MINUTES = 30;
+export declare const SILENT_MAX_MINUTES: number;
 /** T2 (P1): the /steer submit notice — one line per accepted instruction.
  * Shared with the bridge's auto-steer path ('steer' policy) so both surfaces
  * word the confirmation identically; exported for the deterministic text

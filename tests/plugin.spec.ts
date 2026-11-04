@@ -6,6 +6,53 @@ import { Context } from '@deepseek-ai/cordis'
 
 import { apply, Config, name, defaultMediaDir } from '../src/index.js'
 
+/**
+ * T12: capture the deps the plugin entry hands to the ChatBridge constructor
+ * so config→bridge wiring (monoFamilies 一行接线) is observable. bridge.js is
+ * mocked file-wide; the existing plugin-entry tests never start the bridge, so
+ * the no-op lifecycle methods keep them behaving identically.
+ */
+const bridgeDepsCaptured = vi.hoisted(() => [] as Array<{ config?: { monoFamilies?: readonly string[] } }>)
+vi.mock('../src/bridge.js', () => ({
+  ChatBridge: class {
+    constructor(deps: { config?: { monoFamilies?: readonly string[] } }) {
+      bridgeDepsCaptured.push(deps)
+    }
+    start(): void {}
+    async stop(): Promise<void> {}
+  },
+}))
+
+/**
+ * T3 lifecycle regression: mock InjectChannel so start() can be suspended on
+ * a gate, letting the test unload the plugin while start is still in flight.
+ * startCompleted mirrors the real channel's invariant that arming the poll
+ * timer happens only after the awaited history skip (inject.ts start()).
+ */
+const injectLifecycle = vi.hoisted(() => ({
+  startCalls: 0,
+  stopCalls: 0,
+  startCompleted: false,
+  stopAfterStartCompleted: false,
+  releaseStart: null as null | (() => void),
+}))
+vi.mock('../src/inject.js', () => ({
+  InjectChannel: class {
+    async start(): Promise<void> {
+      injectLifecycle.startCalls++
+      injectLifecycle.startCompleted = false
+      await new Promise<void>(resolve => {
+        injectLifecycle.releaseStart = resolve
+      })
+      injectLifecycle.startCompleted = true
+    }
+    async stop(): Promise<void> {
+      injectLifecycle.stopCalls++
+      injectLifecycle.stopAfterStartCompleted = injectLifecycle.startCompleted
+    }
+  },
+}))
+
 /** A stubbed cordis service registry carrying the injected surface. */
 function makeCtx() {
   const ctx = new Context()
@@ -118,5 +165,90 @@ describe('plugin entry', () => {
   it('derives a sensible default media dir', () => {
     const dir = defaultMediaDir()
     expect(dir).toContain('.dsh')
+  })
+
+  it('forwards config.monoFamilies into the bridge constructor (T12 端到端接线收尾)', async () => {
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-plugin-'))
+    const { ctx } = makeCtx()
+    bridgeDepsCaptured.length = 0
+    apply(ctx as never, Config({
+      mediaDir,
+      port: 0,
+      accessToken: 'test-token',
+      botQQ: '10002',
+      sttEnabled: false,
+      sensitivePatterns: [],
+      monoFamilies: ['Cascadia Code', 'Consolas'],
+    }))
+    expect(bridgeDepsCaptured).toHaveLength(1)
+    expect(bridgeDepsCaptured[0]?.config?.monoFamilies).toEqual(['Cascadia Code', 'Consolas'])
+  })
+
+  it('T3 lifecycle: unload while injectChannel.start() is still pending waits for start, then unwinds exactly once', async () => {
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-plugin-'))
+    const { ctx } = makeCtx()
+    injectLifecycle.startCalls = 0
+    injectLifecycle.stopCalls = 0
+    injectLifecycle.startCompleted = false
+    injectLifecycle.stopAfterStartCompleted = false
+    const effectSpy = vi.spyOn(ctx as { effect: (cb: () => unknown, label?: string) => unknown }, 'effect')
+    apply(ctx as never, Config({
+      mediaDir,
+      port: 0,
+      accessToken: 'test-token',
+      botQQ: '10002',
+      sttEnabled: false,
+      sensitivePatterns: [],
+      injectEnabled: true,
+    }))
+
+    // start 链已启动但被闸门挂起：start 调用过恰一次、尚未完成
+    // （effect 回调由宿主调度执行，用 waitFor 等到 start 已进入闸门）
+    await vi.waitFor(() => expect(injectLifecycle.startCalls).toBe(1))
+    expect(injectLifecycle.startCompleted).toBe(false)
+    const disposer = effectSpy.mock.results[0].value as () => Promise<void>
+    const disposed = disposer()
+    // 放行全部微任务/宏任务：修复前 stop 会在此处穿插进未完成的 start
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(injectLifecycle.stopCalls).toBe(0)
+
+    // 放行 start：清理必须在 start 完成后展开，且恰一次（无重复注入、无悬挂 timer/监听）
+    injectLifecycle.releaseStart?.()
+    await disposed
+    expect(injectLifecycle.startCalls).toBe(1)
+    expect(injectLifecycle.stopCalls).toBe(1)
+    expect(injectLifecycle.stopAfterStartCompleted).toBe(true)
+  })
+
+  it('T2-board: two-phase lifecycle log — mounted prints only after the start chain settles', async () => {
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-plugin-'))
+    const { ctx } = makeCtx()
+    injectLifecycle.startCalls = 0
+    injectLifecycle.startCompleted = false
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    try {
+      const effectSpy = vi.spyOn(ctx as { effect: (cb: () => unknown, label?: string) => unknown }, 'effect')
+      apply(ctx as never, Config({
+        mediaDir,
+        port: 0,
+        accessToken: 'test-token',
+        botQQ: '10002',
+        sttEnabled: false,
+        sensitivePatterns: [],
+        injectEnabled: true,
+      }))
+      const texts = () => log.mock.calls.map(c => String(c[0]))
+      // start 链已进入闸门：starting 已打印，mounted 尚未打印（旧实现此间就打印 mounted）。
+      await vi.waitFor(() => expect(injectLifecycle.startCalls).toBe(1))
+      expect(texts().some(t => t.startsWith('[dsh-onebot] starting (mode='))).toBe(true)
+      expect(texts().some(t => t.startsWith('[dsh-onebot] mounted'))).toBe(false)
+      // 放行 start：mounted 在整条链完成后才出现。
+      injectLifecycle.releaseStart?.()
+      await vi.waitFor(() => expect(texts().some(t => t.startsWith('[dsh-onebot] mounted (mode='))).toBe(true))
+      const disposer = effectSpy.mock.results[0].value as () => Promise<void>
+      await disposer()
+    } finally {
+      log.mockRestore()
+    }
   })
 })

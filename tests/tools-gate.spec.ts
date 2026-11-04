@@ -6,7 +6,7 @@
  * its private maps); the connection is a recording stub, so nothing hits
  * the network and every assertion on sends reads recorded send_msg params.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, realpathSync } from 'node:fs'
 import { mkdir, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -14,15 +14,27 @@ import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 
 import { ChatBridge } from '../src/bridge.js'
-import { registerTools } from '../src/tools.js'
+import { configureSendSegments, registerTools, SEGMENTS_INTERVAL_MAX_MS } from '../src/tools.js'
+import { filterBlankTextSegments } from '../src/outbound.js'
 
 interface SendTool {
   name: string
   execute: (args: unknown, exec: unknown) => Promise<unknown>
 }
 
-/** Real ChatBridge + registered qq_* tools with a recording connection stub. */
-async function makeHarness() {
+/** Real ChatBridge + registered qq_* tools with a recording connection stub.
+ * T14: `segments` installs the qq_send_segments page switches BEFORE tool
+ * registration (undefined = module default: enabled, no interval).
+ * `respond` lets a test override the canned response per action (e.g.
+ * get_group_msg_history).
+ * 权限分档 A2: `memberTools` defaults to 'all' here so the media-fence tests
+ * below stay purely about the fence; the member-tier gate itself is exercised
+ * in its own describe with the production default 'none'. */
+async function makeHarness(opts: {
+  segments?: { enabled: boolean; intervalMs: number }
+  respond?: Record<string, (params: Record<string, unknown>) => unknown>
+  memberTools?: 'none' | 'all'
+} = {}) {
   const root = mkdtempSync(join(tmpdir(), 'tools-gate-'))
   const mediaDir = join(root, 'media')
   const workspace = join(root, 'workspace')
@@ -36,6 +48,8 @@ async function makeHarness() {
     connection: {
       call: async (action: string, params: Record<string, unknown>) => {
         calls.push({ action, params })
+        const respond = opts.respond?.[action]
+        if (respond !== undefined) return respond(params)
         return { message_id: 42 }
       },
     } as never,
@@ -55,6 +69,7 @@ async function makeHarness() {
       maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
       textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
       agentPreset: 'standard', workspacePath: workspace, maxInboundFileBytes: 0,
+      permissions: { memberTools: opts.memberTools ?? 'all' },
     },
     policy: {
       dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
@@ -83,7 +98,17 @@ async function makeHarness() {
       return () => undefined
     },
   } as never)
-  registerTools(ctx, bridge, {} as never, {
+  configureSendSegments(opts.segments)
+  registerTools(ctx, bridge, {
+    // qq_group_history talks to the connection directly (send tools go
+    // through bridge.sendSegments): same recording + respond stub.
+    call: async (action: string, params: Record<string, unknown>) => {
+      calls.push({ action, params })
+      const respond = opts.respond?.[action]
+      if (respond !== undefined) return respond(params)
+      return { message_id: 42 }
+    },
+  } as never, {
     maxImageBytes: 1_000_000,
     maxVoiceBytes: 1_000_000,
     maxFileBytes: 1_000_000,
@@ -211,5 +236,285 @@ describe('ChatBridge.mediaSendRoots (M1-A3b roots口径)', () => {
       roots: [realpathSync(h.mediaDir)],
       isTurnAdmin: true,
     })
+  })
+})
+
+/**
+ * 权限分档 A2（工具硬防线）：成员（非管理员）回合内全部 qq_* 工具在 execute
+ * 前被拦截——守卫先于参数校验/媒体栅栏/发送，任何 qq_* 工具一视同仁；
+ * 管理员回合与 permissions.memberTools='all' 不受限；无 QQ 会话映射的调用方
+ * （Web 等其他通道）不受限。守卫复用 M1-A2 turn-level 角色（seed 即
+ * activeTurnRole，fail-closed member）。
+ */
+describe('qq_* member-tier tool gate (权限分档 A2)', () => {
+  it('rejects a member-turn tool call before any send, on every qq_* tool shape', async () => {
+    const h = await makeHarness({ memberTools: 'none' })
+    const sessionId = 'sess-gate-member'
+    h.seed(sessionId, 'member')
+    const target = join(h.mediaDir, 'allowed.jpg')
+    await writeFile(target, 'bytes')
+    for (const [name, args] of [
+      ['qq_send_image', { sources: [target] }],
+      ['qq_send_file', { path: target }],
+      ['qq_send_forward', { messages: [{ name: 'a', content: 'b' }] }],
+      ['qq_napcat_api', { action: 'get_group_member_list', params: { group_id: 1 } }],
+      ['qq_group_history', { chat_id: 'group:20002' }],
+    ] as Array<[string, Record<string, unknown>]>) {
+      await expect(h.tool(name).execute(args, h.exec(sessionId)))
+        .rejects.toThrow('当前发言人为成员档位，无工具权限：qq_* 工具仅管理员回合可用')
+    }
+    expect(h.calls).toHaveLength(0)
+  })
+
+  it('fires before argument validation (permission error, not the validation error)', async () => {
+    const h = await makeHarness({ memberTools: 'none' })
+    const sessionId = 'sess-gate-early'
+    h.seed(sessionId, 'member')
+    await expect(h.tool('qq_send_segments').execute({ segments: [] }, h.exec(sessionId)))
+      .rejects.toThrow('当前发言人为成员档位')
+    expect(h.calls).toHaveLength(0)
+  })
+
+  it('leaves admin turns unrestricted', async () => {
+    const h = await makeHarness({ memberTools: 'none' })
+    const sessionId = 'sess-gate-admin'
+    h.seed(sessionId, 'admin')
+    const target = join(h.mediaDir, 'admin.jpg')
+    await writeFile(target, 'admin-bytes')
+    const result = await h.tool('qq_send_image').execute({ sources: [target] }, h.exec(sessionId)) as { sent: boolean }
+    expect(result.sent).toBe(true)
+    expect(h.sentSegment()).toMatchObject({ type: 'image' })
+  })
+
+  it("permissions.memberTools='all' disables the gate for members", async () => {
+    const h = await makeHarness({ memberTools: 'all' })
+    const sessionId = 'sess-gate-open'
+    h.seed(sessionId, 'member')
+    const target = join(h.mediaDir, 'open.jpg')
+    await writeFile(target, 'open-bytes')
+    const result = await h.tool('qq_send_image').execute({ sources: [target] }, h.exec(sessionId)) as { sent: boolean }
+    expect(result.sent).toBe(true)
+  })
+
+  it('trusts callers with no QQ session mapping (Web/other channels)', async () => {
+    const h = await makeHarness({ memberTools: 'none' })
+    // 显式 chat_id + 未映射会话：守卫放行（无 QQ 会话映射不在档位语义内）。
+    const result = await h.tool('qq_send_image').execute({ sources: ['https://example.com/pic.jpg'], chat_id: 'group:30001' }, h.exec('some-web-session')) as { sent: boolean }
+    expect(result.sent).toBe(true)
+    expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(1)
+  })
+
+  it('absent config fails closed: member is blocked even without the permissions key', async () => {
+    const h = await makeHarness({ memberTools: 'none' })
+    delete (h.bridge as unknown as { deps: { config: { permissions?: unknown } } }).deps.config.permissions
+    const sessionId = 'sess-gate-absent'
+    h.seed(sessionId, 'member')
+    await expect(h.tool('qq_send_image').execute({ sources: ['https://example.com/pic.jpg'] }, h.exec(sessionId)))
+      .rejects.toThrow('当前发言人为成员档位')
+    expect(h.calls).toHaveLength(0)
+  })
+})
+
+describe('qq_send_segments (T10 #6)', () => {
+  it('sends each segment as its own separate send_msg bubble, in order', async () => {
+    const h = await makeHarness()
+    h.seed('group-seg-1', 'admin')
+    const sessionId = 'group-seg-1'
+    const result = await h.tool('qq_send_segments').execute({
+      segments: ['第一段', '第二段', '第三段'],
+    }, h.exec(sessionId)) as { sent: boolean; count: number; messageIds: Array<string | null> }
+    expect(result.sent).toBe(true)
+    expect(result.count).toBe(3)
+    const sends = h.calls.filter(c => c.action === 'send_msg')
+    expect(sends).toHaveLength(3)
+    expect(sends.map(s => (s.params.message as Array<{ data: { text: string } }>)[0].data.text))
+      .toEqual(['第一段', '第二段', '第三段'])
+  })
+
+  it('rejects empty, over-count, and over-length inputs without sending', async () => {
+    const h = await makeHarness()
+    h.seed('group-seg-2', 'admin')
+    const sessionId = 'group-seg-2'
+    const tool = h.tool('qq_send_segments')
+    await expect(tool.execute({ segments: [] }, h.exec(sessionId)))
+      .rejects.toThrow('qq_send_segments: segments 不能为空')
+    await expect(tool.execute({ segments: ['   ', '\n\t'] }, h.exec(sessionId)))
+      .rejects.toThrow('qq_send_segments: segments 不能为空')
+    await expect(tool.execute({ segments: Array.from({ length: 10 }, (_, i) => '段' + i) }, h.exec(sessionId)))
+      .rejects.toThrow('qq_send_segments: 一次最多 9 段')
+    await expect(tool.execute({ segments: ['好'.repeat(501)] }, h.exec(sessionId)))
+      .rejects.toThrow('qq_send_segments: 每段最多 500 字')
+    expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(0)
+  })
+})
+
+/**
+ * T14 (#6 补充): qq_send_segments 插件页开关 + 发送间隔。全部用 fake timers
+ * 断言延时行为——绝不真实 sleep 多秒（deferred/inject 有真实计时 flaky 先例）。
+ * 默认（intervalMs=0）完全不排定时器：若实现误排 setTimeout，await 会挂起
+ * 直到测试超时，本身就是失败信号。
+ */
+describe('qq_send_segments 开关与发送间隔 (T14 #6)', () => {
+  it('default intervalMs=0 keeps 0.9.10 behavior: no delay timers, sends in order', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = await makeHarness() // undefined → 模块默认 { enabled: true, intervalMs: 0 }
+      h.seed('group-seg-d0', 'admin')
+      const result = await h.tool('qq_send_segments').execute({
+        segments: ['一', '二', '三'],
+      }, h.exec('group-seg-d0')) as { sent: boolean; count: number }
+      expect(result.sent).toBe(true)
+      expect(result.count).toBe(3)
+      expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(3)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('enabled=false leaves qq_send_segments unregistered (other tools intact)', async () => {
+    const h = await makeHarness({ segments: { enabled: false, intervalMs: 0 } })
+    expect(() => h.tool('qq_send_segments')).toThrow('tool not registered: qq_send_segments')
+    expect(h.tool('qq_send_image')).toBeTruthy()
+    expect(h.tool('qq_send_forward')).toBeTruthy()
+  })
+
+  it('global intervalMs waits between consecutive segments (fake timers, no real sleep)', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = await makeHarness({ segments: { enabled: true, intervalMs: 40 } })
+      h.seed('group-seg-gi', 'admin')
+      const pending = h.tool('qq_send_segments').execute({
+        segments: ['甲', '乙', '丙'],
+      }, h.exec('group-seg-gi')) as Promise<{ count: number }>
+      // 推进 1ms：第一段已发，第二个段还卡在 40ms 间隔定时器上（证明等待真实生效）。
+      await vi.advanceTimersByTimeAsync(1)
+      expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(1000)
+      const result = await pending
+      expect(result.count).toBe(3)
+      expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('tool intervalMs overrides the global default (0 override = no delay timers)', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = await makeHarness({ segments: { enabled: true, intervalMs: 999 } })
+      h.seed('group-seg-ov', 'admin')
+      const result = await h.tool('qq_send_segments').execute({
+        segments: ['甲', '乙'],
+        intervalMs: 0,
+      }, h.exec('group-seg-ov')) as { count: number }
+      expect(result.count).toBe(2)
+      expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(2)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clamps out-of-range tool intervalMs into 0–3000 (5000 → 3000)', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = await makeHarness() // 全局默认 0，仅参数超界
+      h.seed('group-seg-cl', 'admin')
+      const pending = h.tool('qq_send_segments').execute({
+        segments: ['甲', '乙'],
+        intervalMs: 5000,
+      }, h.exec('group-seg-cl')) as Promise<{ count: number }>
+      // clamp 后单段间隔 = 3000ms：推进到 3000 应完成发送；未 clamp（5000）则不会。
+      await vi.advanceTimersByTimeAsync(SEGMENTS_INTERVAL_MAX_MS)
+      const result = await pending
+      expect(result.count).toBe(2)
+      expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+/**
+ * SnowLuma 适配第一批（T1）：qq_group_history 的翻页锚点必须以 message_id
+ * 发给协议端（SnowLuma 只认 message_id，不认 NapCat 旧名 message_seq），
+ * 以及 sendMsg 出站管线在协议端收口处过滤空/纯空白 text 段（SnowLuma
+ * 校验拒绝空白文本段）。
+ */
+describe('SnowLuma 适配：翻页锚点与空白 text 段 (T1 #2/#7)', () => {
+  it('qq_group_history sends the anchor as message_id (not message_seq) to the protocol side', async () => {
+    const h = await makeHarness({
+      respond: {
+        get_group_msg_history: () => ({
+          messages: [{
+            message_id: 7, time: 111, user_id: 10001,
+            sender: { user_id: 10001, nickname: '小明' },
+            message: '你好', raw_message: '你好',
+          }],
+        }),
+      },
+    })
+    h.seed('group-hist-1', 'admin')
+    const result = await h.tool('qq_group_history').execute({
+      chat_id: 'group:20001', count: 5, message_seq: 777,
+    }, h.exec('group-hist-1')) as Array<{ message_id: string }>
+    const call = h.calls.find(c => c.action === 'get_group_msg_history')
+    expect(call).toBeDefined()
+    expect(call!.params).toEqual({ group_id: 20001, count: 5, message_id: 777 })
+    expect(Object.hasOwn(call!.params, 'message_seq')).toBe(false)
+    expect(result).toEqual([{ message_id: '7', time: '111', user_id: '10001', nickname: '小明', text: '你好' }])
+  })
+
+  it('qq_group_history omits the anchor parameter entirely when message_seq is absent', async () => {
+    const h = await makeHarness({ respond: { get_group_msg_history: () => ({ messages: [] }) } })
+    h.seed('group-hist-2', 'admin')
+    await h.tool('qq_group_history').execute({}, h.exec('group-hist-2'))
+    const call = h.calls.find(c => c.action === 'get_group_msg_history')!
+    expect(call.params).toEqual({ group_id: 20001, count: 20 })
+    expect(Object.hasOwn(call.params, 'message_id')).toBe(false)
+    expect(Object.hasOwn(call.params, 'message_seq')).toBe(false)
+  })
+
+  it('filterBlankTextSegments drops empty/whitespace text segments and keeps the rest', () => {
+    const segs = [
+      { type: 'text', data: { text: '' } },
+      { type: 'text', data: { text: '   \n\t ' } },
+      { type: 'text', data: { text: '正文' } },
+      { type: 'image', data: { file: 'base64://x' } },
+      { type: 'text', data: { text: ' 保留 ' } },
+    ]
+    expect(filterBlankTextSegments(segs)).toEqual([
+      { type: 'text', data: { text: '正文' } },
+      { type: 'image', data: { file: 'base64://x' } },
+      { type: 'text', data: { text: ' 保留 ' } },
+    ])
+    // non-text segments always survive
+    expect(filterBlankTextSegments([{ type: 'face', data: { id: '1' } }])).toEqual([{ type: 'face', data: { id: '1' } }])
+  })
+
+  it('sendMsg on the wire strips blank text segments (mixed → only real content sent)', async () => {
+    const h = await makeHarness()
+    h.seed('group-blank-1', 'admin')
+    const id = await h.bridge.sendSegments('group:20001', [
+      { type: 'text', data: { text: '  ' } },
+      { type: 'text', data: { text: '' } },
+      { type: 'text', data: { text: ' SnowLuma 只认这个 ' } },
+    ])
+    expect(id).toBe('42')
+    const send = h.calls.find(c => c.action === 'send_msg')!
+    expect(send.params.group_id).toBe(20001)
+    expect(send.params.message).toEqual([{ type: 'text', data: { text: ' SnowLuma 只认这个 ' } }])
+  })
+
+  it('sendMsg with only blank text segments sends nothing (no send_msg recorded)', async () => {
+    const h = await makeHarness()
+    h.seed('group-blank-2', 'admin')
+    const id = await h.bridge.sendSegments('group:20001', [
+      { type: 'text', data: { text: '' } },
+      { type: 'text', data: { text: ' \n\t ' } },
+    ])
+    expect(id).toBeUndefined()
+    expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(0)
   })
 })

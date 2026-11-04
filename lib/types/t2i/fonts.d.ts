@@ -25,6 +25,11 @@ export interface FontConfig {
     fontFiles?: readonly string[];
     /** Preferred family names, tried before platform defaults. */
     fontFamilies?: readonly string[];
+    /**
+     * Preferred MONO family names for code text, tried before fontFamilies and
+     * platform defaults (e.g. ["Cascadia Code"] on Windows terminals).
+     */
+    monoFamilies?: readonly string[];
 }
 /**
  * The font manager: platform family resolution, per-character-class family

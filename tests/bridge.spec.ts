@@ -16,6 +16,31 @@ import type { QuotedMessageData } from '../src/inbound.js'
 import { makeCmdHarness, makeEvent, makeFakeAgents, makeHarness } from './helpers/bridge-harness.js'
 
 describe('ChatBridge', () => {
+
+  it('#4a: a blocked turn/end sends the user-facing notice; a completed turn stays silent', async () => {
+    const h = await makeCmdHarness()
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const session = { id: h.sessionIds[0] }
+
+    h.ctx.emit('session/event', session as never, makeEvent('turn/start', { turn: 1 }))
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'blocked' } }))
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('该消息未生成回复'))).toBe(true)
+    })
+
+    // A completed turn adds no such notice (the count stays at one).
+    h.outbound.length = 0
+    h.ctx.emit('session/event', session as never, makeEvent('turn/start', { turn: 2 }))
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 2, reason: { kind: 'completed' } }))
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(h.outbound.some(f => JSON.stringify(f.params).includes('该消息未生成回复'))).toBe(false)
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
   it('slash /new retirement is durable: the retired file records the bare id and a restart skips it (registry round-trip)', async () => {
     // Re-create the pre-split retirement state (the command-side segments
     // moved to commands.spec.ts): one message on the bare id, then /new
@@ -485,7 +510,7 @@ describe('ChatBridge', () => {
     const h = await makeCmdHarness({ interimRecallMs: 60_000 })
     h.sendGroupTextAs('帮我查一下', 10001)
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
-    expect(h.captured.followups[0].text).toMatch(/^\[\d{2}:\d{2} 用户10001\(10001\)\]\[@我\] <user_message qq="10001" nickname="用户10001">\n@10002帮我查一下\n<\/user_message>$/)
+    expect(h.captured.followups[0].text).toMatch(/^\[\d{2}:\d{2} 用户10001\(10001\)·管理员\]\[@我\] <user_message qq="10001" nickname="用户10001">\n@10002帮我查一下\n<\/user_message>$/)
     const session = { id: h.sessionIds[0] }
     h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
       turn: 1, step: 1, message: { role: 'assistant', id: 'g-interim-1', content: [

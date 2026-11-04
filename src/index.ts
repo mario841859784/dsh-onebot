@@ -40,6 +40,8 @@ let InboundRecorder: typeof import('./record.js').InboundRecorder
 let InjectChannel: typeof import('./inject.js').InjectChannel
 let redactSnapshot: typeof import('./health.js').redactSnapshot
 let describeError: typeof import('./errors.js').describeError
+let configureSendSegments: typeof import('./tools.js').configureSendSegments
+let resolveUserQuestions: typeof import('./ask-tool.js').resolveUserQuestions
 
 try {
   ;({ default: z } = await import('@deepseek-ai/schemastery'))
@@ -52,6 +54,8 @@ try {
   ;({ InjectChannel } = await import('./inject.js'))
   ;({ redactSnapshot } = await import('./health.js'))
   ;({ describeError } = await import('./errors.js'))
+  ;({ configureSendSegments } = await import('./tools.js'))
+  ;({ resolveUserQuestions } = await import('./ask-tool.js'))
 } catch (error) {
   console.error('[dsh-onebot] 挂载失败：peer 依赖解析失败或关键模块缺失 —— 部署副本必须带完整 node_modules 链接集（scripts/link-host.sh 产物），只复制 lib/ 不够。原始错误：' + (error instanceof Error ? error.message : String(error)))
   throw error
@@ -88,6 +92,13 @@ type Context = CordisContext & {
   }
   commands: {
     execute(agent: unknown, line: string, submittedAttachments: readonly unknown[], signal: AbortSignal): Promise<{ kind?: string; text?: string; result?: { kind?: string; text?: string } }>
+  }
+  /** T2-B1/B3: the host userQuestions service (dsh-base registers it). Not in
+   * the inject list on purpose — a deployment without it must degrade to "no
+   * ask_user_question tool / no answer interception", never block the load. */
+  userQuestions?: {
+    askTimed(request: unknown, callId: string, timeoutMs: number): Promise<unknown>
+    answer(agent: unknown, callId: string, payload: { answers: Array<{ id: string; selected: string[]; custom?: string }> }): Promise<boolean>
   }
 }
 
@@ -126,6 +137,10 @@ export interface Config {
   /** M3-D2b: interim recall degrade switch (false = send-only interims). */
   interimRecall: boolean
   sendErrorNotice: boolean
+  /** T8: auto-receipt notice switches (default true keeps existing behavior). */
+  notices: { steerAccepted: boolean, queue: boolean }
+  /** T14 (#6 补充): qq_send_segments 插件页开关与分段发送间隔（呼吸感）。 */
+  segments: { enabled: boolean, intervalMs: number }
   /** Per-chat per-minute sliding-window cap for normal (non-command) messages; 0 disables. */
   rateLimitPerMinute: number
   restrictedMemberPrefix: boolean
@@ -150,7 +165,12 @@ export interface Config {
   cardFooter: string
   fontFiles: string[]
   fontFamilies: string[]
+  monoFamilies: string[]
   agentPreset: string
+  /** 权限分档 A3: 群聊粗档 preset——设置后群聊会话优先使用该 preset id；空串=现行为。 */
+  agentPresetGroup: string
+  /** 权限分档 A2: 成员档位工具权限（none=成员回合禁用全部 qq_* 工具，默认；all=不限）。 */
+  permissions: { memberTools: 'none' | 'all' }
   workspacePath: string
   inboundFileMaxBytes: number
   /** @deprecated D4a alias of inboundFileMaxBytes; honored for one release. */
@@ -161,6 +181,8 @@ export interface Config {
   allowPrivateHosts: boolean
   /** Roots allowed for inbound file:// refs; empty rejects all. */
   fileRefRoots: string[]
+  /** Optional CIDR allowlist for trusted private download targets. */
+  allowCidrs: string[]
   /** W2-②: inbound (chatId, message_id) dedup window in seconds; 0 disables. */
   dedupWindowSeconds: number
   /** W2-③: bridge-wide proactive-write (qq_send_* tools) cap per minute; 0 disables. */
@@ -256,6 +278,20 @@ export const Config: Z<Config> = z.object({
     .description('中间消息撤回开关：true（默认）=每条中间消息在 interimRecallMs 后自动撤回，回合结束先发整轮 t2i 小结卡再立即撤回原消息；false=只发不撤——中间消息照常实时发出但保留在聊天里：不排自动撤回定时器、回合结束不发小结卡也不撤回原消息，只发最终回复'),
   sendErrorNotice: z.boolean().default(true)
     .description('一轮运行出错时向用户发送 ⚠️ 错误提示'),
+  notices: z.object({
+    steerAccepted: z.boolean().default(true)
+      .description('steer 模式下补充指令受理后的自动回执开关；/steer 命令的手动确认回复不受影响'),
+    queue: z.boolean().default(true)
+      .description('消息排队提示开关（每个运行回合至多一条）'),
+  }).default({})
+    .description('自动回执开关集合；缺省全部开启（与 0.9.x 行为一致）'),
+  segments: z.object({
+    enabled: z.boolean().default(true)
+      .description('qq_send_segments 分段发送工具开关（T14）：true（默认）=工具可用；false=工具下线（模型不可见，无法调用）'),
+    intervalMs: z.number().min(0).max(3000).default(0)
+      .description('分段消息相邻两段的发送间隔（毫秒，0–3000，默认 0 = 不等待）：逐条发送之间的间隔营造打字呼吸感；qq_send_segments 的 intervalMs 参数可按次临时覆盖（同样截断到 0–3000）'),
+  }).default({})
+    .description('qq_send_segments 分段发送配置（T14）；缺省 = 启用且无间隔（与 0.9.10 行为一致）'),
   rateLimitPerMinute: z.number().default(30)
     .description('每 chat 每分钟允许的普通消息条数上限（60 秒滑动窗口）；命令消息不计入也不受限；超限时每窗口最多提示一次；0=禁用频控'),
   restrictedMemberPrefix: z.boolean().default(true)
@@ -298,8 +334,16 @@ export const Config: Z<Config> = z.object({
     .description('t2i 渲染器注册的字体文件路径（Linux/自定义字体；macOS 自动用系统字体）'),
   fontFamilies: z.array(z.string()).default([])
     .description('t2i 渲染器优先使用的字体家族名（覆盖平台默认）'),
+  monoFamilies: z.array(z.string()).default([])
+    .description('t2i 渲染器代码文本优先使用的等宽字体家族名（优先于 fontFamilies 与平台默认，如 Cascadia Code / Consolas）'),
   agentPreset: z.string().default('')
     .description('QQ 会话加入的 agent 预设 id；留空用部署默认（settings 的 agent-presets.default，当前为 router-flash）。创建时总是解析有效预设并写入会话 header，Web 界面可见；resume 优先恢复会话自己记录的预设'),
+  agentPresetGroup: z.string().default('')
+    .description('权限分档：群聊会话的 agent 预设 id（粗档）——设置后群聊优先使用它，私聊仍用 agentPreset；留空 = 群私同源'),
+  permissions: z.object({
+    memberTools: z.union([z.const('none'), z.const('all')]).default('none')
+      .description('成员档位（非管理员）的工具权限：none=成员回合禁用全部 qq_* 工具（默认，插件硬拦截）；all=不限'),
+  }),
   workspacePath: z.string().default('')
     .description('QQ 会话的工作区目录（写入会话 cwd，并自动归入该工作区，不存在则创建）；留空时使用宿主进程工作目录并在启动时告警提醒（宿主未提供可编程查询的默认工作区），单聊 /workspace 覆盖优先且已持久化到会话映射文件，重启/恢复失败均不丢失'),
   inboundFileMaxBytes: z.number().default(INBOUND_FILE_MAX_BYTES)
@@ -310,6 +354,8 @@ export const Config: Z<Config> = z.object({
     .description('下载 SSRF 防护逃生门：默认拒绝解析到私网/环回/链路本地地址的下载目标（协议仅 http/https、重定向逐跳复检仍生效）；NapCat 文件服务器或反代部署在本机/内网时置 true 跳过私网检查'),
   fileRefRoots: z.array(z.string()).default([])
     .description('允许复制的 file:// 源根目录列表；空数组（默认）拒绝所有入站 file:// ref；路径按 realpath 校验，必须在这些根目录内'),
+  allowCidrs: z.array(z.string()).default([])
+    .description('可选 CIDR 白名单（IPv4/IPv6，如 100.64.0.0/10、fd7a:115c:a1e0::/48）：只放行这些私网段，其他私网/环回仍拒绝；空数组保持原行为'),
   chatIdleEvictDays: z.number().default(7)
     .description('会话空闲淘汰天数：chat 超过该天数无任何活动时，在下一条入站消息处理前清理其 agent（会话先落盘 flush、映射保留，之后同一 chat 的消息可 resume 恢复原会话）；0 = 禁用'),
   dedupWindowSeconds: z.number().default(300)
@@ -395,6 +441,9 @@ export function logMetaEvent(selfId: string, event: OneBotEvent, minLevel: Confi
 export function apply(ctx: Context, config: Config): void {
   // D4a: honor the deprecated config names before any consumer reads them.
   config = resolveDeprecatedConfig(config)
+  // T14: qq_send_segments 插件页开关与发送间隔——必须在任何 agent scope 注册
+  // 工具（bridge.installChannelScope → registerTools）之前生效。
+  configureSendSegments(config.segments)
   const mediaDir = config.mediaDir !== '' ? config.mediaDir : defaultMediaDir()
   const policy = resolvePolicy(config)
   /** Console log line callback (level, message) — shared by the bridge deps,
@@ -425,7 +474,7 @@ export function apply(ctx: Context, config: Config): void {
       log,
     },
   )
-  const media = new MediaStore(mediaDir, config.tempTtlHours, config.inboundImageMaxPx, { maxBytes: config.inboundFileMaxBytes, allowPrivateHosts: config.allowPrivateHosts, fileRefRoots: config.fileRefRoots })
+  const media = new MediaStore(mediaDir, config.tempTtlHours, config.inboundImageMaxPx, { maxBytes: config.inboundFileMaxBytes, allowPrivateHosts: config.allowPrivateHosts, fileRefRoots: config.fileRefRoots, allowCidrs: config.allowCidrs })
   // W1: the trace sink exists only when explicitly enabled — default off
   // means no sink, no traceIds, no jsonl, zero behavior difference.
   const traceSink = config.traceEnabled
@@ -498,6 +547,7 @@ export function apply(ctx: Context, config: Config): void {
     sessions: ctx.sessions,
     agentPresets: ctx.agentPresets,
     commands: ctx.commands as BridgeDeps['commands'],
+    userQuestions: resolveUserQuestions(ctx),
     sessionPersistence: ctx.sessionPersistence,
     workspaceRegistry: ctx.workspaceRegistry as unknown as WorkspaceRegistryLike,
     agentDefaultModel: ctx.agentDefaultModel,
@@ -520,6 +570,7 @@ export function apply(ctx: Context, config: Config): void {
       interimRecallMs: config.interimRecallMs,
       interimRecall: config.interimRecall,
       sendErrorNotice: config.sendErrorNotice,
+      notices: { steerAccepted: config.notices.steerAccepted, queue: config.notices.queue },
       rateLimitPerMinute: config.rateLimitPerMinute,
       restrictedMemberPrefix: config.restrictedMemberPrefix,
       sensitivePatterns: config.sensitivePatterns,
@@ -531,7 +582,10 @@ export function apply(ctx: Context, config: Config): void {
       cardFooter: config.cardFooter,
       fontFiles: config.fontFiles,
       fontFamilies: config.fontFamilies,
+      monoFamilies: config.monoFamilies,
       agentPreset: config.agentPreset,
+      agentPresetGroup: config.agentPresetGroup,
+      permissions: { memberTools: config.permissions.memberTools },
       workspacePath: config.workspacePath,
       maxInboundFileBytes: config.inboundFileMaxBytes,
       chatIdleEvictDays: config.chatIdleEvictDays,
@@ -554,10 +608,23 @@ export function apply(ctx: Context, config: Config): void {
   connection.onFailure = (stage: string, detail: string): string => bridge.registerConnectionFailure(stage, detail)
 
   // Lifecycle: start the bridge and transport; unwind everything on unload.
-  ctx.effect(() => {
-    bridge.start()
-    connection.start()
-    injectChannel?.start()
+  // The effect body is async (cordis AsyncEffect): injectChannel.start() must
+  // be awaited — it skips history before arming its poll timer, and a stop
+  // landing before start completes would leave a dangling timer. The effect's
+  // disposer is awaitable and dispose waits for the setup promise to settle
+  // first, so an unload during startup runs the cleanup chain strictly after
+  // start completes: no overlapping start/stop, no ghost timers or listeners.
+  ctx.effect(async () => {
+    // T2-board: two-phase lifecycle log — 'starting' prints synchronously
+    // when the effect body runs; 'mounted' only after the whole start chain
+    // has settled (the old single line printed BEFORE completion, claiming
+    // "mounted" while the channels were still coming up).
+    const mountDetails = ' (mode=' + config.mode + ', media=' + mediaDir + ', admins=' + policy.adminUsers.length + ')'
+    console.log('[dsh-onebot] starting' + mountDetails)
+    await bridge.start()
+    await connection.start()
+    await injectChannel?.start()
+    console.log('[dsh-onebot] mounted' + mountDetails)
     // QQ 平台说明与 qq_* 工具现按会话 agent 注入（见 ChatBridge.installChannelScope）
     return async () => {
       await injectChannel?.stop()
@@ -565,6 +632,4 @@ export function apply(ctx: Context, config: Config): void {
       await connection.stop()
     }
   }, 'dsh-onebot.lifecycle')
-
-  console.log('[dsh-onebot] mounted (mode=' + config.mode + ', media=' + mediaDir + ', admins=' + policy.adminUsers.length + ')')
 }

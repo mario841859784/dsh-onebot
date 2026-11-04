@@ -79,7 +79,7 @@ export interface InterimContext {
     /** Bridge log line callback. */
     log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void;
     /** The only config fields the interim domain reads. */
-    config: Pick<BridgeConfig, 'interimRecallMs' | 'interimRecall' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies'>;
+    config: Pick<BridgeConfig, 'interimRecallMs' | 'interimRecall' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies' | 'monoFamilies'>;
 }
 /**
  * The interim tracker: one per bridge, operating on the per-chat state through

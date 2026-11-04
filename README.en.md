@@ -4,7 +4,9 @@
 
 A QQ channel for DeepSeek Harness. 给 DeepSeek Harness 加上 QQ 通道。
 
-This plugin turns dsh into a QQ bot (**OneBot 11 protocol**, compatible with NapCat / Lagrange / LLOneBot / go-cqhttp).
+This plugin turns dsh into a QQ bot (**OneBot 11 protocol**, compatible with NapCat / Lagrange / LLOneBot / go-cqhttp;
+since 0.9.12 also compatible with the [SnowLuma](https://github.com/SnowLuma/SnowLuma) protocol implementation —
+forward mode connects to its `wsServers` (Bearer header or `?access_token=`, zero-config compatible), and the reverse-mode server accepts both the Bearer header and the `?access_token=` query parameter),
 Like [dsh-vision](https://github.com/dsh-external/dsh-vision), it ships as an external plugin: **zero Python, pure
 TypeScript, a native Cordis plugin** mounted into the dsh host process, with no core code changes.
 
@@ -29,13 +31,13 @@ User(QQ) ←→ NapCat ←→ dsh-onebot plugin ←→ dsh Agent (one per chat)
 | Inbound | Private/group chats; segment-array-first parsing (CQ string fallback), CQ unescaping, @/reply trigger detection (fail-closed; replies count only when replying to the bot itself); images resolved from 4 sources (url/base64/file/hash) with auto-shrink (long edge ≤ `inboundImageMaxPx`, GIFs untouched); files received via dual channel (CDN direct link `get_private_file_url` + `get_file` base64/url fallback); face id→emoji/card/poke segment types; quoted messages auto-fetched via `get_msg`; merged forwards auto-expanded via `get_forward_msg` |
 | Voice | ffmpeg to 16 kHz WAV + whisper transcription (openai-whisper / whisper.cpp / custom command); **non-blocking**: the voice message enters the turn as a `[语音]` placeholder right away, and the transcript follows as a `（语音转写：…）` supplement when done (default timeout 60s); failure keeps the `[语音]` placeholder |
 | Text image | t2i card renderer (@napi-rs/canvas): headings/bold/italic/strikethrough/quotes/lists/code blocks/tables/inline code pills/color emoji/CJK punctuation rules; same numbers as the Hermes original (800px/26px/rules/right edge 790) |
-| Outbound | Body length ≤ `textImageThreshold` (default 150) is sent as one message; **over the threshold renders a t2i text-image card** (AstrBot style: headings/quotes/lists/tables/code blocks/color emoji; render failure, a PNG over `outboundImageMaxBytes`, or `<=0` (card path disabled) falls back to a single plain-text message); Markdown stripped to plain QQ text; `[[qq_forward]]` merged-forward cards (group/private); **live interim messages** (`interimMessages`: each interim text is sent immediately; each is auto-recalled alone after `interimRecallMs` (default 90s); at turn end the whole turn's interims render into one **t2i summary card**, the still-on-screen originals are recalled, then the final reply is sent — no turn-end merged forwarding, avoiding unrecallable >2min originals and duplicate cards on long turns; `interimRecall: false` degrades to send-only: no summary card, no recall); **host plan-book/question-card auto-relay** (when the model calls exit_plan_mode / ask_user_question, the full plan text / question options are sent to QQ), typing indicator (`set_input_status`, private chats only) |
-| Commands | Slash commands (admin only): `/new` fresh session (context cleared, old session kept on disk), `/stop` stop the current generation, `/steer <text>` append a supplementary instruction to the running task (usage hint when no task is running; see the command table below and the `newMessagePolicy` setting), `/model` view/switch the current session's model (`--default` changes the deployment default; the bare form renders a two-level numbered list — reply with a number to pick a provider, then a number to pick the model), `/workspace` view/switch workspace (bare form renders a numbered list; reply with a number to switch), `/preset` view/switch agent presets (session rebuilt, recorded in the new session's header; bare form numbered), `/status` session panorama: chat/session/preset/model/cwd/outbound mode/agent status, `/doctor [export [ref]]` (alias `/healthcheck`) health snapshot / redacted diagnostics bundle (file name carries the triggering fault reference), `/retry` rerun the last user message (retry after a failed turn; refused while a generation is in progress), `/id` chat/session/cwd only (for troubleshooting), `/ver` plugin version + git commit, `/ocr` OCR the latest inbound image of this session (NapCat ocr_image), `/mode` switch this session's outbound mode (per-chat override, persisted across restarts), `/plan` host plan mode (`/plan off` exits directly with no Web approval card; `/plan <text>` enters and processes the text), `/permission` switch the host permission preset (`w` = workspace-writable + approvals, `f` = full access + no approvals; full preset names passed through, unknown names error with the available list; bare form renders the menu), `/goal` record/update the session goal (auto-attached as a reminder each turn, persisted across restarts), `/help` help; unknown slash commands are intercepted by default with close-match suggestions (`unknownCommand: passthrough` restores the fall-through to the model) |
-| Tools | `qq_send_image` (≤9 images, path or URL), `qq_send_voice`, `qq_send_video`, `qq_send_file`, `qq_send_forward`, `qq_napcat_api` (14 allowlisted actions), `qq_group_history` (guarded file editing `code_safe_edit`/`code_safe_rollback`/`code_list_backups` moved to the standalone plugin **dsh-safe-edit** — see Safe editing below) |
-| Permissions | Admin allowlist (`ONEBOT_ALLOWED_USERS`), dm/group policies (open/allowlist/disabled), group @-mention gating, restricted users soft limit (`[受限用户:仅问答]`), outbound sensitive-content auditing |
-| Sessions | One persistent Agent per QQ chat (stable derived session id), auto-resumed after restart; mounted into presets/workspaces via `agentPreset`/`workspacePath`; mapping flushed to disk at the end of every turn |
+| Outbound | Body length ≤ `textImageThreshold` (default 150) is sent as one message; **over the threshold renders a t2i text-image card** (AstrBot style: headings/quotes/lists/tables/code blocks/color emoji; render failure, a PNG over `outboundImageMaxBytes`, or `<=0` (card path disabled) falls back to a single plain-text message); Markdown stripped to plain QQ text; `[[qq_forward]]` merged-forward cards (group/private); **live interim messages** (`interimMessages`: each interim text is sent immediately; each is auto-recalled alone after `interimRecallMs` (default 90s); at turn end the whole turn's interims render into one **t2i summary card**, the still-on-screen originals are recalled, then the final reply is sent — no turn-end merged forwarding, avoiding unrecallable >2min originals and duplicate cards on long turns; `interimRecall: false` degrades to send-only: no summary card, no recall); **host plan-book/question-card auto-relay** (when the model calls exit_plan_mode, the full plan text is sent to QQ; **ask_user_question QQ bridge** (0.9.11): questions render as QQ option cards, members reply with an option / `答:` / `跳过` to send the answer back, settles instantly while waiting, falls to pending after 300s unanswered and can still be answered — see "Group-chat permission tiers & ask_user_question bridge"), typing indicator (`set_input_status`, private chats only) |
+| Commands | Slash commands (admin-only by default; `/help` shows members the member view): `/new` fresh session (context cleared, old session kept on disk), `/stop` stop the current generation, `/steer <text>` append a supplementary instruction to the running task (usage hint when no task is running; see the command table below and the `newMessagePolicy` setting), `/model` view/switch the current session's model (`--default` changes the deployment default; the bare form renders a two-level numbered list — reply with a number to pick a provider, then a number to pick the model), `/workspace` view/switch workspace (bare form renders a numbered list; reply with a number to switch), `/preset` view/switch agent presets (session rebuilt, recorded in the new session's header; bare form numbered), `/status` session panorama: chat/session/preset/model/cwd/outbound mode/agent status, `/doctor [export [ref]|test]` (alias `/healthcheck`) health snapshot / redacted diagnostics bundle (file name carries the triggering fault reference) / `test` one-shot end-to-end send self-test, `/retry` rerun the last user message (retry after a failed turn; refused while a generation is in progress), `/id` chat/session/cwd only (for troubleshooting), `/ver` plugin version + git commit, `/ocr` OCR the latest inbound image of this session (NapCat ocr_image), `/mode` switch this session's outbound mode (per-chat override, persisted across restarts), `/plan` host plan mode (`/plan off` exits directly with no Web approval card; `/plan <text>` enters and processes the text), `/permission` switch the host permission preset (`w` = workspace-writable + approvals, `f` = full access + no approvals; full preset names passed through, unknown names error with the available list; bare form renders the menu), `/goal` record/update the session goal (auto-attached as a reminder each turn, persisted across restarts), `/silent [minutes]` temporary do-not-disturb (since 0.9.11, default 30 minutes; another bare `/silent` lifts it early; see the command table), `/help` help (since 0.9.11 members see the member view listing only member-usable commands); unknown slash commands are intercepted by default with close-match suggestions (`unknownCommand: passthrough` restores the fall-through to the model) |
+| Tools | `qq_send_image` (≤9 images, path or URL), `qq_send_voice`, `qq_send_video`, `qq_send_file`, `qq_send_segments` (1–9 plain-text bubbles sent as separate messages, ≤500 chars each, see Segmented sending below), `qq_send_forward`, `qq_napcat_api` (14 allowlisted actions), `qq_group_history` (guarded file editing `code_safe_edit`/`code_safe_rollback`/`code_list_backups` moved to the standalone plugin **dsh-safe-edit** — see Safe editing below) |
+| Permissions | Admin allowlist (`ONEBOT_ALLOWED_USERS`), dm/group policies (open/allowlist/disabled), group @-mention gating, **group-chat permission tiers** (0.9.11: each group message's prefix carries the sender's tier ·admin/·member; member-tier turns reject all `qq_*` tools, `permissions.memberTools: all` lifts it), restricted users soft limit (`[受限用户:仅问答]`), outbound sensitive-content auditing |
+| Sessions | One persistent Agent per QQ chat (stable derived session id), auto-resumed after restart; mounted into presets/workspaces via `agentPreset`/`agentPresetGroup`/`workspacePath`; mapping flushed to disk at the end of every turn |
 | Ops | Hot reload: **config overrides** and **insert additions/removals** in the profile-level patch take effect hot — the plugin fiber restarts in place within seconds (the host process is not restarted; cost: one second-level QQ bridge reconnect, in-flight turns interrupted); touch / no-content-change triggers nothing; changes to the bundle's built-in patch, repo templates, deployment-copy patch files, or the root `cordis.yml` do **not** hot-reload; temp media TTL cleanup |
-| Prompt | Injects QQ platform notes automatically (plain-text output, `[图片]`/`[语音]` placeholders for incoming images/voice, tool & command guidance, host interaction cards banned); injected into **each QQ chat agent's own scope**, invisible to Web sessions |
+| Prompt | Injects QQ platform notes automatically (plain-text output, `[图片]`/`[语音]` placeholders for incoming images/voice, tool & command guidance, `ask_user_question` QQ bridge, host Web approval card `exit_plan_mode` banned); injected into **each QQ chat agent's own scope**, invisible to Web sessions |
 
 ## Compatibility
 
@@ -43,7 +45,7 @@ User(QQ) ←→ NapCat ←→ dsh-onebot plugin ←→ dsh Agent (one per chat)
 |---|---|
 | dsh | ≥ 0.1.5-rc.1 (`engines.dsh`: full 0.1.5/0.1.6/0.1.7 lines + 0.2.0 line ≥0.2.0-rc.1; @deepseek-ai/* peer deps same range, JsonValue provided by dsh-util-values) |
 | Node.js | ≥ 22 |
-| OneBot 11 impl | NapCat / Lagrange / LLOneBot / go-cqhttp (reverse or forward WebSocket) |
+| OneBot 11 impl | NapCat / Lagrange / LLOneBot / go-cqhttp / SnowLuma (reverse or forward WebSocket) |
 | Optional deps | Voice transcription needs ffmpeg + whisper CLI; t2i text images need Noto CJK fonts on Linux |
 
 Last verified: 2026-10-12 (0.9.0 release batch W1–W3 five features: v4 command audit / verify health-check script / queue+steer with autoSteerPolicy / deferred delivery on timeout / diagnostic reference IDs — npx tsc --noEmit clean, 532/532 vitest green; M0 security semantics unchanged: reverse mode refuses an empty accessToken and defaults to 127.0.0.1, see the BREAKING note under the config table).
@@ -185,6 +187,10 @@ default). Common options:
 | `unknownCommand` | `intercept` | unknown slash-command handling: `intercept` (default) consumes the message and suggests close matches (prefix matches first, edit-distance ≤2 fallback only for inputs of length ≥4, at most 3 candidates; with no match it points to `/help` or re-sending without the leading `/`); `passthrough` restores the old fall-through to the model. Text not starting with a `/word` token (e.g. a path like `/tmp/x`) is unaffected |
 | `newMessagePolicy` | `queue` | how a new ordinary message is handled while the chat's task is running (P1): `queue` (default) = the message is processed as the next turn after the current task ends, in arrival order, with at most one queue notice per running turn; `steer` = a new plain-text message is submitted into the running task as a supplementary instruction (read at the agent's next step) with a submit notice. Exceptions: images / files / voice / quoted or forwarded messages and `[受限用户:Q&A only]` group-member messages always take the queue path in both modes (the soft limit is never widened and the media pipeline is never bypassed); auto-steer eligibility is governed by `autoSteerPolicy`; the `/steer` command works under both modes; without a running task the behavior is identical to 0.8.1 regardless of this setting. Editable in the settings page behavior group; applies after a hot restart |
 | `autoSteerPolicy` | `admin` | who may auto-steer under the steer mode (T9, user ruling 2026-10-12): `admin` (default) = admins only; `all` = every non-restricted sender. Messages from senders without eligibility take the queue path (enqueue + queue notice); the `/steer` command stays admin-only regardless of this setting; the `queue` mode behavior is completely unchanged. Editable in the settings page behavior group; applies after a hot restart |
+| `notices.steerAccepted` | `true` | auto-receipt after a supplementary instruction is accepted under steer mode (since 0.9.10): with `false` the steer is still accepted but the automatic submit notice is no longer sent; the manual confirmation replies of the `/steer` command are unaffected |
+| `notices.queue` | `true` | queue-notice switch (since 0.9.10): with `false` new messages still queue, but the "queued" notice is no longer sent (the at-most-one-notice-per-running-turn hint is muted) |
+| `segments.enabled` | `true` | `qq_send_segments` segmented-sending tool switch (since 0.9.10): `false` = the tool goes offline (invisible to the model, not callable); `true` = the tool is available (default, same as pre-0.9.10 behavior) |
+| `segments.intervalMs` | `0` | send interval between adjacent segments of a segmented message in ms (since 0.9.10): the gap between consecutive sends creates a typing "breathing" feel; range 0–3000, out-of-range values are clamped; the `intervalMs` parameter of the `qq_send_segments` tool can override it per call (also clamped to 0–3000); `0` = no wait |
 | `deferredTimeoutMs` | `600000` | wait-for-model-reply timeout in ms (T3/P2 deferred delivery): when a turn produces no model output for this long, the plugin replies with a timeout notice and registers the turn into the deferred-delivery registry (the turn keeps running); when the turn finishes, the final text is delivered to the original chat with the「（超时补发）」(deferred delivery) prefix through the existing outbound splitting/t2i rules — final text and terminal-state notices only; approvals / question cards / file tool calls / images are never replayed. Definitive send failures are retried up to 3 times (2s/10s backoff); when the send result is uncertain (action timeout / non-gateway error — the message may still have arrived) the record is kept and auto-retry stops to prevent duplicate messages. The registry is persisted line-by-line as JSONL at `mediaDir/deferred-delivery.jsonl` (atomic write, per-line corrupt degrade, missing file = fresh start) and pending entries resume tracking after a plugin restart; `/stop` still only cancels the turn the current chat submitted and also explicitly terminates that chat's deferred tracking (other chats are unaffected); normal (non-timed-out) completion writes nothing and sends nothing extra. Editable in the settings page behavior group; applies after a hot restart; `0` disables |
 | `dmPolicy` | `open` | DM policy: `open`(admins only)/`allowlist`/`disabled` |
 | `groupPolicy` | `open` | group policy: `open`(everyone)/`allowlist`/`disabled` |
@@ -204,6 +210,7 @@ default). Common options:
 | `textImageThreshold` | `150` | t2i card threshold: body length ≤ this is sent as one message; > this renders a text-image card. Render failure, a PNG over `outboundImageMaxBytes`, or `<=0` (card path disabled) falls back to a single plain-text message |
 | `cardFooter` | `dsh` | card footer brand ("Powered by <brand>") |
 | `fontFiles` / `fontFamilies` | `[]` | t2i font file/family overrides (Linux deployments: install Noto CJK, see below) |
+| `monoFamilies` | `[]` | monospace family names the t2i renderer prefers for code text (code blocks / inline code, since 0.9.10): tried before `fontFamilies` and platform defaults; CJK body text is unaffected. Common on Windows: `["Cascadia Code", "Consolas"]` |
 | `mediaDir` | `<dsh-home>/media/onebot` | inbound media / mapping file directory |
 | `tempTtlHours` | `6` | Retention for inbound temporary media files (hours), auto-cleaned on expiry |
 | `inboundImageMaxPx` | `2048` | inbound image long-edge limit (px): larger images are proportionally shrunk before reaching the vision model (transparent PNGs preserved, GIFs untouched); `<=0` disables (old name `imageMaxSize` deprecated, still honored this release) |
@@ -213,6 +220,8 @@ default). Common options:
 | `inboundFileMaxBytes` | `20971520` | inbound QQ file size cap (bytes): oversized file segments are rejected with a notice (old name `maxInboundFileBytes` deprecated, still honored this release) |
 | `allowPrivateHosts` | `false` | allow downloads from private/loopback addresses (skips only the private-network check; the protocol allowlist and size limits still apply); enable only in trusted setups such as a local reverse proxy |
 | `agentPreset` | empty | agent preset for sessions (empty = default) |
+| `agentPresetGroup` | empty | agent preset id for group-chat sessions (coarse tier, since 0.9.11): when set, group-chat sessions prefer it while private chats keep `agentPreset`; empty = same preset for group and private. A per-chat `/preset` override still wins |
+| `permissions.memberTools` | `none` | tool permission for the member tier (non-admins, since 0.9.11): `none` (default) = all `qq_*` tool calls are rejected outright in member turns (hard plugin-side gate, no model cooperation needed); `all` = unrestricted. A missing config fails closed to `none`; callers with no QQ session mapping (Web and other channels) are outside this tier |
 | `workspacePath` | empty | workspace for sessions (empty = host process cwd; when unconfigured the plugin warns once at startup recommending an explicit value — the host exposes no programmable default-workspace query). The per-chat `/workspace` override is persisted to the mapping file and survives restarts |
 | `chatIdleEvictDays` | `7` | idle-session eviction (days): when a chat has had no activity for longer than this, its in-memory agent is cleaned up before the next inbound message is processed (the session is flushed to disk first and the mapping is kept, so a later message from the same chat resumes the original session); `0` = disabled |
 
@@ -290,7 +299,7 @@ Sessions attach to GUI workspaces as follows: a new workspace is auto-created on
 the configured `workspacePath` (or the host cwd when unset); legacy sessions carrying a foreign cwd are attached
 only when a workspace already owns that path, never auto-created.
 
-## Slash commands quick reference (admin only)
+## Slash commands quick reference (admin-only by default; `/help` shows members the member view)
 
 | Command | Purpose |
 |---|---|
@@ -302,7 +311,7 @@ only when a workspace already owns that path, never auto-created.
 | `/preset [id\|number]` | View/switch presets (bare form numbered, reply with a number to pick); switching rebuilds the session and records the preset in the new session's header |
 | `/session [number]` | List the switchable historical sessions of this chat (bare form numbered; each entry has a content preview, created and retired timestamps, truncated id; unreadable entries show "(content unreadable)" without affecting the rest). Reply with a number to switch back: the current session retires into the list, the target session is restored with its history (including per-chat settings); you can switch back and forth. The list persists across restarts (switchable-sessions.json, max 20 per chat) |
 | `/status` | Session panorama: chat/session/preset/model/cwd/outbound mode/agent/switchable count |
-| `/doctor [export [ref]]` | Render the health snapshot (connection / retry+self-heal / dedup & write-gate counters / trace-inbox-audit file sizes / recent ok:false events / recent fault references); `export [ref]` packs the redacted diagnostics archive (`mediaDir/qq-diagnostics-<ts>[-<ref>].zip`, secrets force-scrubbed; an omitted ref falls back to the latest fault reference) |
+| `/doctor [export [ref]|test]` | Render the health snapshot (connection / retry+self-heal / dedup & write-gate counters / trace-inbox-audit file sizes / recent ok:false events / recent fault references); `export [ref]` packs the redacted diagnostics archive (`mediaDir/qq-diagnostics-<ts>[-<ref>].zip`, secrets force-scrubbed; an omitted ref falls back to the latest fault reference); `/doctor test` (since 0.9.11) runs a one-shot end-to-end send self-test: pushes a marker message to verify the outbound path and reports connection status / send result / round-trip latency, failures include the cause and a fault reference |
 | `/retry` | Rerun the last user message (retry after a failed turn; a failed retry replies with a ⚠️ notice carrying an `MF-…` reference) |
 | `/id` | chat/session/cwd only (for troubleshooting) |
 | `/ver` | Plugin version + git commit |
@@ -311,7 +320,8 @@ only when a workspace already owns that path, never auto-created.
 | `/plan [off\|text]` | Host plan mode (`/plan` enters; `/plan off` exits directly with no Web approval card; `/plan <text>` enters and processes the text) |
 | `/permission [w\|f\|preset\|number]` | Switch the host permission preset (sandbox mode + approval policy, applies immediately): `w`/`ws`/`write`→workspace-write (workspace-writable + approvals required), `f`/`full`/`danger`→danger-full-access (full read/write, no approvals); full preset names are passed through as-is (unknown names make the host error and list the available ones); bare form renders a Chinese permission menu; numeric indexes resolve against the host's available list in order (not snapshotted) |
 | `/goal [goal\|clear]` | Record/update this session's goal (auto-attached as a reminder each turn, persisted across restarts) |
-| `/help` | Grouped command card (▍sessions/output/queries/actions/other), each entry with usage; error hints always include usage or the next step |
+| `/silent [minutes]` | Temporary do-not-disturb (since 0.9.11, admin only): `/silent <minutes>` mutes for 1–1440 minutes (default 30); ordinary messages are ignored while slash commands still work; a bare `/silent` lifts it early. The window is persisted into ChatSettings (chat-sessions.json) and survives both `/new` and plugin restarts — muting is a chat-level property, not session state |
+| `/help` | Grouped command card (▍sessions/output/queries/actions/other), each entry with usage; error hints always include usage or the next step. Since 0.9.11 members can call it too: non-admins receive the member view (only commands usable by members, plus a "the rest are admin-only" tail; currently just `/help` itself), admins still get the full view |
 
 `/preset` switching is an in-process per-chat override (survives `/new`): the next message rebuilds the session
 with the new preset written into the header, and a restart-resume restores it from the record. The per-chat state
@@ -357,6 +367,22 @@ independent clean TypeScript implementation). Tools and boundaries: see the dsh-
 - The model may prefer this tool (the `code-safe-edit` skill guides all channels; the QQ platform notes guide
   built-in read/edit conventions without binding to a specific tool name)
 
+## Segmented sending (qq_send_segments)
+
+The `qq_send_segments` tool lets the model send several **independent plain-text bubbles** to the
+current QQ chat in order (one message per segment), for content that explicitly benefits from
+being split into separate bubbles (step-by-step guides, lists):
+
+- `segments`: array of strings, **1–9 segments**, each **≤500 chars** and non-empty; sent in order;
+- optional `chat_id`: target chat (`private:<QQ id>` or `group:<group id>`); omitted = current chat;
+- it does not auto-split ordinary replies — plain output goes through the existing t2i card /
+  auto-split path; use this tool only when separate bubbles are explicitly wanted;
+- breathing feel (since 0.9.10): the interval between adjacent segments is controlled by the plugin
+  config `segments.intervalMs` (0–3000, default `0` = no wait); the optional tool parameter
+  `intervalMs` overrides it per call (also clamped to 0–3000); with the settings-page switch
+  `segments.enabled` (default `true`) set to `false` the tool goes offline;
+- it is a proactive write and is gated by `actionRatePerMinute`.
+
 ## dm / group access policies (pick on first setup)
 
 Private (`dmPolicy`) and group (`groupPolicy`) chats each have three options:
@@ -372,6 +398,26 @@ Private (`dmPolicy`) and group (`groupPolicy`) chats each have three options:
 - A few friends → `dmPolicy: allowlist` + `allowFrom: ['QQ1','QQ2']`;
 - Group-only bot → `groupPolicy: open` (with the default `requireMention: true`, members must @ the bot);
 - Only specific groups → `groupPolicy: allowlist` + `groupAllowFrom`.
+
+## Group-chat permission tiers & ask_user_question bridge (0.9.11)
+
+### Group-chat permission tiers
+
+Group members fall into two tiers — "admin / member" (decided by the `adminUsers` allowlist) — enforced in three places:
+
+1. **Role prefix tier**: the `[HH:MM nickname(QQ)]` prefix of every group message carries the sender's tier (·admin / ·member), so the model can tell message origins apart without trusting identity claims inside the message body. Restricted users (`restrictedMemberPrefix`, on by default) additionally carry the `[受限用户:仅问答]` prefix.
+2. **`permissions.memberTools` (default `none`)**: in member-tier turns every `qq_*` tool call is rejected outright by the plugin (a hard gate, no model cooperation required); set `all` to lift it. A missing config fails closed to `none`; callers with no QQ session mapping (Web and other channels) are outside this tier. Admins are unaffected.
+3. **`agentPresetGroup` (empty by default)**: a dedicated agent preset id for group-chat sessions (coarse tier) — when set, group-chat sessions prefer it (so group chats can run a leaner model/preset) while private chats keep `agentPreset`; empty = same preset for group and private. A per-chat `/preset` override still wins.
+
+### ask_user_question QQ bridge
+
+When the model calls `ask_user_question`, the question no longer only reaches the Web — the plugin renders it as a QQ option card (a 【❓ 提问】 header line plus lettered/numbered options) and members answer right in the chat:
+
+- **Pick an option**: `1`, `a`, etc. (separate multiple picks with commas; pure option picking is only supported on single-question cards — for multi-question batches use the next form);
+- **Free-form answer**: `答:内容` (or `answer:内容`, full/half-width colon both accepted) — one answer applied to the whole batch;
+- **Give up**: reply `跳过` (or `skip`); the batch settles with empty selections.
+
+Settlement timing: a reply during the waiting phase (foreground wait) **settles instantly** and the answer goes straight back to the model turn that is waiting; after the default 300-second wait the question falls to **pending** — the tool returns pending rather than failing, the model can go on with other work, and a later reply from members still answers it (pending questions stay valid for 15 minutes). Expired question cards are lazily cleaned up; messages the answer interception fails to parse fall through to the normal conversation — nothing gets swallowed.
 
 ## t2i font dependencies
 
@@ -393,9 +439,10 @@ automatically from the system and fixed paths at startup; missing glyphs render 
   | optional `fonts-wqy-zenhei` / `fonts-wqy-microhei` | `/usr/share/fonts/truetype/wqy/*.ttc` | CJK fallback (when Noto is missing) |
   | optional `fonts-unifont` | `/usr/share/fonts/opentype/unifont/*.otf` | last-resort fallback |
 
-- **Custom**: `fontFiles` adds extra font files (restart to apply); `fontFamilies` prioritizes family names.
+- **Custom**: `fontFiles` adds extra font files (restart to apply); `fontFamilies` prioritizes family names; `monoFamilies` separately prioritizes monospace family names for code text (ahead of `fontFamilies` and platform defaults).
   The renderer does an ink self-check: families missing glyphs are dropped and fall back automatically,
   so you never get a silent tofu card.
+- **Windows CJK auto-candidates**: on Windows no `fontFiles` setup is needed — the renderer auto-loads system fonts and falls back along per-platform candidate chains: CJK body tries Microsoft YaHei / YaHei UI, SimSun, SimHei, DengXian, KaiTi, FangSong in order; monospace/code tries Consolas, Cascadia Code, Cascadia Mono, Courier New (use `monoFamilies` to put Cascadia Code etc. first). macOS works the same way (Hiragino Sans GB / Songti SC etc. auto-candidates); Linux still recommends installing Noto CJK plus `fontFiles` as needed.
 
 ## Permissions & data
 
@@ -412,12 +459,18 @@ automatically from the system and fixed paths at startup; missing glyphs render 
 ## Platform notes injected into the model
 
 - QQ does not render Markdown → output plain text (numbered/dashed lists, inline backticks).
-- Send images/files/voice/video with the `qq_send_*` tools; merged forwards with `qq_send_forward`.
+- Send images/files/voice/video with the `qq_send_*` tools; merged forwards with `qq_send_forward`; when separate bubbles are explicitly wanted use `qq_send_segments` (1–9 segments, ≤500 chars each); ordinary replies stay plain output.
 - Incoming images/voice/video are annotated in the text as `[图片]`/`[语音]`/`[视频]` placeholders (paths never enter the text); when no vision tool is available, say so honestly.
-- Group messages carry a `[HH:MM nickname(QQ)]` prefix; restricted-user messages carry a `[受限用户:仅问答]`
-  prefix (answer only, no file/terminal/config operations).
-- This channel is QQ and the host has no Web interaction cards: do not call `ask_user_question` / `exit_plan_mode` (confirmation cards are Web-only and would stall the conversation); ask and confirm in plain text; in host plan mode, output the plan as plain text and point to `/plan off` to exit.
-- Slash commands are intercepted by the plugin (18 of them, admin only, see `/help`); unknown slash commands are intercepted by default with close-match suggestions, and `unknownCommand: passthrough` passes them to the model; text that does not start with a `/word` token (e.g. a path) still goes to the model normally.
+- Group messages carry a `[HH:MM nickname(QQ)·tier]` prefix (since 0.9.11 the sender's tier is annotated: ·admin /
+  ·member, tagged by the plugin from the admin allowlist; `[@我]` when mentioned); restricted-user messages carry a
+  `[受限用户:仅问答]` prefix (answer only, no file/terminal/config operations).
+- When you need to confirm or ask the user to choose, call `ask_user_question`: QQ renders the question as an option
+  card, the user's reply is sent back automatically as the answer (if the user is slow to answer you receive a pending
+  result and can continue other work).
+- This channel is QQ and the host has no Web approval cards: **do not call `exit_plan_mode`** (its confirmation card is
+  Web-only and would stall the conversation). In plan mode, send the plan as plain text and point to "review it, then
+  send /plan off to exit".
+- Slash commands are intercepted by the plugin (19 of them, admin-only by default; `/help` shows members the member view); unknown slash commands are intercepted by default with close-match suggestions, and `unknownCommand: passthrough` passes them to the model; text that does not start with a `/word` token (e.g. a path) still goes to the model normally.
 - Edit host files with the built-in read/edit (line-level hash anchors, dsh-better-edit auto-undo); never overwrite whole files with write (it clears the undo history).
 
 ## Uninstall

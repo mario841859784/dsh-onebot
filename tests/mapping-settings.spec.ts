@@ -469,3 +469,78 @@ describe('T3-R2: resume-failed settings carrier + settings-only saveMapping inva
     await registry.stop()
   })
 })
+
+describe('silence-window persistence (T3-board /silent)', () => {
+  it('persists /silent through the command accessor and re-arms the window after a restart', async () => {
+    const mediaDir = mkdtemp()
+    const h = await makeHarness({ mediaDir })
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    h.sendText('/silent 30')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('🔇 已静音 30 分钟'))).toBe(true)
+    })
+    // The debounced write lands the window in the mapping (additive field).
+    await vi.waitFor(async () => {
+      const mapping = JSON.parse(await readFile(join(mediaDir, 'chat-sessions.json'), 'utf8')) as Record<string, { session: string; silentUntil?: number }>
+      const entry = mapping['private:10001']
+      expect(typeof entry).toBe('object')
+      expect(typeof (entry as { silentUntil?: number }).silentUntil).toBe('number')
+      expect((entry as { silentUntil: number }).silentUntil).toBeGreaterThan(Date.now())
+    }, { timeout: 10_000 })
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+
+    // A fresh bridge over the same mediaDir re-arms the running window: a
+    // normal message is dropped, and a bare /silent reports the lift (the
+    // lift branch only fires when a window is open).
+    const h2 = await makeHarness({ mediaDir })
+    await vi.waitFor(() => {
+      expect(registryOf(h2).getSettings('private:10001').silentUntil).toBeGreaterThan(Date.now())
+    })
+    h2.sendText('重启后的普通消息')
+    await new Promise(resolve => setTimeout(resolve, 500))
+    expect(h2.captured.followups).toHaveLength(0)
+    h2.sendText('/silent')
+    await vi.waitFor(() => {
+      expect(h2.outbound.some(f => JSON.stringify(f.params).includes('🔔 已解除静音'))).toBe(true)
+    })
+    // The lift clears the durable copy too (debounced save drops the field).
+    await vi.waitFor(async () => {
+      const mapping = JSON.parse(await readFile(join(mediaDir, 'chat-sessions.json'), 'utf8')) as Record<string, { session: string; silentUntil?: number }>
+      expect(mapping['private:10001']?.silentUntil).toBeUndefined()
+    }, { timeout: 10_000 })
+    h2.client.close()
+    await h2.bridge.stop()
+    await h2.connection.stop()
+  }, 30_000)
+
+  it('loadMapping drops an expired silentUntil (a restart never re-arms a stale mute)', async () => {
+    const sessionIds: string[] = []
+    const deps = makeRegistryDeps({ agents: makeFakeAgents(sessionIds, { followups: [] }, { resumeOk: true }) })
+    await writeFile(join(deps.config.mediaDir, 'chat-sessions.json'), JSON.stringify({
+      'private:10001': { session: 'onebot-private-10001', silentUntil: Date.now() - 1000 },
+      'private:10002': { session: 'onebot-private-10002', silentUntil: Date.now() + 60_000 },
+    }), 'utf8')
+    const registry = new ChatRegistry(deps)
+    await registry.loadMapping()
+    expect(registry.getSettings('private:10001').silentUntil).toBeUndefined()
+    expect(registry.getSettings('private:10002').silentUntil).toBeGreaterThan(Date.now())
+    // The open window is visible to the bridge's rehydration probe.
+    expect(registry.silenceWindows()).toEqual([{ chatId: 'private:10002', until: expect.any(Number) }])
+    await registry.stop()
+  })
+
+  it('persistEntry keeps the bare-string shape when only an expired silence window is set', async () => {
+    const sessionIds: string[] = []
+    const deps = makeRegistryDeps({ agents: makeFakeAgents(sessionIds, { followups: [] }, { resumeOk: true }) })
+    const registry = new ChatRegistry(deps)
+    await registry.ensureChat('private:10001', '小明')
+    registry.getSettings('private:10001').silentUntil = Date.now() - 1
+    await registry.saveMapping()
+    const text = await readFile(join(deps.config.mediaDir, 'chat-sessions.json'), 'utf8')
+    expect(text).toBe('{\n  "private:10001": "' + sessionIds[0] + '"\n}')
+    await registry.stop()
+  })
+})

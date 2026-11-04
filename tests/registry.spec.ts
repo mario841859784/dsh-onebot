@@ -7,7 +7,7 @@
  * the registry (this file's convention).
  * @module dsh-onebot/tests/registry
  */
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -20,11 +20,36 @@ import { OneBotConnection } from '../src/connection.js'
 import { ChatBridge } from '../src/bridge.js'
 import { ChatRegistry, resolveRecordedPreset } from '../src/registry.js'
 import type { ChatSettings, RegistryDeps } from '../src/registry.js'
+import { tryHandleCommand } from '../src/commands.js'
 import type { BridgeConfig } from '../src/bridge.js'
 import { MediaStore } from '../src/media.js'
 import { Transcriber } from '../src/stt.js'
 
 import { makeCmdHarness, makeEvent, makeFakeAgents, makeHarness } from './helpers/bridge-harness.js'
+
+// #18: the runtime installModelSelection binding is mocked with a switchable
+// arity so both host shapes can be exercised — the dsh 0.2.2 single-arg form
+// (what the installed package types) and the 0.2.1 two-arg form. Every other
+// export of the package stays real; registry.ts is the only runtime importer.
+const installModelState = vi.hoisted(() => {
+  return {
+    /** Declared parameter count the mocked binding reports via `.length`. */
+    arity: 1 as 1 | 2,
+    calls: [] as Array<{ agentCtx: unknown; selectionRef: unknown }>,
+  }
+})
+vi.mock(import('@deepseek-ai/dsh-agent'), async importOriginal => {
+  const actual = await importOriginal<typeof import('@deepseek-ai/dsh-agent')>()
+  const installModelSelection = (agentCtx: unknown, selectionRef?: unknown) => {
+    installModelState.calls.push({ agentCtx, selectionRef })
+    return () => undefined
+  }
+  Object.defineProperty(installModelSelection, 'length', {
+    get: () => installModelState.arity,
+    configurable: true,
+  })
+  return { ...actual, installModelSelection }
+})
 
 /** Registry-only view of a harness-built bridge (the registry is private). */
 function registryOf(h: { bridge: unknown }): ChatRegistry {
@@ -35,7 +60,7 @@ function registryOf(h: { bridge: unknown }): ChatRegistry {
  * direct-call convention of this file). */
 function makeRegistryDeps(overrides?: {
   agents?: unknown
-  config?: Partial<Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>>
+  config?: Partial<Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'agentPresetGroup' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>>
 }): RegistryDeps {
   return {
     agents: (overrides?.agents ?? { create: vi.fn(), resume: vi.fn() }) as never,
@@ -422,6 +447,77 @@ describe('ChatRegistry', () => {
     expect(resolveRecordedPreset({ meta: { agentPreset: 'standard' }, events })).toBe('router-flash')
     expect(resolveRecordedPreset({ meta: { agentPreset: 'standard' }, events: [] })).toBe('standard')
     expect(resolveRecordedPreset({ meta: {}, events: [] })).toBeUndefined()
+  })
+
+  describe('installModelSelection arity compat (#18)', () => {
+    const selection = { provider: 'deepseek', model: 'deepseek-chat' }
+
+    /** Direct-registry harness whose fake agents.create runs the setup with a
+     * captured agentCtx (the internal direct-call convention of this file). */
+    function makeArityAgents() {
+      const agentCtx = {
+        on: () => () => undefined,
+        systemPrompt: { section: () => () => undefined },
+        tools: { register: () => () => undefined },
+      }
+      const agents = {
+        create: vi.fn(async (options: { sessionId: string; setup?: (agentCtx: unknown) => unknown }) => {
+          if (typeof options.setup === 'function') await options.setup(agentCtx)
+          return {
+            agent: { session: { id: String(options.sessionId), seq: 0, header: { cwd: '' } }, whenIdle: async () => undefined },
+            dispose: async () => undefined,
+          }
+        }),
+        resume: vi.fn(),
+      }
+      return { agents, agentCtx }
+    }
+
+    beforeEach(() => {
+      installModelState.arity = 1
+      installModelState.calls.length = 0
+    })
+
+    afterEach(() => {
+      installModelState.arity = 1
+      installModelState.calls.length = 0
+    })
+
+    it('single-arg host (dsh 0.2.2): installs unconditionally, no selectionRef', async () => {
+      installModelState.arity = 1
+      const { agents, agentCtx } = makeArityAgents()
+      const registry = new ChatRegistry({ ...makeRegistryDeps({ agents }), defaultModel: () => selection })
+      await registry.ensureChat('private:10001', '小明')
+      expect(installModelState.calls).toHaveLength(1)
+      expect(installModelState.calls[0].agentCtx).toBe(agentCtx)
+      expect(installModelState.calls[0].selectionRef).toBeUndefined()
+
+      // Unconditional: even with no deployment default model the 0.2.2
+      // listener-only install still runs.
+      installModelState.calls.length = 0
+      const bare = new ChatRegistry({ ...makeRegistryDeps({ agents: makeArityAgents().agents }), defaultModel: undefined })
+      await bare.ensureChat('private:10002', '小红')
+      expect(installModelState.calls).toHaveLength(1)
+      expect(installModelState.calls[0].selectionRef).toBeUndefined()
+    })
+
+    it('two-arg host (dsh 0.2.1): seeds selectionRef from the live defaultModel', async () => {
+      installModelState.arity = 2
+      const { agents, agentCtx } = makeArityAgents()
+      const registry = new ChatRegistry({ ...makeRegistryDeps({ agents }), defaultModel: () => selection })
+      await registry.ensureChat('private:10001', '小明')
+      expect(installModelState.calls).toHaveLength(1)
+      expect(installModelState.calls[0].agentCtx).toBe(agentCtx)
+      expect(installModelState.calls[0].selectionRef).toEqual({ current: selection, assembled: undefined })
+    })
+
+    it('two-arg host (dsh 0.2.1) with no default model: install is skipped (pre-0.2.2 wiring)', async () => {
+      installModelState.arity = 2
+      const { agents } = makeArityAgents()
+      const registry = new ChatRegistry({ ...makeRegistryDeps({ agents }), defaultModel: undefined })
+      await registry.ensureChat('private:10001', '小明')
+      expect(installModelState.calls).toHaveLength(0)
+    })
   })
 
   it('ensureChat avoids a bare id that still owns a persisted log (stale retiring lost)', async () => {
@@ -1037,4 +1133,158 @@ describe('ChatRegistry', () => {
     await h.bridge.stop()
     await h.connection.stop()
   }, 30_000)
+})
+
+describe('ChatRegistry · T4 #15 loadMapping corrupt-mapping handling', () => {
+  /** Direct-registry deps with the log captured (makeRegistryDeps pins a
+   * no-op log; the property stays assignable). */
+  function depsWithLog(): { deps: RegistryDeps; logLines: string[] } {
+    const deps = makeRegistryDeps()
+    const logLines: string[] = []
+    deps.log = (level, message) => { logLines.push(level + ': ' + message) }
+    return { deps, logLines }
+  }
+
+  it('a corrupt JSON mapping is quarantined: warn + .bak, no throw, chat usable', async () => {
+    const { deps, logLines } = depsWithLog()
+    const mappingPath = join(deps.config.mediaDir, 'chat-sessions.json')
+    await writeFile(mappingPath, '{ not json', 'utf8')
+    const registry = new ChatRegistry(deps)
+    await expect(registry.loadMapping()).resolves.toBeUndefined()
+    expect(logLines.some(line => line.startsWith('warn: mapping file is corrupt'))).toBe(true)
+    // The corrupted content was copied aside before the load continued.
+    expect(await readFile(mappingPath + '.bak', 'utf8')).toBe('{ not json')
+    // The chat stays usable on the empty mapping (fresh session).
+    const sessionIds: string[] = []
+    registry.deps.agents = makeFakeAgents(sessionIds, { followups: [] }) as never
+    await expect(registry.ensureChat('private:10001', '小明')).resolves.toBeDefined()
+  })
+
+  it('a BOM-prefixed mapping takes the same quarantine path (warn + .bak, no throw)', async () => {
+    const { deps, logLines } = depsWithLog()
+    const mappingPath = join(deps.config.mediaDir, 'chat-sessions.json')
+    await writeFile(mappingPath, '\uFEFF{"private:10001":"onebot-private-10001"}', 'utf8')
+    const registry = new ChatRegistry(deps)
+    await expect(registry.loadMapping()).resolves.toBeUndefined()
+    expect(logLines.some(line => line.startsWith('warn: mapping file is corrupt'))).toBe(true)
+    expect(await readFile(mappingPath + '.bak', 'utf8')).toBe('\uFEFF{"private:10001":"onebot-private-10001"}')
+  })
+
+  it('a second corrupt load never overwrites the first .bak (earliest copy wins)', async () => {
+    const { deps } = depsWithLog()
+    const mappingPath = join(deps.config.mediaDir, 'chat-sessions.json')
+    await writeFile(mappingPath, 'first corrupt', 'utf8')
+    const registry = new ChatRegistry(deps)
+    await registry.loadMapping()
+    await writeFile(mappingPath, 'second corrupt', 'utf8')
+    await registry.loadMapping()
+    expect(await readFile(mappingPath + '.bak', 'utf8')).toBe('first corrupt')
+  })
+
+  it('a non-object mapping (array/null) is quarantined like a parse failure', async () => {
+    const { deps, logLines } = depsWithLog()
+    const mappingPath = join(deps.config.mediaDir, 'chat-sessions.json')
+    await writeFile(mappingPath, '["onebot-private-10001"]', 'utf8')
+    const registry = new ChatRegistry(deps)
+    await expect(registry.loadMapping()).resolves.toBeUndefined()
+    expect(logLines.some(line => line.startsWith('warn: mapping file is corrupt'))).toBe(true)
+    expect(await readFile(mappingPath + '.bak', 'utf8')).toBe('["onebot-private-10001"]')
+  })
+
+  it('a missing mapping file is a silent fresh start (no warn)', async () => {
+    const { deps, logLines } = depsWithLog()
+    const registry = new ChatRegistry(deps)
+    await expect(registry.loadMapping()).resolves.toBeUndefined()
+    expect(logLines).toHaveLength(0)
+  })
+
+  it('a failed resume retires the id — brokenSessionCount counts it for /session', async () => {
+    const { deps } = depsWithLog()
+    const mappingPath = join(deps.config.mediaDir, 'chat-sessions.json')
+    await writeFile(mappingPath, JSON.stringify({ 'private:10001': 'onebot-private-10001-dead' }), 'utf8')
+    const agents = {
+      create: vi.fn(),
+      resume: vi.fn(async () => { throw new Error('not persisted') }),
+    }
+    deps.agents = agents as never
+    const registry = new ChatRegistry(deps)
+    expect(registry.brokenSessionCount()).toBe(0)
+    await registry.loadMapping()
+    expect(registry.brokenSessionCount()).toBe(1)
+  })
+})
+
+describe('ChatRegistry · T4 #15 /session broken-session count rendering', () => {
+  /** Minimal CommandContext for the /session empty-list branch (only the
+   * fields that path reads; the rest is never touched). */
+  function sessionCtx(brokenCount: number | undefined): { ctx: import('../src/commands.js').CommandContext; sent: string[] } {
+    const sent: string[] = []
+    const ctx = {
+      sendToChat: async (_chatId: string, text: string) => { sent.push(text); return [] },
+      log: () => undefined,
+      isAdmin: () => true,
+      getChat: () => undefined,
+      hasChat: () => false,
+      switchableSessions: () => [],
+      sessionIdFromMapping: async () => 'onebot-private-10001-dead',
+      ...(brokenCount !== undefined ? { brokenSessionCount: () => brokenCount } : {}),
+    } as unknown as import('../src/commands.js').CommandContext
+    return { ctx, sent }
+  }
+
+  it('the empty /session list appends the broken count line when the retire record is non-empty', async () => {
+    const { ctx, sent } = sessionCtx(1)
+    await expect(tryHandleCommand(ctx, 'private:10001', '/session', '10001')).resolves.toBe(true)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toContain('1 个损坏会话已隔离（不可切回）')
+  })
+
+  it('no broken sessions (or a pre-wiring context without the accessor) renders the old output', async () => {
+    for (const brokenCount of [0, undefined]) {
+      const { ctx, sent } = sessionCtx(brokenCount)
+      await expect(tryHandleCommand(ctx, 'private:10001', '/session', '10001')).resolves.toBe(true)
+      expect(sent).toHaveLength(1)
+      expect(sent[0]).not.toContain('损坏会话')
+    }
+  })
+})
+
+/**
+ * 权限分档 A3: 群聊粗档 preset——resolvePresetId 在群聊 chat 上优先使用
+ * config.agentPresetGroup（未配置/空串 = 现行为，群私同源 agentPreset）；
+ * /preset override 仍然最优先；私聊永远不受 agentPresetGroup 影响。
+ */
+describe('ChatRegistry.resolvePresetId agentPresetGroup (权限分档 A3)', () => {
+  it('group chats prefer agentPresetGroup when configured', async () => {
+    const registry = new ChatRegistry(makeRegistryDeps({
+      config: { agentPreset: 'standard', agentPresetGroup: 'group-basic' },
+    }))
+    await expect(registry.resolvePresetId('group:20001')).resolves.toBe('group-basic')
+    // 私聊不受群档影响。
+    await expect(registry.resolvePresetId('private:10001')).resolves.toBe('standard')
+  })
+
+  it('unconfigured agentPresetGroup keeps the current behavior for group chats', async () => {
+    const registry = new ChatRegistry(makeRegistryDeps({
+      config: { agentPreset: 'standard', agentPresetGroup: '' },
+    }))
+    await expect(registry.resolvePresetId('group:20001')).resolves.toBe('standard')
+    await expect(registry.resolvePresetId('private:10001')).resolves.toBe('standard')
+  })
+
+  it('a /preset override still wins over agentPresetGroup', async () => {
+    const registry = new ChatRegistry(makeRegistryDeps({
+      config: { agentPreset: 'standard', agentPresetGroup: 'group-basic' },
+    }))
+    registry.getSettings('group:20001').presetOverride = 'minimal'
+    await expect(registry.resolvePresetId('group:20001')).resolves.toBe('minimal')
+  })
+
+  it('falls back to the deployment default when neither tier preset is set', async () => {
+    const registry = new ChatRegistry(makeRegistryDeps({
+      config: { agentPreset: '', agentPresetGroup: '' },
+    }))
+    // makeRegistryDeps 的 agentPresets stub defaultId='standard'。
+    await expect(registry.resolvePresetId('group:20001')).resolves.toBe('standard')
+  })
 })

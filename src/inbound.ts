@@ -23,7 +23,7 @@ import { cqUnescape, detectExplicitMention, detectMention, parseMessage, segment
 import type { AccessPolicyConfig, ChatId, UserRole } from './chat.js'
 import {
   buildChatId, buildGroupMessagePrefix, classifyUserRole, dmAllowed, groupAllowed,
-  RESTRICTED_PREFIX, sanitizeNickname, wrapUserMessage,
+  RESTRICTED_PREFIX, sanitizeNickname, splitChatId, wrapUserMessage,
 } from './chat.js'
 import type { BridgeConfig } from './bridge.js'
 import type { ChatSettings } from './registry.js'
@@ -163,6 +163,12 @@ export interface InboundContext {
    * nickname (T9-A): pre-sanitized sender display name for the /steer
    * <user_message> boundary attribute. */
   tryHandleCommand(chatId: ChatId, text: string, userId: string, nickname?: string): Promise<boolean>
+  /** T3-board /silent: silence-window probe (bridge-owned per-chat state).
+   * True = normal messages are dropped silently. Checked right AFTER the
+   * command router returns false, so all slash commands (including /silent
+   * itself) bypass the mute and the unlock can never be swallowed. Optional:
+   * absent = the host has no silencing wiring (pre-T3 behavior). */
+  isSilenced?(chatId: ChatId): boolean
   /** Message body assembly (bridge facade: overridable, see the pipeline-order test). */
   buildBody(text: string, media: MediaRef[], chatId: ChatId): Promise<string>
   /** Quote expansion via the overridable bridge facade; a verified response
@@ -180,6 +186,14 @@ export interface InboundContext {
    * media-bearing messages always queue, never steer). Optional: absent =
    * the pre-T2 pipeline (0.8.1 behavior for every message). */
   interceptBusyTurn?(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean): Promise<boolean>
+  /** T2-B3: ask_user_question answer seam — invoked for every plain message
+   * after ALL gates and BEFORE interceptBusyTurn. Parses the raw text as a
+   * reply to the chat's outstanding ask_user_question batch (纯选项选择 /
+   * 答:前缀 / 跳过 — see question-answer.ts) and settles it through the host
+   * userQuestions service. Returns true when consumed as an answer; any
+   * failure (no active batch, non-answer text, settle error/REPLY_QUEUED)
+   * returns false so the message reaches the conversation normally. */
+  interceptQuestionAnswer?(chatId: ChatId, text: string): Promise<boolean>
   /** Outbound facade (the B7 rate-limit notice). */
   sendToChat(chatId: ChatId, text: string): Promise<string[]>
   /** Bridge log line callback. */
@@ -331,6 +345,18 @@ export class InboundPipeline {
       return
     }
 
+    // T3-board /silent: the silence window drops NORMAL messages only —
+    // reached here means command routing already declined (slash commands
+    // returned above), so /silent and friends are never muted by their own
+    // window. The message has already paid the dedup/mention gates; the
+    // lazy /ocr image registration above is harmless (the next image
+    // refreshes the ref once the window lifts).
+    if (this.ctx.isSilenced?.(chatId) === true) {
+      this.ctx.log('debug', '静音窗口内，普通消息已忽略: ' + chatId)
+      currentTrace()?.emit('dispatch', { ok: false, reason: TRACE_REASONS.inboundSilenced })
+      return
+    }
+
     const body = await this.ctx.buildBody(inbound.text, inbound.media, chatId)
 
     let quote = ''
@@ -369,13 +395,15 @@ export class InboundPipeline {
       return
     }
     let final = wrapUserMessage(content, userId, nickname)
+    const role: UserRole = isAdmin ? 'admin' : 'member'
     if (kind === 'group') {
-      final = buildGroupMessagePrefix(nickname, userId, mentioned) + final
+      // 权限分档 A1: the group prefix carries the sender's tier so the model
+      // can see who it is talking to without trusting message-internal text.
+      final = buildGroupMessagePrefix(nickname, userId, mentioned, role) + final
       if (!isAdmin && this.ctx.config.restrictedMemberPrefix) {
         final = RESTRICTED_PREFIX + final
       }
     }
-    const role: UserRole = isAdmin ? 'admin' : 'member'
     // T2 (P1): the busy-turn policy seam runs AFTER every gate above (dedup /
     // self / policy / mention / command / rate-limit) and only around the
     // final dispatch — a queued or steered message has already paid for its
@@ -384,6 +412,14 @@ export class InboundPipeline {
     // messages always queue so the full media pipeline runs for their own
     // turn). Seam absent = pre-T2 behavior (straight dispatch).
     const plain = inbound.media.length === 0 && inbound.replyId === undefined && inbound.forwardId === undefined
+    // T2-B3: the ask_user_question answer seam runs BEFORE the busy-turn seam
+    // and only for plain text (media/quote/forward never parse as answers).
+    // A consumed answer ends here; any fall-through continues below unchanged.
+    if (plain && this.ctx.interceptQuestionAnswer !== undefined
+      && await this.ctx.interceptQuestionAnswer(chatId, inbound.text)) {
+      currentTrace()?.emit('dispatch', { ok: true, reason: TRACE_REASONS.questionAnswered })
+      return
+    }
     if (this.ctx.interceptBusyTurn !== undefined
       && await this.ctx.interceptBusyTurn(chatId, final, role, nickname, plain)) {
       return
@@ -483,7 +519,7 @@ export class InboundPipeline {
   /** Resolve one media ref to a text annotation with a local path. */
   async resolveMediaRef(ref: MediaRef, chatId: ChatId): Promise<string> {
     if (ref.kind === 'file') {
-      return await this.resolveNasFile(ref)
+      return await this.resolveNasFile(ref, chatId)
     }
     const resolved = await this.ctx.media.resolve(ref, async (kind, file) => {
       if (kind === 'image') {
@@ -491,7 +527,13 @@ export class InboundPipeline {
         return { url: data.url, file: data.file }
       }
       if (kind === 'voice') {
-        const data = await this.ctx.call('get_record', { file, out_format: 'mp3' }) as { file?: string }
+        const data = await this.ctx.call('get_record', { file, out_format: 'mp3' }) as { file?: string; base64?: string }
+        // SnowLuma: with out_format the server transcodes and returns `base64`
+        // directly — prefer it and skip the url/file round-trip. NapCat keeps
+        // returning only `file`, which falls through to the usual path.
+        if (data.base64 !== undefined && data.base64 !== '') {
+          return { file: 'base64://' + data.base64 }
+        }
         return { file: data.file }
       }
       return undefined
@@ -573,12 +615,15 @@ export class InboundPipeline {
   /**
    * Fetch an inbound QQ file to a local path. NapCat's get_file may return
    * container-internal paths unreachable from this host, so:
-   *   1. prefer the private-file direct link (get_private_file_url → HTTP
+   *   0. group chats prefer the group direct link (get_group_file_url —
+   *      SnowLuma's get_file covers only image/voice caches, so group files
+   *      must go through the standard group-file action);
+   *   1. then the private-file direct link (get_private_file_url → HTTP
    *      CDN download, works for private chats);
    *   2. fall back to get_file base64 / http-url payloads.
    * Returns the [文件:path] annotation, or '' when disabled/failed.
    */
-  private async resolveNasFile(ref: MediaRef): Promise<string> {
+  private async resolveNasFile(ref: MediaRef, chatId: ChatId): Promise<string> {
     const name = ref.name !== undefined && ref.name !== '' ? ref.name : 'file'
     // The sender-controlled name never becomes the on-disk path (it could
     // otherwise overwrite chat-sessions.json etc.); only a whitelisted
@@ -588,6 +633,29 @@ export class InboundPipeline {
     const maxBytes = this.ctx.config.maxInboundFileBytes > 0 ? this.ctx.config.maxInboundFileBytes : undefined
     const fid = ref.fileId ?? ref.file ?? ''
     if (fid === '') return ''
+    // 0. Group-chat direct link: SnowLuma's get_file covers only image/voice
+    //    caches, so group files must go through the standard group-file
+    //    action. Failure (NapCat without it / no url) falls through below.
+    const chatRef = splitChatId(chatId)
+    if (chatRef.kind === 'group') {
+      try {
+        const group = await this.ctx.call('get_group_file_url', {
+          group_id: Number(chatRef.target),
+          file_id: fid,
+        }) as { url?: string }
+        if (group.url !== undefined && group.url !== '') {
+          try {
+            const localPath = await this.ctx.media.downloadUrl(group.url, ext, maxBytes)
+            this.ctx.log('info', 'qq group file fetched via direct link: ' + localPath)
+            return '[文件:' + localPath + ']'
+          } catch (error) {
+            this.ctx.log('warn', 'qq group file direct download failed: ' + describeError(error))
+          }
+        }
+      } catch (error) {
+        this.ctx.log('debug', 'get_group_file_url failed (falling back): ' + describeError(error))
+      }
+    }
     try {
       // 1. Private-chat direct link (works without any container access).
       const direct = await this.ctx.call('get_private_file_url', { file_id: fid }) as {
@@ -678,6 +746,7 @@ export class InboundPipeline {
       const data = await this.ctx.call('get_forward_msg', { id: forwardId, message_id: forwardId }) as {
         messages?: Array<{
           sender?: { nickname?: string; user_id?: number | string }
+          message?: unknown
           content?: unknown
           data?: { nickname?: string; user_id?: number | string; message?: unknown; content?: unknown }
         }>
@@ -689,7 +758,12 @@ export class InboundPipeline {
         const nodeData = node.data
         const name = nodeData?.nickname ?? node.sender?.nickname
           ?? String(nodeData?.user_id ?? node.sender?.user_id ?? '未知')
-        const text = nodeContentText(nodeData?.message ?? nodeData?.content ?? node.content, name, media, lines)
+        // NapCat v4 puts the message at the TOP level of the node (no data
+        // wrapper); OneBot node segments keep data.message/data.content, and
+        // go-cqhttp-style implementations use the flat sender/content shape.
+        const text = nodeContentText(
+          nodeData?.message ?? nodeData?.content ?? node.message ?? node.content, name, media, lines,
+        )
         if (text !== '') lines.push(name + ': ' + text)
       }
       if (lines.length === 0) {
@@ -697,7 +771,7 @@ export class InboundPipeline {
         currentTrace()?.emit('forward', { ok: false, reason: '合并转发未展开: ' + reason })
         return { text: '[合并转发 id=' + forwardId + ' 未展开: ' + reason + ']', media }
       }
-      return { text: '[合并转发]\n' + lines.join('\n'), media }
+      return { text: '[合并转发]\n' + truncateForwardLines(lines).join('\n'), media }
     } catch (error) {
       this.ctx.log('info', 'forward expansion failed: resId=' + forwardId + ': ' + describeError(error))
       currentTrace()?.emit('forward', { ok: false, reason: '合并转发展开失败: ' + describeError(error) })
@@ -729,6 +803,30 @@ function placeholderFor(ref: MediaRef): string {
     case 'video': return '[视频]'
     default: return ref.name !== undefined ? '[文件:' + ref.name + ']' : '[文件]'
   }
+}
+
+/** Combined-forward expansion caps: at most 50 node lines / 8000 characters. */
+const FORWARD_MAX_LINES = 50
+const FORWARD_MAX_CHARS = 8000
+
+/**
+ * Cap expanded forward lines at 50 nodes / 8000 characters so a huge merged
+ * forward cannot flood the model context. The dropped tail is announced with
+ * a marker pointing at the whitelisted get_forward_msg self-serve tool.
+ */
+function truncateForwardLines(lines: readonly string[]): string[] {
+  const kept: string[] = []
+  let used = 0
+  for (const line of lines) {
+    if (kept.length >= FORWARD_MAX_LINES || used + line.length + 1 > FORWARD_MAX_CHARS) {
+      const remaining = lines.length - kept.length
+      kept.push('(已截断，剩余 ' + remaining + ' 节点，可用 get_forward_msg 自查)')
+      return kept
+    }
+    kept.push(line)
+    used += line.length + 1
+  }
+  return kept
 }
 
 /**

@@ -135,9 +135,12 @@ export class InjectChannel {
   }
 
   /** Skip the lines that already existed at startup (recorded + reported),
-   * then start polling. */
-  start(): void {
-    void this.skipHistory()
+   * then start polling. The skip is awaited BEFORE the poll timer is armed:
+   * armed-first (the old behavior) let a line written immediately after
+   * start() lose the race against skipHistory's readFile and be swallowed as
+   * "history" under load (full-suite flake). */
+  async start(): Promise<void> {
+    await this.skipHistory()
     this.stopped = false
     this.timer = setInterval(() => void this.tick(), this.intervalMs)
     this.timer.unref?.()

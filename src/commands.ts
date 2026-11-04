@@ -82,6 +82,10 @@ export interface CommandContext {
    * a bare /workspace|/model|/preset|/session rendered; lazy 5-min TTL, see below). */
   /** /session: this chat's switchable retired sessions (newest first). */
   switchableSessions(chatId: ChatId): SwitchableSession[]
+  /** T4 (#15): broken (hard-retired) session count from the registry's
+   * retire record, surfaced by the /session list. Absent = the list omits
+   * the broken-count line (pre-T4 hosts/tests). */
+  brokenSessionCount?: (() => number) | undefined
   /** /session <序号>: switch the chat back to a listed session. */
   switchSession(chatId: ChatId, targetSessionId: string): Promise<SessionSwitchOutcome>
   /** /session list previews: the persistence port each retired session's
@@ -116,6 +120,13 @@ export interface CommandContext {
    * Mints an MF- reference through the bridge (registry + trace + structured
    * log) and returns it for the ⚠️ notice tail. */
   reportFailure?: ((chatId: ChatId, stage: TraceStage, detail: string) => string) | undefined
+  /** T3-board /silent: per-chat silence window — epoch-ms until which the
+   * inbound pipeline ignores NORMAL messages (undefined = not silenced, or
+   * the window already expired). T3-board persistence: the durable copy is
+   * ChatSettings.silentUntil (chat-sessions.json) — the window survives a
+   * plugin restart and /new; a bare /silent clears it explicitly. */
+  silentUntil?: ((chatId: ChatId) => number | undefined) | undefined
+  setSilentUntil?: ((chatId: ChatId, untilMs: number | undefined) => void) | undefined
   /** The only config fields the commands read. */
   config: Pick<BridgeConfig, 'interimMessages' | 'maxImageBytes' | 'unknownCommand'>
 }
@@ -141,6 +152,10 @@ export interface CommandDefinition {
   aliases?: string[]
   /** Admin-only flag; every current command is gated at the router entry. */
   adminOnly: boolean
+  /** T3-board: member-visible command — a non-admin (group member) may
+   * invoke it; /help's member view lists ONLY these rows. The admin gate
+   * stays the default; this flag carves per-row exceptions. */
+  memberVisible?: boolean
   /** /help line shown after "/name ": the usage-argument form (when the
    * command takes arguments) followed by the description, e.g.
    * "[路径|序号|list] 查看或切换工作区" or plain "本帮助". */
@@ -166,17 +181,20 @@ export const COMMANDS: CommandDefinition[] = [
   { name: 'preset', adminOnly: true, group: '会话', help: '[id|序号] 查看/切换 agent 预设', handler: (ctx, chatId, arg) => handlePresetCommand(ctx, chatId, arg) },
   { name: 'session', adminOnly: true, group: '会话', help: '[序号] 查看/切回历史会话', handler: (ctx, chatId, arg) => handleSessionCommand(ctx, chatId, arg) },
   { name: 'status', adminOnly: true, group: '查询', help: '会话全景', handler: (ctx, chatId) => handleStatusCommand(ctx, chatId) },
-  { name: 'doctor', aliases: ['healthcheck'], adminOnly: true, group: '查询', help: '[export [参考号]] 运行体检（export [参考号] 导出脱敏诊断包，文件名含参考号）', handler: (ctx, chatId, arg) => handleHealthcheckCommand(ctx, chatId, arg) },
+  { name: 'doctor', aliases: ['healthcheck'], adminOnly: true, group: '查询', help: '[export [参考号]|test] 运行体检（export [参考号] 导出脱敏诊断包；test 一键自测收发链路）', handler: (ctx, chatId, arg) => handleHealthcheckCommand(ctx, chatId, arg) },
   { name: 'retry', adminOnly: true, group: '操作', help: '重跑上一条', handler: (ctx, chatId) => handleRetryCommand(ctx, chatId) },
   { name: 'id', adminOnly: true, group: '查询', help: '会话标识（session/chat）', handler: (ctx, chatId) => handleIdCommand(ctx, chatId) },
   { name: 'ver', adminOnly: true, group: '查询', help: '插件版本', handler: (ctx, chatId) => handleVerCommand(ctx, chatId) },
   { name: 'ocr', adminOnly: true, group: '操作', help: '识别最近一张图片', handler: (ctx, chatId) => handleOcrCommand(ctx, chatId) },
+  { name: 'silent', adminOnly: true, group: '操作', help: '[分钟] 临时免打扰（默认 30 分钟，期间普通消息被忽略；再次 /silent 提前解除）', handler: (ctx, chatId, arg) => handleSilentCommand(ctx, chatId, arg) },
   { name: 'mode', adminOnly: true, group: '输出', help: '[interim|instant] 出站模式（合并卡片/逐条即时）', handler: (ctx, chatId, arg) => handleModeCommand(ctx, chatId, arg) },
   { name: 'plan', adminOnly: true, group: '输出', help: '[off|内容] 宿主计划模式', handler: (ctx, chatId, arg) => handlePlanCommand(ctx, chatId, arg) },
   { name: 'permission', adminOnly: true, group: '会话', help: '[w|f|预设名|序号] 切换权限预设（w=工作区可写+需审批，f=全盘+免审批）', handler: (ctx, chatId, arg) => handlePermissionCommand(ctx, chatId, arg) },
   { name: 'goal', adminOnly: true, group: '其他', help: '[目标|clear] 目标记录', handler: (ctx, chatId, arg) => handleGoalCommand(ctx, chatId, arg) },
-  { name: 'help', adminOnly: true, group: '其他', help: '本帮助', handler: async (ctx, chatId) => {
-    await ctx.sendToChat(chatId, helpText())
+  { name: 'help', adminOnly: true, memberVisible: true, group: '其他', help: '本帮助', handler: async (ctx, chatId, _arg, sender) => {
+    // T3-board: members get the member view (memberVisible rows only); the
+    // admin card is unchanged.
+    await ctx.sendToChat(chatId, ctx.isAdmin(sender.userId) ? helpText() : helpText(true))
   } },
 ]
 
@@ -188,10 +206,13 @@ const HELP_GROUP_ORDER = ['会话', '输出', '查询', '操作', '其他']
 /** /help body: grouped multi-line card generated from the table — adding a
  * command stays a one-row change and its group header comes from the row
  * (unlisted groups append). The R1 tail line documents the unknown-command
- * behavior. Exported for the full-text snapshot gate in tests/commands.spec.ts. */
-export function helpText(): string {
+ * behavior. Exported for the full-text snapshot gate in tests/commands.spec.ts.
+ * T3-board: memberOnly=true renders the member view — only memberVisible
+ * rows, a neutral header, and a 「其余命令需管理员」 tail. */
+export function helpText(memberOnly = false): string {
   const groups = new Map<string, CommandDefinition[]>()
   for (const c of COMMANDS) {
+    if (memberOnly && c.memberVisible !== true) continue
     const key = c.group ?? '其他'
     const rows = groups.get(key)
     if (rows === undefined) groups.set(key, [c])
@@ -202,12 +223,15 @@ export function helpText(): string {
     const ib = HELP_GROUP_ORDER.indexOf(b)
     return (ia === -1 ? HELP_GROUP_ORDER.length : ia) - (ib === -1 ? HELP_GROUP_ORDER.length : ib)
   })
-  const lines = ['可用命令（仅管理员）：']
+  const lines = [memberOnly ? '可用命令：' : '可用命令（仅管理员）：']
   for (const g of order) {
     lines.push('▍' + g)
     for (const c of groups.get(g)!) lines.push('/' + c.name + ' ' + c.help)
   }
-  return lines.join('\n') + '\n\n未知命令默认拦截并提示相近命令；unknownCommand: passthrough 可改为透传给模型。'
+  const tail = memberOnly
+    ? '其余命令需管理员。\n未知命令默认拦截并提示相近命令；unknownCommand: passthrough 可改为透传给模型。'
+    : '未知命令默认拦截并提示相近命令；unknownCommand: passthrough 可改为透传给模型。'
+  return lines.join('\n') + '\n\n' + tail
 }
 
 /** Close command-name suggestions for an unknown /word: prefix matches first
@@ -266,6 +290,16 @@ export async function tryHandleCommand(ctx: CommandContext, chatId: ChatId, text
   if (!/^\/[A-Za-z][A-Za-z0-9_-]*$/.test(first)) return false
 
   if (!ctx.isAdmin(userId)) {
+    // T3-board: member-visible commands run for non-admins; everything else
+    // (including unknown commands) keeps the admin-only notice. Only rows
+    // flagged memberVisible carve this exception — the gate stays the default.
+    const name = first.slice(1).toLowerCase()
+    const memberCommand = COMMANDS.find(c => c.name === name || c.aliases?.includes(name))
+    if (memberCommand !== undefined && memberCommand.memberVisible === true) {
+      ctx.log('debug', 'slash /' + name + ' (member) for ' + chatId)
+      await memberCommand.handler(ctx, chatId, normalized.slice(first.length).trim(), { userId, nickname: nickname ?? '' })
+      return true
+    }
     await ctx.sendToChat(chatId, '该命令仅管理员可用。')
     return true
   }
@@ -308,6 +342,50 @@ async function handleStopCommand(ctx: CommandContext, chatId: ChatId): Promise<v
   // /stop 的语义边界是「只终止当前聊天提交的回合」，补发跟踪随行终止；
   // 其他聊天的条目不受影响。
   ctx.stopDeferredTracking(chatId)
+}
+
+/** T3-board /silent defaults and bounds: a bare /silent mutes for 30 minutes;
+ * the explicit form accepts 1–1440 minutes (one day) — beyond that a real
+ * schedule is the right surface, not a chat command. */
+export const SILENT_DEFAULT_MINUTES = 30
+export const SILENT_MAX_MINUTES = 24 * 60
+
+/** T3-board /silent: per-chat temporary do-not-disturb. While the window is
+ * open the inbound pipeline silently ignores NORMAL messages (slash commands
+ * still route — the probe sits after the command router, so /silent itself
+ * can never be swallowed by its own mute). A bare /silent lifts the window
+ * early; `/silent <分钟>` sets/extends it. The window survives /new (a
+ * property of the chat, not the session) and plugin restarts (persisted in
+ * chat-sessions.json via ChatSettings.silentUntil). */
+async function handleSilentCommand(ctx: CommandContext, chatId: ChatId, arg: string): Promise<void> {
+  if (ctx.silentUntil === undefined || ctx.setSilentUntil === undefined) {
+    await ctx.sendToChat(chatId, '⚠️ 静音窗口未接线（宿主未提供该能力）。')
+    return
+  }
+  // Same bracket-stripping posture as /session: IM input likes to wrap
+  // numbers in full-width or ASCII brackets.
+  const trimmed = arg.trim().replace(/^[<＜([{（【]+\s*/, '').replace(/\s*[>＞)}）】\]]+$/, '').trim()
+  if (trimmed === '') {
+    if ((ctx.silentUntil(chatId) ?? 0) > Date.now()) {
+      ctx.setSilentUntil(chatId, undefined)
+      ctx.log('info', 'slash /silent lifted early for ' + chatId)
+      await ctx.sendToChat(chatId, '🔔 已解除静音，恢复正常响应。')
+      return
+    }
+    ctx.setSilentUntil(chatId, Date.now() + SILENT_DEFAULT_MINUTES * 60_000)
+    ctx.log('info', 'slash /silent (default ' + SILENT_DEFAULT_MINUTES + 'm) for ' + chatId)
+    await ctx.sendToChat(chatId, `🔇 已静音 ${SILENT_DEFAULT_MINUTES} 分钟（至 ${formatTimestamp(Date.now() + SILENT_DEFAULT_MINUTES * 60_000)}）：期间普通消息将被忽略，斜杠命令不受影响。再次 /silent 可提前解除。`)
+    return
+  }
+  const minutes = Number(trimmed)
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > SILENT_MAX_MINUTES) {
+    await ctx.sendToChat(chatId, `❌ 分钟数无效：${trimmed}（有效范围 1–${SILENT_MAX_MINUTES}）。\n用法：/silent [分钟] 临时免打扰（默认 ${SILENT_DEFAULT_MINUTES} 分钟）；/silent 提前解除。`)
+    return
+  }
+  const until = Date.now() + minutes * 60_000
+  ctx.setSilentUntil(chatId, until)
+  ctx.log('info', 'slash /silent (' + minutes + 'm) for ' + chatId)
+  await ctx.sendToChat(chatId, `🔇 已静音 ${minutes} 分钟（至 ${formatTimestamp(until)}）：期间普通消息将被忽略，斜杠命令不受影响。再次 /silent 可提前解除。`)
 }
 
 /** T2 (P1): the /steer submit notice — one line per accepted instruction.
@@ -400,7 +478,7 @@ async function resolveNumericSelection(
  * form's job). */
 async function handleModelCommand(ctx: CommandContext, chatId: ChatId, arg: string): Promise<void> {
   const chat = ctx.getChat(chatId)
-  const current = chat?.agent.model.current()
+  const current = safeChatModel(chat, ctx)
     ?? safeDefaultModel(ctx)
   if (arg === '') {
     const cur = current !== undefined ? current.provider + '/' + current.model : '（未设置）'
@@ -491,7 +569,7 @@ async function handleModelCommand(ctx: CommandContext, chatId: ChatId, arg: stri
   // event (the host facade used by dsh-api-session-controller); the guard
   // keeps the old semantics where a deployment without a default model had
   // no selection ref and the switch stayed a silent no-op.
-  if (chat !== undefined && chat.agent.model.current() !== undefined) {
+  if (chat !== undefined && safeChatModel(chat, ctx) !== undefined) {
     chat.agent.model.select(next)
   }
   await ctx.sendToChat(chatId, `✅ 已切换当前会话模型：${provider}/${model}（下一步生效）`)
@@ -629,7 +707,7 @@ async function handleStatusCommand(ctx: CommandContext, chatId: ChatId): Promise
     const resolved = await ctx.resolvePresetId(chatId)
     preset = (resolved ?? undefined) !== undefined ? (resolved ?? '') + '（默认/配置）' : '（未记录）'
   }
-  const current = chat?.agent.model.current() ?? safeDefaultModel(ctx)
+  const current = safeChatModel(chat, ctx) ?? safeDefaultModel(ctx)
   const model = current !== undefined ? current.provider + '/' + current.model : '（未设置）'
   const cwd = ctx.effectiveCwd(chatId)
   let wsSuffix = ''
@@ -685,6 +763,11 @@ async function handleHealthcheckCommand(ctx: CommandContext, chatId: ChatId, arg
     }
     return
   }
+  // T3-board: `test` — one-shot end-to-end self-test (see runDoctorTest).
+  if (trimmed === 'test') {
+    await runDoctorTest(ctx, chatId)
+    return
+  }
   if (trimmed !== '') {
     await ctx.sendToChat(chatId, '用法：/doctor（体检摘要）或 /doctor export [参考号]（导出脱敏诊断包）。')
     return
@@ -698,6 +781,30 @@ async function handleHealthcheckCommand(ctx: CommandContext, chatId: ChatId, arg
   } catch (error) {
     await ctx.sendToChat(chatId, '⚠️ 体检失败：' + describeError(error))
   }
+}
+
+/** T3-board /doctor test: one-shot end-to-end self-test — push a marker
+ * message through the FULL outbound pipeline (ctx.sendToChat, not a raw
+ * connection call, so queueing/card-relay behave exactly like production)
+ * and report connection state, delivery outcome and round-trip latency.
+ * A send failure is reported describeError-style with an MF- reference tail
+ * (same posture as /retry) and never thrown past the router. The marker
+ * message is visible in the chat by design: the user receiving it IS the
+ * success signal. */
+async function runDoctorTest(ctx: CommandContext, chatId: ChatId): Promise<void> {
+  const connected = ctx.connection.connected
+  const started = Date.now()
+  try {
+    await ctx.sendToChat(chatId, '🧪 /doctor test 自测消息：收到本条即代表出站链路正常，请忽略。')
+  } catch (error) {
+    const ref = ctx.reportFailure?.(chatId, 'command', '/doctor test 发送失败: ' + describeError(error))
+    ctx.log('warn', 'slash /doctor test failed for ' + chatId + ': ' + describeError(error))
+    await ctx.sendToChat(chatId, '⚠️ /doctor test 自测失败\n连接：' + (connected ? '已连接' : '未连接') + '\n发送：失败 — ' + describeError(error) + failureRefSuffix(ref))
+    return
+  }
+  const ms = Date.now() - started
+  ctx.log('info', 'slash /doctor test ok for ' + chatId + ' (' + ms + ' ms, connected=' + connected + ')')
+  await ctx.sendToChat(chatId, '✅ /doctor test 自测通过\n连接：' + (connected ? '已连接' : '未连接') + '\n发送：成功\n时延：' + ms + ' ms')
 }
 
 /** /mode: per-chat outbound-mode override (interim vs instant). */
@@ -996,11 +1103,24 @@ async function sessionPreviewFor(ctx: CommandContext, sessionId: string): Promis
  * numbered list is snapshotted (R2, kind 'session') so a following
  * `/session <序号>` picks without re-listing. */
 async function handleSessionCommand(ctx: CommandContext, chatId: ChatId, arg: string): Promise<void> {
+  // #4b: IM input routinely wraps the serial in brackets — /session <1>,
+  // ＜1＞ or ［1］. Strip angle/bracket wrappers before the numeric
+  // resolution so those spellings are equivalent to /session 1. Plain text
+  // (including unpaired brackets) passes through unchanged and still fails
+  // numeric resolution the old way.
+  arg = arg.trim().replace(/^[<＜([{（【]+\s*/, '').replace(/\s*[>＞)}）】\]]+$/, '').trim()
   if (arg.trim() === '') {
     const list = ctx.switchableSessions(chatId)
     const current = ctx.getChat(chatId)?.sessionId ?? await ctx.sessionIdFromMapping(chatId)
+    // T4 (#15): broken sessions never enter the switchable list, so the count
+    // comes straight from the registry's retire record — surfaced so broken
+    // history is visible instead of silently vanished.
+    const brokenCount = ctx.brokenSessionCount?.() ?? 0
     if (list.length === 0) {
-      await ctx.sendToChat(chatId, '当前 session：' + (current ?? '（未建立会话）') + '\n（该会话没有可切回的历史会话）\n用法：/session <序号> 切回；/new、/workspace、/preset 切换下来的旧会话会进入列表。')
+      let empty = '当前 session：' + (current ?? '（未建立会话）') + '\n（该会话没有可切回的历史会话）'
+      if (brokenCount > 0) empty += '\n⚠️ 另有 ' + brokenCount + ' 个损坏会话已隔离（不可切回）。'
+      empty += '\n用法：/session <序号> 切回；/new、/workspace、/preset 切换下来的旧会话会进入列表。'
+      await ctx.sendToChat(chatId, empty)
       return
     }
     // Each item carries a one-line content preview + creation time so the
@@ -1014,6 +1134,9 @@ async function handleSessionCommand(ctx: CommandContext, chatId: ChatId, arg: st
       return `${index + 1}. ${text}（${created}${formatTimestamp(entry.retiredAt)} 退休 · ${shortSessionId(entry.id)}）`
     }))
     let out = '当前 session：' + (current ?? '（未建立会话）') + '\n可切回历史会话：\n' + lines.join('\n')
+    // T4 (#15): the broken count rides the list output (these ids are absent
+    // from the switchable list, so without the line they would look lost).
+    if (brokenCount > 0) out += '\n⚠️ 另有 ' + brokenCount + ' 个损坏会话已隔离（不可切回）。'
     out += '\n回复 /session <序号> 切回（当前会话会进入列表，可来回切换）。'
     ctx.setPendingSelection(chatId, {
       kind: 'session',
@@ -1288,6 +1411,18 @@ function safeDefaultModel(ctx: CommandContext): ModelSelection | undefined {
     return ctx.agentDefaultModel?.currentSelection()
   } catch (error) {
     ctx.log('debug', 'currentSelection failed: ' + String(error))
+    return undefined
+  }
+}
+
+/** #17: chat.model.current() can throw (model registry in a bad state); the
+ * /model and /status surfaces must degrade to the deployment default instead
+ * of crashing the command handler (same pattern as safeDefaultModel). */
+function safeChatModel(chat: CommandChatView | undefined, ctx: CommandContext): ModelSelection | undefined {
+  try {
+    return chat?.agent.model.current()
+  } catch (error) {
+    ctx.log('debug', 'model.current failed: ' + String(error))
     return undefined
   }
 }

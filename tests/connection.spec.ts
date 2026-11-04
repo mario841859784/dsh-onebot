@@ -88,6 +88,35 @@ describe('reverse server', () => {
     await connection.stop()
   })
 
+  it('accepts clients authenticating via ?access_token= query parameter (SnowLuma)', async () => {
+    const connection = new OneBotConnection({ ...CONFIG, accessToken: 'tok' })
+    connection.start()
+    await vi.waitFor(() => expect(connection.address()).toBeDefined())
+    const address = connection.address()!
+    // SnowLuma dials back with the token in the query string instead of an
+    // Authorization header.
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws?access_token=tok')
+    await vi.waitFor(() => expect(client.readyState).toBe(WebSocket.OPEN))
+    expect(connection.connected).toBe(true)
+    client.close()
+    await connection.stop()
+  })
+
+  it('rejects clients with a wrong ?access_token= query parameter', async () => {
+    const connection = new OneBotConnection({ ...CONFIG, accessToken: 'tok' })
+    connection.start()
+    await vi.waitFor(() => expect(connection.address()).toBeDefined())
+    const address = connection.address()!
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + '/ws?access_token=tox')
+    await new Promise(resolve => {
+      client.on('close', (code) => {
+        expect(code).toBe(4401)
+        resolve(undefined)
+      })
+    })
+    await connection.stop()
+  })
+
   it('fails pending calls on disconnect', async () => {
     const connection = new OneBotConnection({ ...CONFIG, accessToken: 'tok' })
     connection.start()
