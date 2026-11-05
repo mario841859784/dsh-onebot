@@ -92,6 +92,8 @@ async function makeHarness(opts: {
 
   const ctx = new Context()
   const tools: SendTool[] = []
+  // T1 (#25 S3): 收集工具侧经 log 端口输出的日志行，供丢弃日志断言。
+  const logs: Array<{ level: string; message: string }> = []
   ctx.provide('tools' as never, {
     register: (tool: SendTool) => {
       tools.push(tool)
@@ -112,7 +114,7 @@ async function makeHarness(opts: {
     maxImageBytes: 1_000_000,
     maxVoiceBytes: 1_000_000,
     maxFileBytes: 1_000_000,
-  })
+  }, (level, message) => { logs.push({ level, message }) })
   const tool = (name: string): SendTool => {
     const found = tools.find(t => t.name === name)
     if (found === undefined) throw new Error('tool not registered: ' + name)
@@ -125,7 +127,7 @@ async function makeHarness(opts: {
     return (send.params.message as Array<Record<string, unknown>>)[index]
   }
 
-  return { bridge, tool, exec, seed, calls, sentSegment, mediaDir, workspace, otherDir, outside }
+  return { bridge, tool, exec, seed, calls, sentSegment, mediaDir, workspace, otherDir, outside, logs }
 }
 
 describe('qq_send_* local-path outbound gate (M1-A3b)', () => {
@@ -529,5 +531,88 @@ describe('SnowLuma 适配：翻页锚点与空白 text 段 (T1 #2/#7)', () => {
     ])
     expect(id).toBeUndefined()
     expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(0)
+  })
+})
+
+/**
+ * PR #25 评审后续（T1 B1/S2/S3）：qq_send_image 的 caption 接入出站同源
+ * 清洗（./split.js 的 stripMarkdown，与 outbound / qq_send_segments 同源）；
+ * qq_send_segments「清洗后全空抛错」与「部分段被丢弃后 count 递减」两个
+ * 此前零覆盖的分支补用例；段被丢弃时输出一条可 grep 的 info 日志。
+ */
+describe('qq_send_image caption 清洗 + qq_send_segments 丢弃分支与丢弃日志 (T1 #25 B1/S2/S3)', () => {
+  it('B1: caption is stripped with the same stripMarkdown as outbound/segments', async () => {
+    const h = await makeHarness()
+    const sessionId = 'group-caption-md'
+    h.seed(sessionId, 'admin')
+    const result = await h.tool('qq_send_image').execute({
+      sources: ['https://example.com/pic.jpg'],
+      caption: '**加粗说明** 和 \x60代码\x60',
+    }, h.exec(sessionId)) as { sent: boolean }
+    expect(result.sent).toBe(true)
+    const send = h.calls.find(c => c.action === 'send_msg')!
+    expect(send.params.message).toEqual([
+      { type: 'text', data: { text: '加粗说明 和 代码' } },
+      { type: 'image', data: { url: 'https://example.com/pic.jpg' } },
+    ])
+  })
+
+  it('B1: caption that strips to empty is dropped (image still sent, no error)', async () => {
+    const h = await makeHarness()
+    const sessionId = 'group-caption-empty'
+    h.seed(sessionId, 'admin')
+    const result = await h.tool('qq_send_image').execute({
+      sources: ['https://example.com/pic.jpg'],
+      caption: '#  ',
+    }, h.exec(sessionId)) as { sent: boolean }
+    expect(result.sent).toBe(true)
+    const send = h.calls.find(c => c.action === 'send_msg')!
+    expect(send.params.message).toEqual([
+      { type: 'image', data: { url: 'https://example.com/pic.jpg' } },
+    ])
+  })
+
+  it('S2: rejects with the dedicated error when every segment strips to empty (nothing sent)', async () => {
+    const h = await makeHarness()
+    const sessionId = 'group-seg-all-empty'
+    h.seed(sessionId, 'admin')
+    await expect(h.tool('qq_send_segments').execute({
+      segments: ['#  ', '**  **', '---'],
+    }, h.exec(sessionId)))
+      .rejects.toThrow('qq_send_segments: 去掉 Markdown 后没有可发送内容')
+    expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(0)
+    // 全空分支在丢弃日志之前抛错：不应输出丢弃日志。
+    expect(h.logs).toHaveLength(0)
+  })
+
+  it('S2+S3: partially-dropped segments decrement count and log one grepable line', async () => {
+    const h = await makeHarness()
+    const sessionId = 'group-seg-partial'
+    h.seed(sessionId, 'admin')
+    const result = await h.tool('qq_send_segments').execute({
+      segments: ['第一段', '#  ', '**  **', '第三段'],
+    }, h.exec(sessionId)) as { sent: boolean; count: number; messageIds: Array<string | null> }
+    expect(result.sent).toBe(true)
+    expect(result.count).toBe(2)
+    expect(result.messageIds).toEqual(['42', '42'])
+    const sends = h.calls.filter(c => c.action === 'send_msg')
+    expect(sends).toHaveLength(2)
+    expect(sends.map(s => (s.params.message as Array<{ data: { text: string } }>)[0].data.text))
+      .toEqual(['第一段', '第三段'])
+    // S3: 仅丢弃时输出一条 info 级、可 grep 的日志（含工具名、丢弃数与 chat）。
+    expect(h.logs).toHaveLength(1)
+    expect(h.logs[0].level).toBe('info')
+    expect(h.logs[0].message).toBe('qq_send_segments: 2/4 段 Markdown 清洗后为空，已丢弃: chat=group:20001')
+  })
+
+  it('S3: no drop log when every segment survives cleaning (no log spam)', async () => {
+    const h = await makeHarness()
+    const sessionId = 'group-seg-clean'
+    h.seed(sessionId, 'admin')
+    const result = await h.tool('qq_send_segments').execute({
+      segments: ['第一段', '第二段'],
+    }, h.exec(sessionId)) as { count: number }
+    expect(result.count).toBe(2)
+    expect(h.logs).toHaveLength(0)
   })
 })

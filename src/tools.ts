@@ -152,6 +152,7 @@ export function registerTools(
   bridge: ChatBridge,
   connection: OneBotConnection,
   limits: { maxImageBytes: number; maxVoiceBytes: number; maxFileBytes: number },
+  log?: (level: 'info' | 'warn' | 'error' | 'debug', message: string) => void,
 ): () => void {
   const disposers: Array<() => void> = []
   const register = (tool: Parameters<typeof ctx.tools.register>[0]): void => {
@@ -198,7 +199,13 @@ export function registerTools(
       const allowedRoots = await mediaRoots(bridge, exec)
       const segments: Array<{ type: string; data: Record<string, unknown> }> = []
       if (typeof a.caption === 'string' && a.caption !== '') {
-        segments.push({ type: 'text', data: { text: a.caption } })
+        // #25 B1: caption 原先直连 sendSegments 绕过了出站清洗，** 加粗 ** 这类
+        // 标记会原样发到 QQ。这里按出站/分段同一套规则（./split.js 的
+        // stripMarkdown）清洗；清洗后为空的段按既有丢弃语义直接不发送。
+        const captionText = stripMarkdown(a.caption).trim()
+        if (captionText !== '') {
+          segments.push({ type: 'text', data: { text: captionText } })
+        }
       }
       for (const source of sources) {
         if (isUrl(source)) {
@@ -355,6 +362,11 @@ export function registerTools(
       const cleaned = texts.map(t => stripMarkdown(t).trim()).filter(t => t !== '')
       if (cleaned.length === 0) throw new Error('qq_send_segments: 去掉 Markdown 后没有可发送内容')
       const chatId = resolveChat(bridge, exec, a.chat_id)
+      // #25 S3: 段被清洗丢弃时输出一条可 grep 的日志（仅丢弃时输出，不刷屏）。
+      if (log !== undefined && cleaned.length < texts.length) {
+        log('info', 'qq_send_segments: ' + (texts.length - cleaned.length) + '/' + texts.length
+          + ' 段 Markdown 清洗后为空，已丢弃: chat=' + chatId)
+      }
       const messageIds: Array<string | null> = []
       for (let i = 0; i < cleaned.length; i++) {
         if (i > 0) await wait(intervalMs)
