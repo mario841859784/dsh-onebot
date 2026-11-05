@@ -961,3 +961,11 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **验证**：`./scripts/build.sh` 重建 lib/ 成功（lib/tools.js caption 清洗 + lib/bridge.js、lib/types/tools.d.ts 相应声明，构建前 src/ 零改动）；`npx vitest run --dir tests` 全量绿：44 文件 758 passed + 4 skipped（stt-find win32 用例 Linux skip 属预期），与基线一致。
 - **清单同步**：package.json version 0.9.13→0.9.14；dsh.plugin.json 同步 0.9.14；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.14（it 描述串 + expect 两行）；package-lock.json version 字段同步 0.9.14（仅 top-level 与 packages[""] 两处，`npm install --package-lock-only` 因既有 dsh-agent↔cordis peer 冲突不可用，等效手改，diff 仅 4 行）。
 - **发布面收口**：commit（四件套 + lib/ + package-lock.json，消息 `chore(release): 0.9.14 (T1, T2)`）→ push origin/main → tag `v0.9.14` → GitHub Release → npm publish → npmmirror 同步确认。
+
+## 2026-11-05 发版 0.9.15（PR #29：SILK v3 语音魔数判别解码）
+
+- **改动**：本次发版出版本号的一个已入库 commit：`659587f`（fix(stt): SILK v3 语音先判魔数再解码，不再让 ffmpeg 按 .mp3 猜 (#24)，PR #29，作者 fansID512）——①协议端对 get_record out_format=mp3 兜底返回原始 SILK v3 时，不再无条件信任 .mp3 扩展名：先读文件头判 `#!SILK_V3` 魔数（容忍 0x02/0x03 帧类型前缀）；②命中用 silk-wasm（纯 wasm，新增依赖，MIT）解码为 16 kHz 单声道 PCM 并包 WAV 交既有转写引擎，跳过 ffmpeg；③解码失败返回回落原 ffmpeg 路径，未命中魔数行为完全不变；④修复 whisper.cpp/auto 引擎兼容（统一 16k 输出）。新增依赖 silk-wasm@^3.7.1（MIT，零 runtime 依赖，按需加载，随 PR #29 合并写入 package.json 与 lock）。
+- **验证**：`./scripts/build.sh` 重建 lib/ 成功（lib/stt.js 含 SILK 魔数判别与 wasm 解码路径 +94 行、lib/types/stt.d.ts +34 行，构建前 src/ 零改动）；`npx vitest run --dir tests` 全量绿：45 文件 766 passed + 4 skipped（stt-find win32 用例 Linux skip 属预期）——较 0.9.14 基线 44/758 多出的 1 文件 8 用例即 659587f 新增 tests/stt-silk.spec.ts，0 失败。
+- **清单同步**：package.json version 0.9.14→0.9.15；dsh.plugin.json 同步 0.9.15；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.15（it 描述串 + expect 两行）；package-lock.json version 字段同步 0.9.15（仅 top-level 与 packages[""] 两处，`npm install --package-lock-only` 因既有 dsh-agent↔cordis peer 冲突不可用，等效手改）。
+- **发布面收口**：commit（四件套 + lib/ + package-lock.json，消息 `chore(release): 0.9.15 (T1, T2)`）→ push origin/main → tag `v0.9.15` → GitHub Release → npm publish → npmmirror 同步确认。
+- **教训（node_modules 纪律）**：silk-wasm 手动解包落位（npm pack + tar 解出 node_modules/silk-wasm），避免任何 `npm install` 把宿主链接 @deepseek-ai/*（非 package.json 管理的工作区符号链接）当冗余剪掉——0.9.15 期间实测 npm 会剪，剪后 tsc/vitest 全挂，需重跑 ./scripts/link-host.sh 恢复。
