@@ -954,3 +954,10 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **验证**：`./scripts/build.sh` 重建 lib/ 成功（编译产物含 a074d9f/b8f15c4 及四个补收 commit 输出——lib/tools.js:330 分段清洗、lib/outbound.js #26 尾部回显剥离、lib/bridge.js resolveNoticeText/sendAnswerNotice、lib/media.js allowCidrs，构建前 src/ 零改动）；`npx vitest run --dir tests` 全量绿：44 文件 753 passed + 4 skipped（stt-find win32 用例 Linux skip 属预期），与基线一致。
 - **清单同步**：package.json version 0.9.12→0.9.13；dsh.plugin.json 同步 0.9.13；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.13（it 描述串 + expect 两行，仿 0.9.3–0.9.12 先例）；package-lock.json version 字段同步 0.9.13（仅 top-level 与 packages[""] 两处，`npm install --package-lock-only` 因既有 dsh-agent↔cordis peer 冲突不可用，等效手改，diff 仅 4 行）。
 - **发布面收口**：commit（四件套 + lib/ + package-lock.json，消息 `chore(release): 0.9.13 (T3, T4, T5)`）→ push origin/main → tag `v0.9.13` → GitHub Release → npm publish → npmmirror 同步确认。
+
+## 2026-11-05 发版 0.9.14（#25 B1/S2/S3：qq_send_image caption 同源清洗）
+
+- **改动**：本次发版出版本号的一个已入库 commit：`55aee9c`（fix: qq_send_image caption 接入出站同源清洗，补分段丢弃日志与用例, T1, #25 B1/S2/S3）——`qq_send_image` 的 caption 现在与出站/分段管线同源 stripMarkdown 清洗（**加粗**等 Markdown 标记不再原样发到 QQ），清洗后为空按既有丢弃语义不发送；`qq_send_segments` 补「全空抛错」「部分段丢弃 count 递减」用例；段被清洗丢弃时输出 info 级可 grep 日志（仅丢弃时输出）。
+- **验证**：`./scripts/build.sh` 重建 lib/ 成功（lib/tools.js caption 清洗 + lib/bridge.js、lib/types/tools.d.ts 相应声明，构建前 src/ 零改动）；`npx vitest run --dir tests` 全量绿：44 文件 758 passed + 4 skipped（stt-find win32 用例 Linux skip 属预期），与基线一致。
+- **清单同步**：package.json version 0.9.13→0.9.14；dsh.plugin.json 同步 0.9.14；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.14（it 描述串 + expect 两行）；package-lock.json version 字段同步 0.9.14（仅 top-level 与 packages[""] 两处，`npm install --package-lock-only` 因既有 dsh-agent↔cordis peer 冲突不可用，等效手改，diff 仅 4 行）。
+- **发布面收口**：commit（四件套 + lib/ + package-lock.json，消息 `chore(release): 0.9.14 (T1, T2)`）→ push origin/main → tag `v0.9.14` → GitHub Release → npm publish → npmmirror 同步确认。

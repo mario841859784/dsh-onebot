@@ -41,4 +41,4 @@ export declare function registerTools(ctx: Context, bridge: ChatBridge, connecti
     maxImageBytes: number;
     maxVoiceBytes: number;
     maxFileBytes: number;
-}): () => void;
+}, log?: (level: 'info' | 'warn' | 'error' | 'debug', message: string) => void): () => void;
