@@ -311,6 +311,67 @@ describe('local media size caps', () => {
   })
 })
 
+describe('segment url that is not http(s)', () => {
+  // NapCat sets a voice segment's url to the local file path when its packet
+  // backend is unavailable or fetching the url failed; file still holds the
+  // code get_record accepts. Paths below are synthetic and never read.
+  const audio = Buffer.from('synthetic audio')
+  const newStore = () => new MediaStore(mkdtempSync(join(tmpdir(), 'media-nonhttp-')))
+
+  it.each([
+    '/var/qq/nt_data/Ptt/Ori/synthetic.amr',
+    'C:\\QQ\\nt_data\\Ptt\\Ori\\synthetic.amr',
+  ])('falls back to get_record when url is the local path %s', async url => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const resolveHash = vi.fn(async () => ({ file: 'base64://' + audio.toString('base64') }))
+    const resolved = await newStore().resolve({ kind: 'voice', url, file: 'voice-code' }, resolveHash)
+    expect(resolveHash).toHaveBeenCalledTimes(1)
+    expect(resolveHash).toHaveBeenCalledWith('voice', 'voice-code')
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(resolved?.kind).toBe('voice')
+    await expect(readFile(resolved!.path)).resolves.toEqual(audio)
+  })
+
+  it('stays unresolved when there is no file to fall back on', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const resolveHash = vi.fn(async () => ({ file: 'base64://' + audio.toString('base64') }))
+    await expect(newStore().resolve({ kind: 'voice', url: '/var/qq/synthetic.amr' }, resolveHash)).resolves.toBeUndefined()
+    await expect(newStore().resolve({ kind: 'voice', url: '/var/qq/synthetic.amr', file: '' }, resolveHash)).resolves.toBeUndefined()
+    expect(resolveHash).not.toHaveBeenCalled()
+    expect(warn).toHaveBeenCalledTimes(2)
+    warn.mockRestore()
+  })
+
+  it('keeps the fileRefRoots fence when file is a file:// ref', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'media-nonhttp-fence-'))
+    await writeFile(join(dir, 'secret.txt'), 'secret')
+    const store = new MediaStore(mkdtempSync(join(tmpdir(), 'media-nonhttp-')), 6, 0, { fileRefRoots: [mkdtempSync(join(tmpdir(), 'media-nonhttp-root-'))] })
+    const resolved = await store.resolve({ kind: 'voice', url: '/var/qq/synthetic.amr', file: 'file://' + join(dir, 'secret.txt') }, async () => undefined)
+    expect(resolved).toBeUndefined()
+  })
+
+  it('still refuses a non-http(s) url returned by resolveHash', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const url = '/var/qq/synthetic.jpg'
+    const resolveHash = vi.fn(async () => ({ url, file: url }))
+    await expect(newStore().resolve({ kind: 'image', url, file: 'image-code' }, resolveHash)).resolves.toBeUndefined()
+    expect(resolveHash).toHaveBeenCalledTimes(1)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('leaves http(s) urls alone: downloaded directly, no get_record even when the download is refused', async () => {
+    mockedLookup.mockResolvedValue([{ address: '93.184.216.34', family: 4 }])
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(audio, { status: 200 })))
+    const resolveHash = vi.fn(async () => ({ file: 'base64://' + audio.toString('base64') }))
+    const ok = await newStore().resolve({ kind: 'voice', url: 'https://public.example.com/a.amr', file: 'voice-code' }, resolveHash)
+    await expect(readFile(ok!.path)).resolves.toEqual(audio)
+    await expect(newStore().resolve({ kind: 'voice', url: 'http://127.0.0.1/a.amr', file: 'voice-code' }, resolveHash)).resolves.toBeUndefined()
+    expect(resolveHash).not.toHaveBeenCalled()
+  })
+})
+
 describe('fileToBase64 allowedRoots (M1-A3a)', () => {
   it('refuses outside paths and accepts contained ones', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'media-b64-'))
