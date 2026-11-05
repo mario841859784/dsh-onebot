@@ -417,7 +417,7 @@ When the model calls `ask_user_question`, the question no longer only reaches th
 - **Free-form answer**: `答:内容` (or `answer:内容`, full/half-width colon both accepted) — one answer applied to the whole batch;
 - **Give up**: reply `跳过` (or `skip`); the batch settles with empty selections.
 
-In groups with `requireMention` on (the default), the reply must @ the bot, for example `@bot 1`, `@bot 答:内容` or `@bot 跳过`; without the @ the message does not pass the mention gate. Private chats and groups with `requireMention: false` need no @. Quoting the card does not count as an answer; that message falls through to the normal conversation.
+In groups with `requireMention` on (the default), the reply must @ the bot, for example `@bot 1`, `@bot 答:内容` or `@bot 跳过`; without the @ the message does not pass the mention gate. Private chats and groups with `requireMention: false` need no @, but a message that starts with an @ of someone else is not an answer. Quoting the card does not count as an answer; that message falls through to the normal conversation.
 
 Settlement timing: a reply during the waiting phase (foreground wait) **settles instantly** and the answer goes straight back to the model turn that is waiting; after the default 300-second wait the question falls to **pending** — the tool returns pending rather than failing, the model can go on with other work, and a later reply from members still answers it (pending questions stay valid for 15 minutes). Expired question cards are lazily cleaned up; messages the answer interception fails to parse fall through to the normal conversation — nothing gets swallowed.
 

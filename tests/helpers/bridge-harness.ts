@@ -209,6 +209,8 @@ export function makeEvent(type: string, data: unknown): SessionEvent {
 
 /** Compact harness for the slash-command tests (options inject stubs). */
 export async function makeCmdHarness(opts?: {
+  /** Mention gate for group messages; absent = the default true. */
+  requireMention?: boolean
   agentPresets?: unknown
   dshHome?: string
   ocrResult?: unknown
@@ -279,7 +281,7 @@ export async function makeCmdHarness(opts?: {
     ...(opts?.userQuestions !== undefined ? { userQuestions: opts.userQuestions } : {}),
     defaultModel: () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
     config: {
-      botQQ: '10002', ignoreSelf: false, requireMention: true,
+      botQQ: '10002', ignoreSelf: false, requireMention: opts?.requireMention ?? true,
       interimMessages: opts?.interimMessages ?? true,
       ...(opts?.unknownCommand !== undefined ? { unknownCommand: opts.unknownCommand } : {}),
       ...(opts?.interimRecallMs !== undefined ? { interimRecallMs: opts.interimRecallMs } : {}),
@@ -303,7 +305,7 @@ export async function makeCmdHarness(opts?: {
     },
     policy: {
       dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
-      adminUsers: ['10001'], allowAllUsers: opts?.allowAllUsers ?? false, requireMention: true,
+      adminUsers: ['10001'], allowAllUsers: opts?.allowAllUsers ?? false, requireMention: opts?.requireMention ?? true,
     },
     log: (level: string, message: string) => opts?.log?.(level, message),
   })

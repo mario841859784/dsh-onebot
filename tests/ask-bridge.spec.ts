@@ -442,6 +442,10 @@ describe('T2-B1/B3 bridge integration (tool registration + answer interception)'
 
     it.each([
       [' 1', { answers: [{ id: 'q1', selected: ['方案A'] }] }],
+      // 没有空格时正文是 @100021，数字不能跟着 @ 一起被去掉。
+      ['1', { answers: [{ id: 'q1', selected: ['方案A'] }] }],
+      ['1 2', { answers: [{ id: 'q1', selected: ['方案A', '方案B'] }] }],
+      ['1,2', { answers: [{ id: 'q1', selected: ['方案A', '方案B'] }] }],
       ['b', { answers: [{ id: 'q1', selected: ['方案B'] }] }],
       [' 答:就用方案A', { answers: [{ id: 'q1', selected: [], custom: '就用方案A' }] }],
       [' 跳过', { answers: [{ id: 'q1', selected: [] }] }],
@@ -483,6 +487,56 @@ describe('T2-B1/B3 bridge integration (tool registration + answer interception)'
       await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
       expect(answer).not.toHaveBeenCalled()
       expect(h.captured.followups[1]!.text).toContain('随便聊聊')
+
+      h.client.close()
+      await h.bridge.stop()
+      await h.connection.stop()
+    })
+  })
+
+  describe('group replies with requireMention: false', () => {
+    async function bootGroupQuestion() {
+      const answer = vi.fn(async () => true)
+      const h = await makeCmdHarness({ requireMention: false, userQuestions: { askTimed: async () => ({ pending: true, callId: 'c2' }), answer } })
+      h.sendGroupTextAs(' 你好', 10001)
+      await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+      h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('assistant/message', questionBlock('relay-q-open')))
+      await vi.waitFor(() => expect(sentTexts(h.outbound).some(t => t.includes('回复编号或字母选择'))).toBe(true))
+      const sendSegments = (message: unknown[]): void => {
+        h.client.send(JSON.stringify({
+          post_type: 'message', message_type: 'group', user_id: 10001, group_id: 888, self_id: 10002,
+          message, raw_message: '',
+          sender: { user_id: 10001, nickname: '用户10001' },
+        }))
+      }
+      return { h, answer, sendSegments }
+    }
+
+    it.each([
+      ['another member', [{ type: 'at', data: { qq: '20003' } }, { type: 'text', data: { text: ' 1' } }], '@20003 1'],
+      // 按文本前缀判断会把它拆成 @10002 加 1。
+      ['an id that starts with the bot id', [{ type: 'at', data: { qq: '100021' } }], '@100021'],
+    ])('does not take an @ of %s as an answer', async (_name, message, text) => {
+      const { h, answer, sendSegments } = await bootGroupQuestion()
+      sendSegments(message)
+      await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+      expect(answer).not.toHaveBeenCalled()
+      expect(h.captured.followups[1]!.text).toContain(text)
+
+      h.client.close()
+      await h.bridge.stop()
+      await h.connection.stop()
+    })
+
+    it.each([
+      ['a bare reply', [{ type: 'text', data: { text: '1' } }]],
+      ['an @bot reply', [{ type: 'at', data: { qq: '10002' } }, { type: 'text', data: { text: ' 1' } }]],
+    ])('settles %s', async (_name, message) => {
+      const { h, answer, sendSegments } = await bootGroupQuestion()
+      sendSegments(message)
+      await vi.waitFor(() => expect(answer).toHaveBeenCalledTimes(1))
+      expect((answer.mock.calls[0] as unknown[])[2]).toEqual({ answers: [{ id: 'q1', selected: ['方案A'] }] })
+      expect(h.captured.followups).toHaveLength(1)
 
       h.client.close()
       await h.bridge.stop()

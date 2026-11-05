@@ -19,7 +19,7 @@ import { extForInboundName } from './media.js'
 import type { Transcriber } from './stt.js'
 import { transcriptLabel } from './stt.js'
 import type { OneBotSegment, MediaRef } from './cq.js'
-import { cqUnescape, detectExplicitMention, detectMention, parseMessage, segmentText } from './cq.js'
+import { cqUnescape, detectExplicitMention, detectMention, parseMessage, segmentText, stripLeadingBotMention } from './cq.js'
 import type { AccessPolicyConfig, ChatId, UserRole } from './chat.js'
 import {
   buildChatId, buildGroupMessagePrefix, classifyUserRole, dmAllowed, groupAllowed,
@@ -416,10 +416,12 @@ export class InboundPipeline {
     // T2-B3: the ask_user_question answer seam runs BEFORE the busy-turn seam
     // and only for plain text (media/quote/forward never parse as answers).
     // A consumed answer ends here; any fall-through continues below unchanged.
-    // The @ segment stays in the text as @<qq> (cq.ts); strip it the way
-    // tryHandleCommand does, or "@bot 1" never parses under requireMention.
+    // The @ segment stays in the text as @<qq> (cq.ts); drop the bot's own, or
+    // "@bot 1" never parses under requireMention. Only the parse sees this.
     if (plain && this.ctx.interceptQuestionAnswer !== undefined
-      && await this.ctx.interceptQuestionAnswer(chatId, inbound.text.replace(/^@\d+\s*/, ''))) {
+      && await this.ctx.interceptQuestionAnswer(chatId, stripLeadingBotMention(
+        inbound.text, inbound.segments, inbound.raw, this.ctx.selfId(), this.ctx.config.botQQ,
+      ))) {
       currentTrace()?.emit('dispatch', { ok: true, reason: TRACE_REASONS.questionAnswered })
       return
     }
