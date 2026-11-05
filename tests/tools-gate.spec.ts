@@ -359,6 +359,60 @@ describe('qq_send_segments (T10 #6)', () => {
       .rejects.toThrow('qq_send_segments: 每段最多 500 字')
     expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(0)
   })
+
+  it('PR #25 评审: 清洗后为空的段被丢弃，count 跟着递减', async () => {
+    const h = await makeHarness()
+    const sessionId = 'group-seg-drop'
+    h.seed(sessionId, 'admin')
+    // 第二段是纯分隔线，stripMarkdown 后为空 —— 丢段且不产生空气泡
+    const result = await h.tool('qq_send_segments').execute({
+      segments: ['第一段', '---', '第三段'],
+    }, h.exec(sessionId)) as { count: number; messageIds: Array<string | null> }
+    expect(result.count).toBe(2)
+    expect(result.messageIds).toHaveLength(2)
+    const sends = h.calls.filter(c => c.action === 'send_msg')
+    expect(sends.map(s => (s.params.message as Array<{ data: { text: string } }>)[0].data.text))
+      .toEqual(['第一段', '第三段'])
+  })
+
+  it('PR #25 评审: 全部段清洗后为空时报错而不是发空消息', async () => {
+    const h = await makeHarness()
+    const sessionId = 'group-seg-empty'
+    h.seed(sessionId, 'admin')
+    await expect(h.tool('qq_send_segments').execute({
+      segments: ['### ', '---'],
+    }, h.exec(sessionId))).rejects.toThrow('去掉 Markdown 后没有可发送内容')
+    expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(0)
+  })
+})
+
+describe('qq_send_image caption (PR #25 评审同类修复)', () => {
+  it('caption 按出站规则清洗后再发，且排在图片之前', async () => {
+    const h = await makeHarness()
+    h.seed('group-cap-1', 'admin')
+    await h.tool('qq_send_image').execute({
+      sources: ['https://example.com/pic.jpg'],
+      caption: '**加粗**说明 \x60code\x60',
+    }, h.exec('group-cap-1'))
+    const sends = h.calls.filter(c => c.action === 'send_msg')
+    expect(sends).toHaveLength(1)
+    const message = sends[0].params.message as Array<{ type: string; data: Record<string, unknown> }>
+    expect(message[0]).toEqual({ type: 'text', data: { text: '加粗说明 code' } })
+    expect(message[1].type).toBe('image')
+  })
+
+  it('caption 清洗后为空时不发文本段（只发图片）', async () => {
+    const h = await makeHarness()
+    h.seed('group-cap-2', 'admin')
+    await h.tool('qq_send_image').execute({
+      sources: ['https://example.com/pic.jpg'],
+      caption: '--- ',
+    }, h.exec('group-cap-2'))
+    const sends = h.calls.filter(c => c.action === 'send_msg')
+    expect(sends).toHaveLength(1)
+    const message = sends[0].params.message as Array<{ type: string }>
+    expect(message.every(m => m.type !== 'text')).toBe(true)
+  })
 })
 
 /**

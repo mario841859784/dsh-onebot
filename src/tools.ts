@@ -197,8 +197,12 @@ export function registerTools(
       const chatId = resolveChat(bridge, exec, a.chat_id)
       const allowedRoots = await mediaRoots(bridge, exec)
       const segments: Array<{ type: string; data: Record<string, unknown> }> = []
+      // #23 点 1 同类问题（PR #25 评审指出）：caption 直连 sendSegments，
+      // 同样绕过了 outbound 的 stripMarkdown，** 加粗 ** 这类标记会原样落到
+      // 图片说明里。按出站同一套规则清洗；清洗后为空的 caption 直接不发。
       if (typeof a.caption === 'string' && a.caption !== '') {
-        segments.push({ type: 'text', data: { text: a.caption } })
+        const caption = stripMarkdown(a.caption).trim()
+        if (caption !== '') segments.push({ type: 'text', data: { text: caption } })
       }
       for (const source of sources) {
         if (isUrl(source)) {
