@@ -86,8 +86,10 @@ export function stripBoundaryLeakage(text: string): string {
   } while (cleaned !== previous)
   return cleaned
     // Full wrapper: drop the tags, keep the enclosed content (inner edge
-    // whitespace trimmed so the removal leaves no doubled blank lines).
-    .replace(/<user_message\s[^>]*?>\s*([\s\S]*?)\s*<\/user_message\s*>/gi, '$1')
+    // whitespace trimmed so the removal leaves no doubled blank lines). Trimmed
+    // in the callback: \s* on both sides of a lazy group backtracks in cubic time
+    // on an unclosed tag followed by a long run of whitespace.
+    .replace(/<user_message\s[^>]*?>([\s\S]*?)<\/user_message\s*>/gi, (_match, inner: string) => inner.trim())
     // Stray tags without a matching pair: opening (with attrs), bare
     // opening, closing, and self-closing forms.
     .replace(/<\/?user_message(?:\s[^>]*?)?\/?>/gi, '')

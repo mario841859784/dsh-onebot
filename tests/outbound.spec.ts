@@ -403,6 +403,17 @@ describe('T9: stripBoundaryLeakage', () => {
     expect(stripBoundaryLeakage(echo)).toBe('好的，你刚才说：\n你好\n我已收到。')
   })
 
+  it('an unclosed tag followed by a long run of whitespace does not stall the send', () => {
+    const start = performance.now()
+    const out = stripBoundaryLeakage('ok\n<user_message a="1">' + ' '.repeat(3200) + 'x')
+    expect(performance.now() - start).toBeLessThan(1000)
+    expect(out.startsWith('ok\n')).toBe(true)
+    expect(out.endsWith('x')).toBe(true)
+    expect(out).not.toContain('user_message')
+    // Inner edge whitespace of a full wrapper is still trimmed.
+    expect(stripBoundaryLeakage('<user_message qq="1">\n \n你好\n \n</user_message>')).toBe('你好')
+  })
+
   it('stray opening/closing/self-closing tags are dropped verbatim', () => {
     expect(stripBoundaryLeakage('<user_message qq="10001" nickname="小明">你好')).toBe('你好')
     expect(stripBoundaryLeakage('回复内容</user_message>')).toBe('回复内容')
