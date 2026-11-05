@@ -1,7 +1,8 @@
 /**
- * Voice transcription: ffmpeg → 16 kHz mono WAV, then a whisper engine
- * (openai-whisper CLI, whisper.cpp whisper-cli, or a custom command) produces
- * the transcript. All subprocess work is queued, bounded by a timeout, and
+ * Voice transcription: SILK v3 (magic-number detected) or ffmpeg → WAV, then
+ * a whisper engine (openai-whisper CLI, whisper.cpp whisper-cli, or a custom
+ * command) produces the transcript. All subprocess work is queued, bounded by
+ * a timeout, and
  * contained: a transcription failure must never break the message pipeline
  * (the caller falls back to the [语音] placeholder).
  * @module dsh-onebot/stt
@@ -9,7 +10,7 @@
 
 import { spawn } from 'node:child_process'
 import { constants } from 'node:fs'
-import { access, mkdir, readFile, readdir, rm } from 'node:fs/promises'
+import { access, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
@@ -28,6 +29,66 @@ export interface SttConfig {
 }
 
 const DEFAULT_TIMEOUT_MS = 60_000
+
+/** SILK v3 文件的魔数（QQ 语音落地常见形态）。 */
+const SILK_HEADER = '#!SILK_V3'
+/** SILK 的采样率不在文件头里，QQ / NapCat 落地普遍是 24 kHz。 */
+const SILK_SAMPLE_RATE = 24_000
+
+/**
+ * 判断文件头是不是 SILK v3。
+ *
+ * QQ 语音落地时扩展名常被写成 `.mp3`，内容其实是协议端 `get_record`
+ * 兜底返回的原始 SILK——ffmpeg 按 mp3 解必然失败（表现为一直只有
+ * `[语音]`）。协议端有的会把帧类型字节一起落盘，所以头部允许
+ * 0x02 / 0x03 前缀。
+ * @param head - 文件前若干字节（>= 10 字节即可）。
+ */
+export function isSilkData(head: Uint8Array): boolean {
+  const offset = head[0] === 0x02 || head[0] === 0x03 ? 1 : 0
+  if (head.length < offset + SILK_HEADER.length) return false
+  return Buffer.from(head.subarray(offset, offset + SILK_HEADER.length)).toString('latin1') === SILK_HEADER
+}
+
+/** 把 16-bit 单声道 PCM 包成最小 WAV（44 字节头），引擎侧都认这个。 */
+export function pcm16ToWav(pcm: Uint8Array, sampleRate: number): Buffer {
+  const header = Buffer.alloc(44)
+  header.write('RIFF', 0, 'latin1')
+  header.writeUInt32LE(36 + pcm.length, 4)
+  header.write('WAVE', 8, 'latin1')
+  header.write('fmt ', 12, 'latin1')
+  header.writeUInt32LE(16, 16)                 // fmt chunk size
+  header.writeUInt16LE(1, 20)                  // PCM
+  header.writeUInt16LE(1, 22)                  // mono
+  header.writeUInt32LE(sampleRate, 24)
+  header.writeUInt32LE(sampleRate * 2, 28)     // byte rate
+  header.writeUInt16LE(2, 32)                  // block align
+  header.writeUInt16LE(16, 34)                 // bits per sample
+  header.write('data', 36, 'latin1')
+  header.writeUInt32LE(pcm.length, 40)
+  return Buffer.concat([header, Buffer.from(pcm)])
+}
+
+/**
+ * SILK → 16 kHz 单声道 WAV 之外的「引擎输入」准备。
+ *
+ * 命中 SILK 魔数时用 `silk-wasm`（纯 wasm，无 native 依赖）解码成 PCM，
+ * 再包成 WAV 交给引擎；解码失败就返回 false，让调用方回落到原来的
+ * ffmpeg 路径——宁可多试一次，也不要因为解码器不认识某种 SILK 变体
+ * 就把整条语音丢掉。
+ * @returns true 表示 `outPath` 已写好可用的 WAV。
+ */
+export async function writeSilkWav(bytes: Uint8Array, outPath: string): Promise<boolean> {
+  try {
+    const { decode } = await import('silk-wasm')
+    const pcm = await decode(bytes, SILK_SAMPLE_RATE)
+    if (pcm.data.length === 0) return false
+    await writeFile(outPath, pcm16ToWav(pcm.data, SILK_SAMPLE_RATE))
+    return true
+  } catch {
+    return false
+  }
+}
 
 /** Run a process, collecting output; rejects on non-zero exit or timeout. */
 function runProcess(
@@ -143,8 +204,9 @@ export class Transcriber {
   }
 
   /**
-   * Transcribe a voice file. The input is converted to 16 kHz mono WAV with
-   * ffmpeg, then handed to the selected engine.
+   * Transcribe a voice file. SILK v3 input is decoded to PCM/WAV directly;
+   * everything else is converted to 16 kHz mono WAV with ffmpeg; the WAV is
+   * then handed to the selected engine.
    * @param filePath - absolute path of the downloaded voice file.
    * @returns the transcript text (trimmed), or '' when the file is silent.
    * @throws when transcription is impossible (missing tools, timeout...).
@@ -162,12 +224,19 @@ export class Transcriber {
     try {
       const wavPath = join(workDir, 'audio.wav')
 
-      const ffmpeg = this.ffmpegChecked ?? (await findCommand('ffmpeg'))
-      this.ffmpegChecked = ffmpeg
-      if (ffmpeg === undefined) {
-        throw new Error('STT: ffmpeg not found on PATH (needed to convert QQ voice to WAV)')
+      // QQ 语音落地常是 SILK v3（扩展名却是 .mp3）：先看魔数，命中就直接
+      // 解码成 WAV，不再让 ffmpeg 按 mp3 去猜（那样必然 Invalid data）。
+      const raw = await readFile(filePath)
+      let ready = isSilkData(raw.subarray(0, 16)) ? await writeSilkWav(raw, wavPath) : false
+
+      if (!ready) {
+        const ffmpeg = this.ffmpegChecked ?? (await findCommand('ffmpeg'))
+        this.ffmpegChecked = ffmpeg
+        if (ffmpeg === undefined) {
+          throw new Error('STT: ffmpeg not found on PATH (needed to convert QQ voice to WAV)')
+        }
+        await runProcess(ffmpeg, ['-y', '-i', filePath, '-ar', '16000', '-ac', '1', '-f', 'wav', wavPath], 60_000)
       }
-      await runProcess(ffmpeg, ['-y', '-i', filePath, '-ar', '16000', '-ac', '1', '-f', 'wav', wavPath], 60_000)
 
       const engine = await this.resolveEngine()
       const text = await this.runEngine(engine, wavPath, workDir)
