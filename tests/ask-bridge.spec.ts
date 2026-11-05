@@ -410,6 +410,68 @@ describe('T2-B1/B3 bridge integration (tool registration + answer interception)'
     await h.connection.stop()
   })
 
+  describe('group replies under the default requireMention', () => {
+    /** 群里起一个会话，问题卡发出后返回。sendGroupTextAs 发的是 at 段加文本段。 */
+    async function bootGroupQuestion() {
+      const answer = vi.fn(async () => true)
+      const h = await makeCmdHarness({ userQuestions: { askTimed: async () => ({ pending: true, callId: 'c2' }), answer } })
+      h.sendGroupTextAs(' 你好', 10001)
+      await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+      h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('assistant/message', questionBlock('relay-q-group')))
+      await vi.waitFor(() => expect(sentTexts(h.outbound).some(t => t.includes('回复编号或字母选择'))).toBe(true))
+      return { h, answer }
+    }
+
+    it.each([
+      [' 1', { answers: [{ id: 'q1', selected: ['方案A'] }] }],
+      ['b', { answers: [{ id: 'q1', selected: ['方案B'] }] }],
+      [' 答:就用方案A', { answers: [{ id: 'q1', selected: [], custom: '就用方案A' }] }],
+      [' 跳过', { answers: [{ id: 'q1', selected: [] }] }],
+    ])('settles an @bot reply whose text segment is %j', async (text, payload) => {
+      const { h, answer } = await bootGroupQuestion()
+      h.sendGroupTextAs(text, 20002)
+      await vi.waitFor(() => expect(answer).toHaveBeenCalledTimes(1))
+      expect((answer.mock.calls[0] as unknown[])[2]).toEqual(payload)
+      await vi.waitFor(() => expect(sentTexts(h.outbound).some(t => t.includes(ANSWER_ACCEPTED_NOTICE))).toBe(true))
+      expect(h.captured.followups).toHaveLength(1)
+
+      h.client.close()
+      await h.bridge.stop()
+      await h.connection.stop()
+    })
+
+    it('still lets a non-answer @bot message reach the conversation with its mention', async () => {
+      const { h, answer } = await bootGroupQuestion()
+      h.sendGroupTextAs(' 随便聊聊', 10001)
+      await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+      expect(answer).not.toHaveBeenCalled()
+      expect(h.captured.followups[1]!.text).toContain('@10002 随便聊聊')
+
+      h.client.close()
+      await h.bridge.stop()
+      await h.connection.stop()
+    })
+
+    it('drops a bare reply without the mention, as the README says', async () => {
+      const { h, answer } = await bootGroupQuestion()
+      h.client.send(JSON.stringify({
+        post_type: 'message', message_type: 'group', user_id: 10001, group_id: 888, self_id: 10002,
+        message: [{ type: 'text', data: { text: '1' } }],
+        raw_message: '1',
+        sender: { user_id: 10001, nickname: '用户10001' },
+      }))
+      // 用后一条 @ 消息当栅栏：它被派发时，前一条已经走完入站管线。
+      h.sendGroupTextAs(' 随便聊聊', 10001)
+      await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+      expect(answer).not.toHaveBeenCalled()
+      expect(h.captured.followups[1]!.text).toContain('随便聊聊')
+
+      h.client.close()
+      await h.bridge.stop()
+      await h.connection.stop()
+    })
+  })
+
   it('never intercepts when no question batch is outstanding', async () => {
     const answer = vi.fn(async () => true)
     const h = await makeCmdHarness({ userQuestions: { askTimed: async () => ({ pending: true, callId: 'c2' }), answer } })

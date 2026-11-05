@@ -416,8 +416,10 @@ export class InboundPipeline {
     // T2-B3: the ask_user_question answer seam runs BEFORE the busy-turn seam
     // and only for plain text (media/quote/forward never parse as answers).
     // A consumed answer ends here; any fall-through continues below unchanged.
+    // The @ segment stays in the text as @<qq> (cq.ts); strip it the way
+    // tryHandleCommand does, or "@bot 1" never parses under requireMention.
     if (plain && this.ctx.interceptQuestionAnswer !== undefined
-      && await this.ctx.interceptQuestionAnswer(chatId, inbound.text)) {
+      && await this.ctx.interceptQuestionAnswer(chatId, inbound.text.replace(/^@\d+\s*/, ''))) {
       currentTrace()?.emit('dispatch', { ok: true, reason: TRACE_REASONS.questionAnswered })
       return
     }
