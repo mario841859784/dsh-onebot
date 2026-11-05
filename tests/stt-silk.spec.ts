@@ -6,9 +6,9 @@
  * fixture 用 `silk-wasm` 自己的 encode() 现场生成，不依赖真实 QQ 语音。
  * @module dsh-onebot/tests/stt-silk
  */
-import { describe, expect, it, vi } from 'vitest'
-import { mkdtempSync } from 'node:fs'
-import { readFile, writeFile } from 'node:fs/promises'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { existsSync, mkdtempSync } from 'node:fs'
+import { chmod, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -50,14 +50,14 @@ describe('isSilkData (#24 魔数判断)', () => {
 describe('pcm16ToWav', () => {
   it('writes a minimal 44-byte PCM header with the right sizes', () => {
     const pcm = new Uint8Array(2000) // 1000 samples
-    const wav = pcm16ToWav(pcm, 24000)
+    const wav = pcm16ToWav(pcm, 16_000)
     expect(wav.length).toBe(44 + pcm.length)
     expect(wav.subarray(0, 4).toString('latin1')).toBe('RIFF')
     expect(wav.readUInt32LE(4)).toBe(36 + pcm.length)
     expect(wav.subarray(8, 12).toString('latin1')).toBe('WAVE')
     expect(wav.readUInt16LE(22)).toBe(1)          // mono
-    expect(wav.readUInt32LE(24)).toBe(24000)      // sample rate
-    expect(wav.readUInt32LE(28)).toBe(48000)      // byte rate
+    expect(wav.readUInt32LE(24)).toBe(16_000)      // sample rate
+    expect(wav.readUInt32LE(28)).toBe(32_000)      // byte rate
     expect(wav.readUInt16LE(34)).toBe(16)         // bits
     expect(wav.subarray(36, 40).toString('latin1')).toBe('data')
     expect(wav.readUInt32LE(40)).toBe(pcm.length)
@@ -72,7 +72,8 @@ describe('writeSilkWav (#24 解码路径)', () => {
     expect(ok).toBe(true)
     const wav = await readFile(out)
     expect(wav.subarray(0, 4).toString('latin1')).toBe('RIFF')
-    expect(wav.readUInt32LE(24)).toBe(24000)
+    // whisper.cpp 只吃 16 kHz：解码输出必须是 16k，而不是源文件的 24k
+    expect(wav.readUInt32LE(24)).toBe(16_000)
     expect(wav.length).toBeGreaterThan(44)
   })
 
@@ -104,6 +105,39 @@ describe('Transcriber 命中 SILK 时不调用 ffmpeg', () => {
     })
 
     await expect(transcriber.transcribe(voice)).resolves.toBe('silk ok')
-    vi.unstubAllEnvs()
+  })
+})
+
+afterEach(() => {
+  // 端到端用例会临时改 PATH；任何一条中途失败都不能让空 PATH 泄漏给同 worker
+  vi.unstubAllEnvs()
+})
+
+describe('Transcriber 非 SILK 输入仍走 ffmpeg', () => {
+  it('converts a plain mp3 through ffmpeg before handing it to the engine', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'stt-mp3-'))
+    const voice = join(dir, 'voice.mp3')
+    // 真 mp3 头（ID3）+ 填充：不是 SILK，必须走转码路径
+    await writeFile(voice, Buffer.concat([Buffer.from('ID3\x04\x00\x00\x00\x00\x00\x00\x00\x00', 'latin1'), Buffer.alloc(64)]))
+
+    const bin = mkdtempSync(join(tmpdir(), 'stt-mp3-bin-'))
+    const marker = join(bin, 'ffmpeg-called')
+    const fakeFfmpeg = join(bin, 'ffmpeg')
+    // 假 ffmpeg：记一笔调用，然后把假定的 WAV 写到最后一个参数
+    await writeFile(fakeFfmpeg, `#!/bin/sh\nfor a; do out=$a; done\nprintf called > ${JSON.stringify(marker)}\nprintf 'RIFF....WAVEfmt ' > \"$out\"\n`)
+    await chmod(fakeFfmpeg, 0o755)
+    vi.stubEnv('PATH', bin)
+
+    const transcriber = new Transcriber({
+      enabled: true,
+      engine: 'custom',
+      command: process.execPath,
+      args: ['-e', 'require("node:fs").writeFileSync(process.argv[1], "mp3 ok")', '{out}.txt'],
+      model: 'small',
+      timeoutMs: 30_000,
+    })
+
+    await expect(transcriber.transcribe(voice)).resolves.toBe('mp3 ok')
+    expect(existsSync(marker)).toBe(true)
   })
 })

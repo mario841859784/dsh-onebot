@@ -32,8 +32,13 @@ const DEFAULT_TIMEOUT_MS = 60_000
 
 /** SILK v3 文件的魔数（QQ 语音落地常见形态）。 */
 const SILK_HEADER = '#!SILK_V3'
-/** SILK 的采样率不在文件头里，QQ / NapCat 落地普遍是 24 kHz。 */
-const SILK_SAMPLE_RATE = 24_000
+/**
+ * 引擎输入的采样率：统一 16 kHz 单声道，与 ffmpeg 管线的 `-ar 16000` 对齐。
+ * SILK 文件头里不带采样率，`silk-wasm` 的 `decode(bytes, rate)` 第二参是
+ * **输出**采样率、会原生重采样；而 whisper.cpp 的 read_wav() 硬校验 16 kHz
+ * （`sampleRate != 16000` 直接失败），所以这里不能沿用 24 kHz。
+ */
+const STT_SAMPLE_RATE = 16_000
 
 /**
  * 判断文件头是不是 SILK v3。
@@ -81,9 +86,9 @@ export function pcm16ToWav(pcm: Uint8Array, sampleRate: number): Buffer {
 export async function writeSilkWav(bytes: Uint8Array, outPath: string): Promise<boolean> {
   try {
     const { decode } = await import('silk-wasm')
-    const pcm = await decode(bytes, SILK_SAMPLE_RATE)
+    const pcm = await decode(bytes, STT_SAMPLE_RATE)
     if (pcm.data.length === 0) return false
-    await writeFile(outPath, pcm16ToWav(pcm.data, SILK_SAMPLE_RATE))
+    await writeFile(outPath, pcm16ToWav(pcm.data, STT_SAMPLE_RATE))
     return true
   } catch {
     return false
@@ -227,7 +232,7 @@ export class Transcriber {
       // QQ 语音落地常是 SILK v3（扩展名却是 .mp3）：先看魔数，命中就直接
       // 解码成 WAV，不再让 ffmpeg 按 mp3 去猜（那样必然 Invalid data）。
       const raw = await readFile(filePath)
-      let ready = isSilkData(raw.subarray(0, 16)) ? await writeSilkWav(raw, wavPath) : false
+      const ready = isSilkData(raw.subarray(0, 16)) ? await writeSilkWav(raw, wavPath) : false
 
       if (!ready) {
         const ffmpeg = this.ffmpegChecked ?? (await findCommand('ffmpeg'))
