@@ -22,6 +22,40 @@ describe('stripMarkdown', () => {
   })
 })
 
+describe('stripMarkdown underscores', () => {
+  it.each([
+    ['a snake_case filename', 'foo_bar_baz.py'],
+    ['two filenames on one line', '改 my_file.txt 和 your_file.txt'],
+    ['a CJK filename', '报告_第一版_终稿.docx'],
+    ['a URL', 'https://example.com/a_b_c/d.png'],
+    ['a Windows path', 'C:\\work_dir\\sub_dir\\x.txt'],
+    ['a tool name', 'qq_send_image'],
+    ['a constant name', 'SOME_CONST_NAME'],
+    ['snake_case across lines', 'a_b\nc_d'],
+    ['a leading and a trailing underscore on different lines', '_cache 目录\nclass_ 参数'],
+  ])('keeps %s', (_name, text) => {
+    expect(stripMarkdown(text)).toBe(text)
+  })
+  it('keeps underscores inside inline code', () => {
+    expect(stripMarkdown('看 \x60foo_bar_baz.py\x60 这个文件')).toBe('看 foo_bar_baz.py 这个文件')
+  })
+  it('keeps underscores in both the text and the URL of a link', () => {
+    expect(stripMarkdown('[a_b_c](https://x.io/a_b_c)')).toBe('a_b_c (https://x.io/a_b_c)')
+  })
+  it.each([
+    ['_italic_', 'italic'],
+    ['__bold__', 'bold'],
+    ['这是 _斜体_ 和 __粗体__ 。', '这是 斜体 和 粗体 。'],
+    ['（_斜体_），__粗体__！', '（斜体），粗体！'],
+    ['第一行\n_斜体_\n__粗体__', '第一行\n斜体\n粗体'],
+    ['_一_ _二_', '一 二'],
+    ['__一__ __二__', '一 二'],
+    ['这是 ___粗斜体___ 。', '这是 粗斜体 。'],
+  ])('still strips real emphasis in %j', (text, expected) => {
+    expect(stripMarkdown(text)).toBe(expected)
+  })
+})
+
 describe('extractForwardBlocks', () => {
   it('parses named blocks and removes them from the body', () => {
     const { body, nodes } = extractForwardBlocks(
