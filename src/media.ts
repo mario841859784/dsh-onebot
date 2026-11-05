@@ -75,10 +75,18 @@ export class MediaStore {
 
   /** Copy a file:// ref only when its real path is inside one configured root. */
   private async copyFileRef(source: string, kind: 'image' | 'voice' | 'video' | 'file'): Promise<string | undefined> {
-    if (this.fileRefRoots.length === 0) return undefined
+    // The ref comes from the inbound payload: quote and cap it so a refusal stays on one line of bounded length.
+    const shown = JSON.stringify('file://' + source.slice(0, 512))
+    if (this.fileRefRoots.length === 0) {
+      console.warn('[dsh-onebot] media resolve refused: ' + shown + ' (fileRefRoots is empty, which refuses every file:// ref; only if your OneBot implementation really serves media from this path, add that directory to fileRefRoots)')
+      return undefined
+    }
     try {
       const real = await resolveContainedPath(this.fileRefRoots, source)
-      if (real === null) return undefined
+      if (real === null) {
+        console.warn('[dsh-onebot] media resolve refused: ' + shown + ' is missing or outside fileRefRoots')
+        return undefined
+      }
       const info = await stat(real)
       if (this.exceedsLocalCap(info.size)) {
         console.warn('[dsh-onebot] media resolve refused: file://' + real + ' is ' + info.size + ' bytes (limit ' + this.downloadMaxBytes + ')')

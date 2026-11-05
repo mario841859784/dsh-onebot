@@ -279,6 +279,48 @@ describe('file:// refs (inbound media)', () => {
     const escaped = await scoped.resolve({ kind: 'image', file: 'file://' + join(inside, 'link.txt') }, async () => undefined)
     expect(escaped).toBeUndefined()
   })
+
+  it('warns on both refusal branches, naming the ref and fileRefRoots (#21 review)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const inside = mkdtempSync(join(tmpdir(), 'media-ref-warn-in-'))
+      const outside = mkdtempSync(join(tmpdir(), 'media-ref-warn-out-'))
+      await writeFile(join(inside, 'allowed.txt'), 'ok')
+      await writeFile(join(outside, 'refused.txt'), 'no')
+      const scoped = new MediaStore(inside, 6, 0, { fileRefRoots: [inside] })
+      const unscoped = new MediaStore(inside, 6, 0)
+      const noHash = async () => undefined
+
+      // A copied ref stays quiet, so the assertions below only count refusals.
+      await expect(scoped.resolve({ kind: 'image', file: 'file://' + join(inside, 'allowed.txt') }, noHash)).resolves.toBeTruthy()
+      expect(warn).not.toHaveBeenCalled()
+
+      // Branch 1: fileRefRoots is empty, for a direct ref and for one get_image hands back.
+      await expect(unscoped.resolve({ kind: 'image', file: 'file://' + join(inside, 'allowed.txt') }, noHash)).resolves.toBeUndefined()
+      await expect(unscoped.resolve({ kind: 'image', file: 'hash' }, async () => ({ file: 'file://' + join(outside, 'refused.txt') }))).resolves.toBeUndefined()
+      expect(warn).toHaveBeenCalledTimes(2)
+      expect(warn.mock.calls[0]?.[0]).toMatch(/^\[dsh-onebot\] media resolve refused: .*allowed\.txt.*fileRefRoots/)
+      expect(warn.mock.calls[1]?.[0]).toMatch(/^\[dsh-onebot\] media resolve refused: .*refused\.txt.*fileRefRoots/)
+
+      // Branch 2: outside every configured root.
+      warn.mockClear()
+      await expect(scoped.resolve({ kind: 'image', file: 'file://' + join(outside, 'refused.txt') }, noHash)).resolves.toBeUndefined()
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(warn.mock.calls[0]?.[0]).toMatch(/^\[dsh-onebot\] media resolve refused: .*refused\.txt.*fileRefRoots/)
+
+      // The ref comes from the inbound payload: a newline stays escaped and a long ref is capped.
+      warn.mockClear()
+      await scoped.resolve({ kind: 'image', file: 'file://' + join(outside, 'a\nb.txt') }, noHash)
+      await scoped.resolve({ kind: 'image', file: 'file://' + 'x'.repeat(10_000) }, noHash)
+      expect(warn).toHaveBeenCalledTimes(2)
+      for (const [message] of warn.mock.calls) {
+        expect(message).not.toMatch(/[\r\n]/)
+        expect(String(message).length).toBeLessThan(1024)
+      }
+    } finally {
+      warn.mockRestore()
+    }
+  })
 })
 
 describe('local media size caps', () => {
