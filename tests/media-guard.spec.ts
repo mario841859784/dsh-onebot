@@ -308,13 +308,15 @@ describe('file:// refs (inbound media)', () => {
       expect(warn).toHaveBeenCalledTimes(1)
       expect(warn.mock.calls[0]?.[0]).toMatch(/^\[dsh-onebot\] media resolve refused: .*refused\.txt.*fileRefRoots/)
 
-      // The ref comes from the inbound payload: a newline stays escaped and a long ref is capped.
+      // The ref comes from the inbound payload: line breaks and control characters stay escaped and a long ref is capped.
       warn.mockClear()
       await scoped.resolve({ kind: 'image', file: 'file://' + join(outside, 'a\nb.txt') }, noHash)
+      await scoped.resolve({ kind: 'image', file: 'file://' + join(outside, 'a\u2028b\u2029c\u0085d\u009be\u007ff.txt') }, noHash)
       await scoped.resolve({ kind: 'image', file: 'file://' + 'x'.repeat(10_000) }, noHash)
-      expect(warn).toHaveBeenCalledTimes(2)
+      expect(warn).toHaveBeenCalledTimes(3)
+      expect(warn.mock.calls[1]?.[0]).toContain('a\\u2028b\\u2029c\\u0085d\\u009be\\u007ff.txt')
       for (const [message] of warn.mock.calls) {
-        expect(message).not.toMatch(/[\r\n]/)
+        expect(message).not.toMatch(/[\r\n\u007f-\u009f\u2028\u2029]/)
         expect(String(message).length).toBeLessThan(1024)
       }
     } finally {

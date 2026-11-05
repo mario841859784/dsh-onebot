@@ -76,7 +76,9 @@ export class MediaStore {
   /** Copy a file:// ref only when its real path is inside one configured root. */
   private async copyFileRef(source: string, kind: 'image' | 'voice' | 'video' | 'file'): Promise<string | undefined> {
     // The ref comes from the inbound payload: quote and cap it so a refusal stays on one line of bounded length.
+    // JSON.stringify leaves DEL, the C1 controls (NEL among them) and U+2028/U+2029 raw, so escape those as well.
     const shown = JSON.stringify('file://' + source.slice(0, 512))
+      .replace(/[\u007f-\u009f\u2028\u2029]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'))
     if (this.fileRefRoots.length === 0) {
       console.warn('[dsh-onebot] media resolve refused: ' + shown + ' (fileRefRoots is empty, which refuses every file:// ref; only if your OneBot implementation really serves media from this path, add that directory to fileRefRoots)')
       return undefined
