@@ -86,6 +86,24 @@ describe('T2-B1 registerAskUserTool', () => {
     expect(result.message).toContain('pending')
   })
 
+  it('renders the pending result as one JSON object, which is how the host reads it back', async () => {
+    const { port } = makeUserQuestions({
+      askTimed: vi.fn(async (_request: unknown, callId: string) => ({ pending: true as const, callId })),
+    })
+    const { ctx, registered } = makeFakeCtx(port)
+    const tool = (registerAskUserTool(ctx, {}) && registered[0]) as unknown as {
+      execute: (args: unknown, exec: unknown) => Promise<unknown>
+      output: { render: (args: unknown, value: unknown) => Array<{ type: string; text: string }> }
+    }
+    const value = await tool.execute({ questions }, fakeExec)
+    const [first] = tool.output.render({ questions }, value)
+    // 宿主投影对记录文本做 JSON.parse 判 pending；读不出来就把问题移出 active，补答结算不了。
+    const parsed = JSON.parse(first!.text) as { pending?: unknown; callId?: unknown; message?: unknown }
+    expect(parsed.pending).toBe(true)
+    expect(parsed.callId).toBe('call-1')
+    expect(parsed.message).toContain('answer_to_pending_question')
+  })
+
   it('returns the copied answer batch on settlement', async () => {
     const { port } = makeUserQuestions({
       askTimed: vi.fn(async () => ({ answers: [{ id: 'q1', selected: ['方案A', '方案B'], custom: '都要' }] })),

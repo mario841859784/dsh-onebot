@@ -220,7 +220,7 @@ export function registerAskUserTool(ctx: Context, options: AskUserToolOptions = 
       render: (_args: unknown, value: unknown) => {
         const result = value as { pending?: boolean; answers?: AskUserAnswer[] }
         if (result !== null && typeof result === 'object' && result.pending === true) {
-          return [{ type: 'text' as const, text: PENDING_NOTICE }]
+          return [{ type: 'text' as const, text: JSON.stringify(result) }]
         }
         const answers = result?.answers ?? []
         const lines = answers.map((answer) => {
