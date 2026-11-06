@@ -61,6 +61,19 @@ export declare function detectExplicitMention(segments: OneBotSegment[] | undefi
  * @returns false for replies whose author cannot be determined synchronously.
  */
 export declare function detectMention(segments: OneBotSegment[] | undefined, raw: string, selfId: string, botQQ: string): boolean;
+/**
+ * Drop the bot's own @ from the start of parsed text. Goes by the first segment,
+ * not a text prefix: with bot 10002, "@100021" is either @10002 followed by "1"
+ * or an @ of member 100021, and the text alone cannot tell them apart.
+ * @param text - parsed text from parseMessage for this same message.
+ * @param segments - segment array (may be undefined for CQ-only payloads).
+ * @param raw - raw CQ string.
+ * @param selfId - learned bot QQ id ('' when unknown).
+ * @param botQQ - configured bot QQ id ('' when unset).
+ * @returns the text after the mention, or the text unchanged when the message
+ *   does not start with an @ of the bot.
+ */
+export declare function stripLeadingBotMention(text: string, segments: OneBotSegment[] | undefined, raw: string, selfId: string, botQQ: string): string;
 /** Split a raw CQ string into segments; used only when no segment array exists. */
 export declare function parseCqString(raw: string): OneBotSegment[];
 /**

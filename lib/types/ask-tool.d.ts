@@ -64,6 +64,10 @@ export type UserQuestionsPort = AskUserQuestionsPort & UserQuestionAnswerPort;
  * Resolve the host userQuestions service from a context without declaring it
  * in the plugin's inject list (dsh-base always registers it, but a missing
  * service must degrade to "no ask tool", never block plugin load).
+ *
+ * Goes through ctx.get: without inject, cordis throws on the property read from
+ * any child fiber (the plugin itself, an agent scope) even though a sibling
+ * plugin provides the service. Plain-object test fakes have no get.
  * @param ctx - cordis context (host or agent scope).
  * @returns the service, or undefined when unavailable.
  */

@@ -36,8 +36,10 @@ export interface SendOptions {
  * question being answered — the model repeats the wrapped user text at the
  * very end of its reply, and keeping the enclosed content then appends the
  * user's message verbatim. That trailing block is dropped whole (tags AND
- * content). A wrapper still carrying the entire reply keeps its content
- * (T9), and a mid-reply wrapper keeps its content (an intentional quote).
+ * content), however many lines the prose before it has, and consecutive
+ * trailing blocks all go. A wrapper still carrying the entire reply keeps its
+ * content (T9), and a mid-reply wrapper keeps its content (an intentional
+ * quote).
  */
 export declare function stripBoundaryLeakage(text: string): string;
 /** Narrow view of a live chat the outbound pipeline may touch — the

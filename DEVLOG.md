@@ -969,3 +969,8 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **清单同步**：package.json version 0.9.14→0.9.15；dsh.plugin.json 同步 0.9.15；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.15（it 描述串 + expect 两行）；package-lock.json version 字段同步 0.9.15（仅 top-level 与 packages[""] 两处，`npm install --package-lock-only` 因既有 dsh-agent↔cordis peer 冲突不可用，等效手改）。
 - **发布面收口**：commit（四件套 + lib/ + package-lock.json，消息 `chore(release): 0.9.15 (T1, T2)`）→ push origin/main → tag `v0.9.15` → GitHub Release → npm publish → npmmirror 同步确认。
 - **教训（node_modules 纪律）**：silk-wasm 手动解包落位（npm pack + tar 解出 node_modules/silk-wasm），避免任何 `npm install` 把宿主链接 @deepseek-ai/*（非 package.json 管理的工作区符号链接）当冗余剪掉——0.9.15 期间实测 npm 会剪，剪后 tsc/vitest 全挂，需重跑 ./scripts/link-host.sh 恢复。
+
+## 2026-11-06 发版 0.9.16（PR #30-#34 + issue #35-#39 修复）
+
+- **改动**：收录 0.9.15 之后合入的 5 个 PR 与 5 个 issue 修复——PR #30（ask_user_question QQ 桥接三连修复）、#31（多行回复尾部回显整块删除）、#32（下划线强调词边界）、#33（语音本地路径回退）、#34（file:// warn + 配置键文档）；issue 修复：#35 forward 握手 uncaughtException、#36 interim 卡片回显泄漏、#37 reverse 启动失败静默、#38 星号强调改坏算式、#39 卡片下划线中文邻接。
+- **清单同步**：package.json version 0.9.15→0.9.16；dsh.plugin.json 同步 0.9.16；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.16（it 描述串 + expect 两行）；package-lock.json version 字段待发布面按惯例同步 0.9.16（仅 top-level 与 packages[""] 两处）。
