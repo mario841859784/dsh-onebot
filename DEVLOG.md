@@ -974,3 +974,9 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 
 - **改动**：收录 0.9.15 之后合入的 5 个 PR 与 5 个 issue 修复——PR #30（ask_user_question QQ 桥接三连修复）、#31（多行回复尾部回显整块删除）、#32（下划线强调词边界）、#33（语音本地路径回退）、#34（file:// warn + 配置键文档）；issue 修复：#35 forward 握手 uncaughtException、#36 interim 卡片回显泄漏、#37 reverse 启动失败静默、#38 星号强调改坏算式、#39 卡片下划线中文邻接。
 - **清单同步**：package.json version 0.9.15→0.9.16；dsh.plugin.json 同步 0.9.16；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.16（it 描述串 + expect 两行）；package-lock.json version 字段待发布面按惯例同步 0.9.16（仅 top-level 与 packages[""] 两处）。
+
+## 2026-11-06 发版 0.9.17（issue #40 修复）
+
+- **改动**：收录 0.9.16 之后合入的 issue #40 修复（`9c67e53` fix(cq): treat numeric sub_type 1 as sticker, keep image, handle mface）——①表情包 sub_type 数字/字符串统一判断（`sub_type == 1` 宽松相等），数字 1 不再被误判为普通图片、保留图片消息形态；②mface 市场表情支持产图（emojiId/emojiPackageId 拼接市场表情 URL）并输出 `[市场表情:名称]` 标签。
+- **清单同步**：package.json version 0.9.16→0.9.17；dsh.plugin.json 同步 0.9.17；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.17（it 描述串 + expect 两行）；package-lock.json version 字段同步 0.9.17（仅 top-level 与 packages[""] 两处，仅字面手改不跑 install）。
+- **发布面收口**：commit（五处清单 + lib/ 重建产物，消息 `chore(release): 0.9.17 (T2)`）→ push origin/main → tag `v0.9.17` → GitHub Release → npm publish → npmmirror 同步确认。
