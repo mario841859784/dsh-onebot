@@ -66,18 +66,30 @@ export interface SendOptions {
  * question being answered — the model repeats the wrapped user text at the
  * very end of its reply, and keeping the enclosed content then appends the
  * user's message verbatim. That trailing block is dropped whole (tags AND
- * content). A wrapper still carrying the entire reply keeps its content
- * (T9), and a mid-reply wrapper keeps its content (an intentional quote).
+ * content), however many lines the prose before it has, and consecutive
+ * trailing blocks all go. A wrapper still carrying the entire reply keeps its
+ * content (T9), and a mid-reply wrapper keeps its content (an intentional
+ * quote).
  */
 export function stripBoundaryLeakage(text: string): string {
   if (!/<\/?user_message[\s/>]/i.test(text)) return text
-  return text
-    // #26: trailing full wrapper preceded by other prose — drop the whole
-    // block including the enclosed content (leakage, not a quote).
-    .replace(/^(.*\S)\s*<user_message\s[^>]*>[\s\S]*<\/user_message\s*>\s*$/i, '$1')
+  // #26: trailing full wrapper preceded by other prose — drop the whole
+  // block including the enclosed content (leakage, not a quote). The greedy
+  // prefix reaches the last opening tag, so one pass takes only the last
+  // wrapper: an earlier mid-reply quote survives, and the loop takes
+  // consecutive echoes.
+  let cleaned = text
+  let previous: string
+  do {
+    previous = cleaned
+    cleaned = previous.replace(/^([\s\S]*\S)\s*<user_message\s[^>]*>[\s\S]*<\/user_message\s*>\s*$/i, '$1')
+  } while (cleaned !== previous)
+  return cleaned
     // Full wrapper: drop the tags, keep the enclosed content (inner edge
-    // whitespace trimmed so the removal leaves no doubled blank lines).
-    .replace(/<user_message\s[^>]*?>\s*([\s\S]*?)\s*<\/user_message\s*>/gi, '$1')
+    // whitespace trimmed so the removal leaves no doubled blank lines). Trimmed
+    // in the callback: \s* on both sides of a lazy group backtracks in cubic time
+    // on an unclosed tag followed by a long run of whitespace.
+    .replace(/<user_message\s[^>]*?>([\s\S]*?)<\/user_message\s*>/gi, (_match, inner: string) => inner.trim())
     // Stray tags without a matching pair: opening (with attrs), bare
     // opening, closing, and self-closing forms.
     .replace(/<\/?user_message(?:\s[^>]*?)?\/?>/gi, '')

@@ -403,6 +403,17 @@ describe('T9: stripBoundaryLeakage', () => {
     expect(stripBoundaryLeakage(echo)).toBe('好的，你刚才说：\n你好\n我已收到。')
   })
 
+  it('an unclosed tag followed by a long run of whitespace does not stall the send', () => {
+    const start = performance.now()
+    const out = stripBoundaryLeakage('ok\n<user_message a="1">' + ' '.repeat(3200) + 'x')
+    expect(performance.now() - start).toBeLessThan(1000)
+    expect(out.startsWith('ok\n')).toBe(true)
+    expect(out.endsWith('x')).toBe(true)
+    expect(out).not.toContain('user_message')
+    // Inner edge whitespace of a full wrapper is still trimmed.
+    expect(stripBoundaryLeakage('<user_message qq="1">\n \n你好\n \n</user_message>')).toBe('你好')
+  })
+
   it('stray opening/closing/self-closing tags are dropped verbatim', () => {
     expect(stripBoundaryLeakage('<user_message qq="10001" nickname="小明">你好')).toBe('你好')
     expect(stripBoundaryLeakage('回复内容</user_message>')).toBe('回复内容')
@@ -419,6 +430,63 @@ describe('T9: stripBoundaryLeakage', () => {
     expect(stripBoundaryLeakage('  \n<user_message qq="10001" nickname="小明">帮我看下今天天气</user_message>')).toBe('帮我看下今天天气')
     // 中段包裹（后面还有正文）是有意引用 → 内容保留。
     expect(stripBoundaryLeakage('好的，你刚才说：\n<user_message qq="10001" nickname="小明">你好</user_message>，对吧？')).toBe('好的，你刚才说：\n你好，对吧？')
+  })
+
+  describe('#26: trailing echo after a multi-line reply', () => {
+    const echo = (text: string) => '<user_message qq="10001" nickname="小明">\n' + text + '\n</user_message>'
+
+    it('two-line reply', () => {
+      expect(stripBoundaryLeakage('好的，我查一下。\n稍等片刻。' + echo('帮我看下今天天气'))).toBe('好的，我查一下。\n稍等片刻。')
+    })
+
+    it('two-paragraph reply with a blank line before the echo', () => {
+      expect(stripBoundaryLeakage('第一段。\n\n第二段。\n\n' + echo('帮我看下今天天气'))).toBe('第一段。\n\n第二段。')
+    })
+
+    it('list reply', () => {
+      expect(stripBoundaryLeakage('结果：\n- A\n- B\n' + echo('帮我看下今天天气'))).toBe('结果：\n- A\n- B')
+    })
+
+    it('CRLF reply', () => {
+      expect(stripBoundaryLeakage('好的，我查一下。\r\n稍等片刻。\r\n' + echo('帮我看下今天天气'))).toBe('好的，我查一下。\r\n稍等片刻。')
+    })
+
+    it('reply starting with a newline', () => {
+      expect(stripBoundaryLeakage('\n好的，我查一下。' + echo('帮我看下今天天气'))).toBe('好的，我查一下。')
+    })
+
+    it('multi-line user text inside the echo', () => {
+      expect(stripBoundaryLeakage('好的。\n稍等。' + echo('第一行问题\n第二行问题'))).toBe('好的。\n稍等。')
+    })
+
+    it('two consecutive echoes are both dropped', () => {
+      expect(stripBoundaryLeakage('好的，我查一下。\n稍等片刻。' + echo('第一条') + '\n' + echo('第二条'))).toBe('好的，我查一下。\n稍等片刻。')
+      expect(stripBoundaryLeakage('好的，我查一下。' + echo('第一条') + echo('第二条'))).toBe('好的，我查一下。')
+    })
+
+    it('a mid-reply quote survives a trailing echo (single-line lead)', () => {
+      expect(stripBoundaryLeakage('你刚才说：' + echo('你好') + '，我这就查。' + echo('帮我看下今天天气'))).toBe('你刚才说：你好，我这就查。')
+    })
+
+    it('a mid-reply quote survives a trailing echo (multi-line lead)', () => {
+      const quote = '<user_message qq="10001" nickname="小明">你好</user_message>'
+      expect(stripBoundaryLeakage('好的。\n你刚才说：' + quote + '\n我这就查。\n' + echo('帮我看下今天天气'))).toBe('好的。\n你刚才说：你好\n我这就查。')
+    })
+
+    it('a literal unterminated tag in the user text does not keep the echo', () => {
+      expect(stripBoundaryLeakage('好的。\n稍等。' + echo('看 <user_message x 这个'))).toBe('好的。\n稍等。')
+      expect(stripBoundaryLeakage('好的。' + echo('看 <user_message x 这个'))).toBe('好的。')
+    })
+
+    it('a multi-line reply with only a mid-reply quote keeps it', () => {
+      const quote = '<user_message qq="10001" nickname="小明">你好</user_message>'
+      expect(stripBoundaryLeakage('好的。\n你刚才说：' + quote + '\n对吧？')).toBe('好的。\n你刚才说：你好\n对吧？')
+    })
+
+    it('a wrapper carrying the whole reply still keeps its content', () => {
+      expect(stripBoundaryLeakage(echo('第一行\n第二行'))).toBe('第一行\n第二行')
+      expect(stripBoundaryLeakage('\n\n' + echo('第一行\n第二行') + '\n')).toBe('第一行\n第二行')
+    })
   })
 
   it("ordinary <tag> text and code content are untouched (no false positives)", () => {
