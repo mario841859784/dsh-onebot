@@ -23,9 +23,10 @@ export function stripMarkdown(text: string): string {
     .replace(/^#{1,6}[ \t]+/gm, '')
     // Emphasis.
     .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/__([^_]+)__/g, '$1')
+    .replace(/(^|[^\p{L}\p{N}_])___([^_\n]+)___(?![\p{L}\p{N}_])/gu, '$1$2')
+    .replace(/(^|[^\p{L}\p{N}_])__([^_\n]+)__(?![\p{L}\p{N}_])/gu, '$1$2')
     .replace(/\*([^*]+)\*/g, '$1')
-    .replace(/(^|[^_])_([^_]+)_([^_]|$)/g, '$1$2$3')
+    .replace(/(^|[^\p{L}\p{N}_])_([^_\n]+)_(?![\p{L}\p{N}_])/gu, '$1$2')
     .replace(/~~([^~]+)~~/g, '$1')
     // Links and images.
     .replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, '[图片]')
