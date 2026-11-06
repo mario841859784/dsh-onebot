@@ -169,11 +169,14 @@ export class MediaStore {
   }, resolveHash: (kind: 'image' | 'voice' | 'video' | 'file', file: string) => Promise<{ url?: string; file?: string } | undefined>): Promise<ResolvedMedia | undefined> {
     await this.ensure()
     try {
-      if (ref.url !== undefined && ref.url !== '') {
+      const file = ref.file ?? ''
+      // NapCat puts a local path in a voice segment's url when its packet
+      // backend is unavailable or fetching the url failed. That can never be
+      // downloaded, so let file (the code get_record takes) have its turn.
+      if (ref.url !== undefined && ref.url !== '' && (isHttpUrl(ref.url) || file === '')) {
         const path = await this.downloadUrl(ref.url, extForUrl(ref.url, ref.kind), this.downloadMaxBytes)
         return { path, kind: ref.kind }
       }
-      const file = ref.file ?? ''
       if (file.startsWith('base64://')) {
         const data = Buffer.from(file.slice('base64://'.length), 'base64')
         if (this.exceedsLocalCap(data.length)) {
@@ -360,6 +363,16 @@ function matchesCidr(address: string, cidrs: Cidr[]): boolean {
     }
     return true
   })
+}
+
+/** Whether a url is of the only kind downloadUrl accepts; says nothing about its host. */
+function isHttpUrl(rawUrl: string): boolean {
+  try {
+    const { protocol } = new URL(rawUrl)
+    return protocol === 'http:' || protocol === 'https:'
+  } catch {
+    return false
+  }
 }
 
 /**
