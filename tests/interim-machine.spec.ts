@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { InterimTracker } from '../src/interim.js'
 import type { InterimChat } from '../src/interim.js'
 
-function makeHarness(opts?: { interim?: boolean; interimRecallMs?: number; interimRecall?: boolean; failSends?: boolean; sendIds?: string[] }) {
+function makeHarness(opts?: { interim?: boolean; interimRecallMs?: number; interimRecall?: boolean; failSends?: boolean; sendIds?: string[]; maxImageBytes?: number }) {
   const sentTexts: string[] = []
   const recalledIds: string[] = []
   const summaryCards: number[] = []
@@ -39,7 +39,7 @@ function makeHarness(opts?: { interim?: boolean; interimRecallMs?: number; inter
     config: {
       interimRecallMs: opts?.interimRecallMs,
       interimRecall: opts?.interimRecall,
-      maxImageBytes: 8 * 1024 * 1024,
+      maxImageBytes: opts?.maxImageBytes ?? 8 * 1024 * 1024,
       cardFooter: 'dsh',
       fontFiles: [],
       fontFamilies: [],
@@ -256,5 +256,26 @@ describe('InterimTracker state machine (M3-D2a)', () => {
     expect(h.sentTexts).toEqual(['中间步', '最终答'])
     expect(h.chat.recallTimers.size).toBe(0)
     expect(h.chat.loopBuffer).toHaveLength(0)
+  })
+})
+
+describe('#36 summary-card leakage stripping', () => {
+  it('strips user_message echo per entry and drops entries the strip emptied', async () => {
+    // maxImageBytes 1 forces the card body down the sendToChat fallback,
+    // where the exact rendered text is observable.
+    const h = makeHarness({ maxImageBytes: 1 })
+    // Trailing echo after prose: stripped to the prose alone (#26 semantics).
+    h.tracker.onAssistantMessage('private:10001', h.chat, h.assistant('好的，我查一下。<user_message qq="10001" nickname="测试昵称">\n帮我看下今天天气\n</user_message>', { toolCall: true }) as never)
+    // A stray self-closing tag strips to empty: the entry must be dropped, not numbered.
+    h.tracker.onAssistantMessage('private:10001', h.chat, h.assistant('<user_message qq="10001" nickname="测试昵称" />', { toolCall: true, id: 'm2' }) as never)
+    h.tracker.onTurnEnd('private:10001', h.chat)
+    await h.settle()
+    const card = h.sentTexts[h.sentTexts.length - 1]
+    expect(card).toContain('好的，我查一下。')
+    expect(card).not.toContain('<user_message')
+    expect(card).not.toContain('qq=')
+    expect(card).not.toContain('nickname')
+    expect(card).not.toContain('帮我看下今天天气')
+    expect(card).not.toContain('2.')
   })
 })

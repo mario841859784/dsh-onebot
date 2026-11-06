@@ -21,6 +21,7 @@ import type { AssistantMessage } from '@deepseek-ai/dsh-llm'
 import type { BridgeConfig } from './bridge.js'
 import type { ChatId } from './chat.js'
 import type { OutboundSegment, SendOptions } from './outbound.js'
+import { stripBoundaryLeakage } from './outbound.js'
 import { renderTextImage } from './t2i/index.js'
 import { describeError } from './errors.js'
 
@@ -263,7 +264,15 @@ export class InterimTracker {
 
   /** Render this turn's interims into one t2i image (summary card, before final). */
   private async sendInterimSummary(chatId: ChatId, buf: Array<{ id: string; text: string }>): Promise<void> {
-    const body = buf.filter(item => item.text.trim() !== '').map((item, index) => (index + 1) + '. ' + item.text.trim()).join('\n\n')
+    // #36: the card renders raw loop-buffer text — an interim that echoed
+    // <user_message> would leak the tag, qq/nickname attrs and the user's
+    // message onto a card that (unlike the interims) is never recalled. Strip
+    // per entry first, then drop entries the strip emptied entirely.
+    const body = buf
+      .map(item => stripBoundaryLeakage(item.text).trim())
+      .filter(text => text !== '')
+      .map((text, index) => (index + 1) + '. ' + text)
+      .join('\n\n')
     if (body === '') return
     let png: Buffer
     try {

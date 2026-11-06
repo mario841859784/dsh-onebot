@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import net from 'node:net'
 import WebSocket, { WebSocketServer } from 'ws'
 import { OneBotConnection } from '../src/connection.js'
 import type { OneBotEvent } from '../src/connection.js'
@@ -857,5 +858,34 @@ describe('EADDRINUSE takeover and forward self-heal (W2-①④)', () => {
     await vi.advanceTimersByTimeAsync(45_000)
     await advanceUntil(() => dialCount() > dialsAfterCap, 5_000)
     await connection.stop()
+  })
+})
+
+describe('forward handshake abort (issue #35)', () => {
+  it('stop() during CONNECTING does not raise an uncaughtException from the abort error', async () => {
+    // Raw TCP peer: accepts the dial but never answers the WS upgrade, so the
+    // socket stays CONNECTING until stop() aborts the handshake.
+    const server = net.createServer(socket => socket.resume())
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const port = (server.address() as net.AddressInfo).port
+    const uncaught: unknown[] = []
+    const onUncaught = (error: unknown): void => {
+      uncaught.push(error)
+    }
+    process.on('uncaughtException', onUncaught)
+    try {
+      const connection = new OneBotConnection({ ...CONFIG, mode: 'forward', url: 'ws://127.0.0.1:' + port })
+      connection.start()
+      // The dial is synchronous: the socket exists and the handshake is in flight.
+      const socket = (connection as unknown as { socket?: WebSocket }).socket
+      expect(socket?.readyState).toBe(WebSocket.CONNECTING)
+      await connection.stop()
+      // abortHandshake emits its 'error' on the next tick.
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(uncaught).toEqual([])
+    } finally {
+      process.off('uncaughtException', onUncaught)
+      server.close()
+    }
   })
 })

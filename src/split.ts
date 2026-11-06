@@ -22,10 +22,10 @@ export function stripMarkdown(text: string): string {
     // Headings.
     .replace(/^#{1,6}[ \t]+/gm, '')
     // Emphasis.
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/(?<![0-9A-Za-z*])\*\*([^*\n]+?)\*\*(?![0-9A-Za-z*])/g, '$1')
     .replace(/(^|[^\p{L}\p{N}_])___([^_\n]+)___(?![\p{L}\p{N}_])/gu, '$1$2')
     .replace(/(^|[^\p{L}\p{N}_])__([^_\n]+)__(?![\p{L}\p{N}_])/gu, '$1$2')
-    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/(?<![0-9A-Za-z*])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![0-9A-Za-z*])/g, '$1')
     .replace(/(^|[^\p{L}\p{N}_])_([^_\n]+)_(?![\p{L}\p{N}_])/gu, '$1$2')
     .replace(/~~([^~]+)~~/g, '$1')
     // Links and images.

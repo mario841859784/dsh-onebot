@@ -13,13 +13,19 @@ import { apply, Config, name, defaultMediaDir } from '../src/index.js'
  * the no-op lifecycle methods keep them behaving identically.
  */
 const bridgeDepsCaptured = vi.hoisted(() => [] as Array<{ config?: { monoFamilies?: readonly string[] } }>)
+/** Issue #37: start/stop call counters so the failure-rollback is observable. */
+const bridgeLifecycle = vi.hoisted(() => ({ startCalls: 0, stopCalls: 0 }))
 vi.mock('../src/bridge.js', () => ({
   ChatBridge: class {
     constructor(deps: { config?: { monoFamilies?: readonly string[] } }) {
       bridgeDepsCaptured.push(deps)
     }
-    start(): void {}
-    async stop(): Promise<void> {}
+    start(): void {
+      bridgeLifecycle.startCalls++
+    }
+    async stop(): Promise<void> {
+      bridgeLifecycle.stopCalls++
+    }
   },
 }))
 
@@ -159,6 +165,37 @@ describe('plugin entry', () => {
       expect(warn).not.toHaveBeenCalled()
     } finally {
       warn.mockRestore()
+    }
+  })
+
+  it('logs and unwinds the started chain when the start effect fails (#37)', async () => {
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-plugin-'))
+    const { ctx } = makeCtx()
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    bridgeLifecycle.startCalls = 0
+    bridgeLifecycle.stopCalls = 0
+    try {
+      const effectSpy = vi.spyOn(ctx as { effect: (cb: () => unknown, label?: string) => unknown }, 'effect')
+      // Default mode is reverse; an empty accessToken makes connection.start()
+      // throw synchronously inside the async effect.
+      apply(ctx as never, Config({ mediaDir, port: 0, accessToken: '', botQQ: '10002', sttEnabled: false, sensitivePatterns: [] }))
+      const effect = effectSpy.mock.results[0]?.value as { then: (onFulfilled?: unknown, onRejected?: (error: unknown) => unknown) => unknown }
+      await expect(new Promise((resolve, reject) => {
+        effect.then(resolve, reject)
+      })).rejects.toThrow('reverse mode requires a non-empty accessToken')
+      // The failure is surfaced through the plugin log, not swallowed.
+      const errorLine = errorSpy.mock.calls.map(call => String(call[0])).join('\n')
+      expect(errorLine).toContain('dsh-onebot 启动失败')
+      expect(errorLine).toContain('reverse mode requires a non-empty accessToken')
+      // The already-started bridge was rolled back.
+      expect(bridgeLifecycle.startCalls).toBe(1)
+      expect(bridgeLifecycle.stopCalls).toBe(1)
+      // And the plugin never claims to be mounted.
+      expect(logSpy.mock.calls.some(call => String(call[0]).includes('mounted'))).toBe(false)
+    } finally {
+      errorSpy.mockRestore()
+      logSpy.mockRestore()
     }
   })
 

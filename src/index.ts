@@ -633,9 +633,20 @@ export function apply(ctx: Context, config: Config): void {
     // "mounted" while the channels were still coming up).
     const mountDetails = ' (mode=' + config.mode + ', media=' + mediaDir + ', admins=' + policy.adminUsers.length + ')'
     console.log('[dsh-onebot] starting' + mountDetails)
-    await bridge.start()
-    await connection.start()
-    await injectChannel?.start()
+    try {
+      await bridge.start()
+      await connection.start()
+      await injectChannel?.start()
+    } catch (error) {
+      // #37: an async-effect rejection is swallowed by cordis (task?.catch —
+      // no log, fiber stays active). Surface the failure and unwind the
+      // already-started chain (same order as the disposer) before rethrowing.
+      log('error', 'dsh-onebot 启动失败: ' + describeError(error))
+      await injectChannel?.stop()
+      await bridge.stop()
+      await connection.stop()
+      throw error
+    }
     console.log('[dsh-onebot] mounted' + mountDetails)
     // QQ 平台说明与 qq_* 工具现按会话 agent 注入（见 ChatBridge.installChannelScope）
     return async () => {

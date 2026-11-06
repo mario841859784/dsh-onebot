@@ -56,6 +56,26 @@ describe('stripMarkdown underscores', () => {
   })
 })
 
+describe('stripMarkdown emphasis boundaries (issue #38)', () => {
+  it('keeps arithmetic asterisks intact', () => {
+    expect(stripMarkdown('2*3*4 = 24')).toBe('2*3*4 = 24')
+    expect(stripMarkdown('3*4*5=60')).toBe('3*4*5=60')
+    expect(stripMarkdown('长 5*3 米，宽 2*4 米')).toBe('长 5*3 米，宽 2*4 米')
+    expect(stripMarkdown('2**10 和 3**4')).toBe('2**10 和 3**4')
+  })
+  it('keeps bare SELECT asterisks, even from inline code', () => {
+    expect(stripMarkdown('SELECT * FROM a; SELECT * FROM b;')).toBe('SELECT * FROM a; SELECT * FROM b;')
+    expect(stripMarkdown('\x60SELECT * FROM a\x60')).toBe('SELECT * FROM a')
+  })
+  it('does not pair asterisks across lines', () => {
+    expect(stripMarkdown('3*4=12\n5*6=30')).toBe('3*4=12\n5*6=30')
+  })
+  it('still strips legitimate emphasis', () => {
+    expect(stripMarkdown('**粗体** 和 *斜体*')).toContain('粗体 和 斜体')
+    expect(stripMarkdown('这是*斜体*文字')).toContain('这是斜体文字')
+  })
+})
+
 describe('extractForwardBlocks', () => {
   it('parses named blocks and removes them from the body', () => {
     const { body, nodes } = extractForwardBlocks(

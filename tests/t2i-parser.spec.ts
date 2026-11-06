@@ -27,6 +27,29 @@ describe('parseInline', () => {
     expect(parts.every(p => p.cls === null)).toBe(true)
   })
 
+  it('does not italicize asterisk arithmetic or bare SELECT (issue #38)', () => {
+    expect(parseInline('2*3*4 = 24').every(p => p.cls === null)).toBe(true)
+    expect(parseInline('SELECT * FROM a; SELECT * FROM b;').every(p => p.cls === null)).toBe(true)
+  })
+
+  it('does not bold exponent asterisks (issue #38)', () => {
+    expect(parseInline('2**10 和 3**4').every(p => p.cls === null)).toBe(true)
+  })
+
+  it('still italicizes CJK-adjacent asterisks (issue #38)', () => {
+    expect(parseInline('这是*斜体*文字').find(p => p.cls === 'italic')?.content).toBe('斜体')
+  })
+
+  it('does not italicize underscores beside CJK filenames (issue #39)', () => {
+    expect(parseInline('报告_第一版_终稿.docx').every(p => p.cls === null)).toBe(true)
+    expect(parseInline('中文_abc_中文').every(p => p.cls === null)).toBe(true)
+  })
+
+  it('still italicizes underscores with punctuation boundaries (issue #39)', () => {
+    expect(parseInline('这是 _斜体_ 文字').find(p => p.cls === 'italic')?.content).toBe('斜体')
+    expect(parseInline('（_斜体_）').find(p => p.cls === 'italic')?.content).toBe('斜体')
+  })
+
   it('keeps the outermost marker for overlaps', () => {
     const parts = parseInline('**bold *inner* text**')
     expect(parts.filter(p => p.cls !== null)).toHaveLength(1)
