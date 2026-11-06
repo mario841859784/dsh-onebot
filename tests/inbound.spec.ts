@@ -1064,3 +1064,97 @@ describe('inbound media resolution (SnowLuma 适配 T1 #3/#4)', () => {
     await h.connection.stop()
   })
 })
+
+/**
+ * Stickers next to photos: the real parseMessage + buildBody + MediaStore on a
+ * real local download. Each slot is checked by the bytes of the file it names,
+ * so a path landing in the wrong slot fails even though it is a valid path.
+ */
+describe('inbound stickers next to photos', () => {
+  const STICKER = Buffer.from('47494638396101', 'hex')
+  const PHOTO = Buffer.from('ffd8ffe0001002', 'hex')
+
+  /** One DM through the whole inbound path; each tag in the final text, in order. */
+  async function slotsOf(segments: (base: string) => unknown[]): Promise<string[]> {
+    const server = createServer((req, res) => {
+      if (req.url === '/sticker') res.end(STICKER)
+      else if (req.url === '/photo') res.end(PHOTO)
+      else {
+        res.statusCode = 404
+        res.end()
+      }
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const base = 'http://127.0.0.1:' + (server.address() as { port: number }).port
+    try {
+      const h = await makeHarness({ allowPrivateHosts: true })
+      h.client.send(JSON.stringify({
+        post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10002,
+        message: segments(base), raw_message: '', sender: { user_id: 10001, nickname: '小明' },
+      }))
+      await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+      const tags = [...h.captured.followups[0].text.matchAll(/\[(表情包|图片)(?::([^\]]*))?\]/g)]
+      const slots: string[] = []
+      for (const [, tag, value] of tags) {
+        if (value === undefined) {
+          slots.push(tag)
+          continue
+        }
+        const bytes = await readFile(value).catch(() => undefined)
+        const content = bytes?.equals(STICKER) === true ? 'sticker bytes' : bytes?.equals(PHOTO) === true ? 'photo bytes' : 'not a local file: ' + value
+        slots.push(tag + ': ' + content)
+      }
+      h.client.close()
+      await h.bridge.stop()
+      await h.connection.stop()
+      return slots
+    } finally {
+      server.close()
+    }
+  }
+  const sticker = (url: string, file = 'S.png', subType: unknown = 1) => ({ type: 'image', data: { file, url, sub_type: subType } })
+  const photo = (url: string) => ({ type: 'image', data: { file: 'P.jpg', url } })
+  const mface = (url: string) => ({ type: 'mface', data: { url, summary: '[笑]' } })
+
+  it('keeps a photo in its own slot after a sticker', async () => {
+    expect(await slotsOf(b => [sticker(b + '/sticker'), photo(b + '/photo')]))
+      .toEqual(['表情包: sticker bytes', '图片: photo bytes'])
+  })
+
+  it('resolves a sticker after a photo to its local path', async () => {
+    expect(await slotsOf(b => [photo(b + '/photo'), sticker(b + '/sticker')]))
+      .toEqual(['图片: photo bytes', '表情包: sticker bytes'])
+  })
+
+  it('resolves a lone sticker to its local path, with sub_type as a string too', async () => {
+    expect(await slotsOf(b => [sticker(b + '/sticker', 'S.png', '1')])).toEqual(['表情包: sticker bytes'])
+  })
+
+  it('treats an mface with a url the same way', async () => {
+    expect(await slotsOf(b => [mface(b + '/sticker'), photo(b + '/photo')]))
+      .toEqual(['表情包: sticker bytes', '图片: photo bytes'])
+  })
+
+  it('keeps a plain [表情包] when the sticker download fails, and the photo keeps its slot', async () => {
+    expect(await slotsOf(b => [sticker(b + '/missing'), photo(b + '/photo')]))
+      .toEqual(['表情包', '图片: photo bytes'])
+    expect(await slotsOf(b => [mface(b + '/missing')])).toEqual(['表情包'])
+  })
+
+  it('gives two stickers with the same file name one slot each', async () => {
+    expect(await slotsOf(b => [sticker(b + '/sticker'), sticker(b + '/sticker')]))
+      .toEqual(['表情包: sticker bytes', '表情包: sticker bytes'])
+    expect(await slotsOf(b => [sticker(b + '/missing'), sticker(b + '/sticker')]))
+      .toEqual(['表情包', '表情包: sticker bytes'])
+  })
+
+  it('does not let a sticker fill the slot of a photo that failed to download', async () => {
+    expect(await slotsOf(b => [photo(b + '/missing'), sticker(b + '/sticker')]))
+      .toEqual(['图片', '表情包: sticker bytes'])
+  })
+
+  it('leaves messages without stickers alone', async () => {
+    expect(await slotsOf(b => [photo(b + '/photo'), photo(b + '/photo')]))
+      .toEqual(['图片: photo bytes', '图片: photo bytes'])
+  })
+})
