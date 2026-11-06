@@ -54,6 +54,42 @@ describe('parseMessage', () => {
     expect(parsed.text).toBe('[合并转发]')
   })
 
+  it('treats numeric sub_type 1 as a sticker and keeps the image (#40)', () => {
+    const parsed = parseMessage(
+      [{ type: 'image', data: { file: 'a.gif', url: 'http://x/a', sub_type: 1 } as unknown as Record<string, string> }],
+      '',
+    )
+    expect(parsed.text).toBe('[表情包:a.gif]')
+    expect(parsed.media).toHaveLength(1)
+    expect(parsed.media[0].kind).toBe('image')
+  })
+
+  it('treats string sub_type \'1\' as a sticker and keeps the image (#40)', () => {
+    const parsed = parseMessage(
+      [{ type: 'image', data: { file: 'a.gif', url: 'http://x/a', sub_type: '1' } }],
+      '',
+    )
+    expect(parsed.text).toBe('[表情包:a.gif]')
+    expect(parsed.media).toHaveLength(1)
+    expect(parsed.media[0].kind).toBe('image')
+  })
+
+  it('maps an mface segment to an image plus sticker label (#40)', () => {
+    const parsed = parseMessage(
+      [{ type: 'mface', data: { url: 'http://x/mface.png' } }],
+      '',
+    )
+    expect(parsed.text).toBe('[表情包:http://x/mface.png]')
+    expect(parsed.media).toHaveLength(1)
+    expect(parsed.media[0]).toMatchObject({ kind: 'image', url: 'http://x/mface.png' })
+  })
+
+  it('falls back to a bare sticker label when mface has no url (#40)', () => {
+    const parsed = parseMessage([{ type: 'mface', data: {} }], '')
+    expect(parsed.text).toBe('[表情包]')
+    expect(parsed.media).toHaveLength(0)
+  })
+
   it('handles at and poke segments', () => {
     const parsed = parseMessage(
       [
