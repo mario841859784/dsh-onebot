@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { cqUnescape, parseMessage, detectExplicitMention, detectMention, parseCqString, faceToEmoji } from '../src/cq.js'
+import type { OneBotSegment } from '../src/cq.js'
+import { cqUnescape, parseMessage, detectExplicitMention, detectMention, parseCqString, faceToEmoji, stripLeadingBotMention } from '../src/cq.js'
 
 describe('cqUnescape', () => {
   it('reverses CQ attribute escaping', () => {
@@ -111,6 +112,35 @@ describe('detectExplicitMention', () => {
       expect(detectExplicitMention([{ type: 'at', data: { qq } }], '', '10001', '')).toBe(true)
       expect(detectExplicitMention(undefined, `[CQ:at,qq=${qq}] hi`, '', '10001')).toBe(true)
     }
+  })
+})
+
+describe('stripLeadingBotMention', () => {
+  const at = (qq: string) => ({ type: 'at', data: { qq } })
+  const text = (value: string) => ({ type: 'text', data: { text: value } })
+  /** Strip with the text parseMessage produces for this same message. */
+  const strip = (segments: OneBotSegment[] | undefined, raw: string, selfId = '10002', botQQ = '') =>
+    stripLeadingBotMention(parseMessage(segments, raw).text, segments, raw, selfId, botQQ)
+
+  it('keeps a digit glued to the mention, in both message formats', () => {
+    expect(strip([at('10002'), text('1')], '')).toBe('1')
+    expect(strip([at('10002'), text('1 2')], '')).toBe('1 2')
+    expect(strip(undefined, '[CQ:at,qq=10002]1')).toBe('1')
+    expect(strip([], '[CQ:at,qq=10002]1')).toBe('1')
+  })
+
+  it('falls back to botQQ while selfId is unknown', () => {
+    expect(strip([at('10002'), text('1')], '', '', '10002')).toBe('1')
+  })
+
+  it('leaves every other message alone', () => {
+    expect(strip([at('20003'), text(' 1')], '')).toBe('@20003 1')
+    expect(strip([at('100021')], '')).toBe('@100021')
+    expect(strip([at('all'), text(' 1')], '')).toBe('@全体成员 1')
+    expect(strip([text('1 '), at('10002')], '')).toBe('1 @10002')
+    expect(strip([at('20003'), at('10002'), text(' 1')], '')).toBe('@20003@10002 1')
+    expect(strip([text('@10002 1')], '')).toBe('@10002 1')
+    expect(strip([at('10002'), text('1')], '', '', '')).toBe('@100021')
   })
 })
 

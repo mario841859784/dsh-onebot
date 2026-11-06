@@ -555,7 +555,11 @@ export function apply(ctx: Context, config: Config): void {
     sessions: ctx.sessions,
     agentPresets: ctx.agentPresets,
     commands: ctx.commands as BridgeDeps['commands'],
-    userQuestions: resolveUserQuestions(ctx),
+    // Live lookup per read: patch line order does not decide load order, so the
+    // service may arrive after this plugin applied.
+    get userQuestions() {
+      return resolveUserQuestions(ctx)
+    },
     sessionPersistence: ctx.sessionPersistence,
     workspaceRegistry: ctx.workspaceRegistry as unknown as WorkspaceRegistryLike,
     agentDefaultModel: ctx.agentDefaultModel,
