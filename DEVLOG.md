@@ -980,3 +980,9 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **改动**：收录 0.9.16 之后合入的 issue #40 修复（`9c67e53` fix(cq): treat numeric sub_type 1 as sticker, keep image, handle mface）——①表情包 sub_type 数字/字符串统一判断（`sub_type == 1` 宽松相等），数字 1 不再被误判为普通图片、保留图片消息形态；②mface 市场表情支持产图（emojiId/emojiPackageId 拼接市场表情 URL）并输出 `[市场表情:名称]` 标签。
 - **清单同步**：package.json version 0.9.16→0.9.17；dsh.plugin.json 同步 0.9.17；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.17（it 描述串 + expect 两行）；package-lock.json version 字段同步 0.9.17（仅 top-level 与 packages[""] 两处，仅字面手改不跑 install）。
 - **发布面收口**：commit（五处清单 + lib/ 重建产物，消息 `chore(release): 0.9.17 (T2)`）→ push origin/main → tag `v0.9.17` → GitHub Release → npm publish → npmmirror 同步确认。
+
+## 2026-11-07 发版 0.9.18（PR #44 表情包占位修复 + PR #45 QQ 卡片转可读文字）
+
+- **改动**：收录 0.9.17 之后合入的 2 个 PR 及评审落地 commit——①PR #44（`b759f62` fix(inbound): 表情包占自己的位置并解析成本地路径，不再顶掉旁边的图片）：表情包（sticker/mface）在消息里占独立段位并解析为本地路径，不再顶替相邻图片的位置；②PR #45（`319a97a` feat(cq): QQ 卡片（json、xml 段）转成可读文字，不再只留占位符）：json/xml 卡片段渲染为可读文字摘要而非 `[卡片]` 占位；③`241f4bf` 评审建议落地：cq.ts `attr()` 正则锚定修复 data-url 误认、inbound.ts idx<0 注释补充、两条新用例、prompt.ts 措辞对齐。
+- **清单同步**：package.json version 0.9.17→0.9.18；dsh.plugin.json 同步 0.9.18；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.18（it 描述串 + expect 两行）；package-lock.json version 字段同步 0.9.18（仅 top-level 与 packages[""] 两处，仅字面手改不跑 install）；README.md / README.en.md 经 grep 核对仅含历史版本注记（「0.9.X 起」），无当前版本引用，不改动。
+- **发布面收口**：commit（五处清单 + lib/ 重建产物，消息 `chore(release): 0.9.18 (T3)`）→ push origin/main → tag `v0.9.18` → GitHub Release → npm publish → npmmirror 同步确认。

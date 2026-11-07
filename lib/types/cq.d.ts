@@ -20,6 +20,9 @@ export interface MediaRef {
     fileId?: string;
     name?: string;
     subType?: string;
+    /** Stickers only: the exact `[表情包...]` text parseMessage wrote for this ref,
+     * so buildBody swaps this ref's own slot and not the next photo's `[图片]`. */
+    stickerLabel?: string;
 }
 /** A fully parsed inbound message. */
 export interface ParsedMessage {
