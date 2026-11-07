@@ -208,6 +208,119 @@ export function parseCqString(raw: string): OneBotSegment[] {
   return segments
 }
 
+/** QQ card fields written for people, in display order. Avatars, previews and icons never qualify. */
+const CARD_TEXT_KEYS = ['tag', 'source', 'title', 'nickname', 'name', 'desc', 'contact', 'address', 'text', 'content']
+/** QQ card fields that say where the card leads. */
+const CARD_LINK_KEYS = ['qqdocurl', 'jumpUrl', 'jumpurl', 'jump_url', 'doc_url', 'url']
+/** A card nothing readable could be taken from. */
+const CARD_PLACEHOLDER = '[卡片]'
+/** Caps: code points per field, code points of all fields joined, how many fields, link length. */
+const CARD_MAX_FIELD = 160
+const CARD_MAX_TEXT = 360
+const CARD_MAX_FIELDS = 5
+const CARD_MAX_LINK = 200
+/** A link must already be free of everything cardPlain would have to rewrite. */
+const CARD_LINK_RE = /^https?:\/\/[^\s<>"\[\]\p{Cc}\p{Cf}]+$/iu
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Cap at a code-point count so an astral character is never cut in half. */
+function capChars(text: string, max: number): string {
+  const chars = [...text]
+  return chars.length <= max ? text : chars.slice(0, max).join('').trimEnd()
+}
+
+/**
+ * Undo CQ and XML escaping, every nested layer at once. expandQuote and
+ * qq_group_history run cqUnescape over the parsed text, so an &#91; left in a
+ * card (or &amp;#91;, at any depth) would come back as a real [ there.
+ */
+function cardUnescape(value: string): string {
+  return cqUnescape(value.replace(/&(?:amp;)+/g, '&'))
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+}
+
+/**
+ * Reduce one card field to a single line. Cards are written by other people:
+ * square brackets could pass for this plugin's own markers ([图片:path]) and
+ * take a media slot in buildBody, angle brackets could pass for the
+ * user_message boundary, invisible characters could hide text from a reader.
+ * They go first, or removing one could join a broken-up escape back together.
+ */
+function cardPlain(value: string): string {
+  const flat = cardUnescape(value.replace(/\p{Cf}/gu, ''))
+    .replace(/\p{Cc}/gu, ' ')
+    .replaceAll('<', '＜')
+    .replaceAll('>', '＞')
+    .replaceAll('[', '（')
+    .replaceAll(']', '）')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return capChars(flat, CARD_MAX_FIELD)
+}
+
+/** The strings a card object holds under these keys, in key order. */
+function cardStrings(source: Record<string, unknown> | undefined, keys: readonly string[]): string[] {
+  if (source === undefined) return []
+  return keys.map(key => source[key]).filter((value): value is string => typeof value === 'string')
+}
+
+/** Assemble the card text from fields already through cardPlain and raw link candidates. */
+function cardText(fields: readonly string[], links: readonly string[]): string {
+  const kept = [...new Set(fields)].filter(field => field !== '').slice(0, CARD_MAX_FIELDS)
+  const link = links.map(cardUnescape).find(url => url.length <= CARD_MAX_LINK && CARD_LINK_RE.test(url))
+  const body = [capChars(kept.join(' · '), CARD_MAX_TEXT), link ?? ''].filter(part => part !== '').join(' ')
+  return body === '' ? CARD_PLACEHOLDER : '[卡片:' + body + ']'
+}
+
+/**
+ * Readable text of a json segment: text fields of the first object in meta,
+ * one level deeper when that object has none, then prompt, then desc.
+ * @param raw - the segment's data field (a JSON string; some implementations may parse it).
+ * @returns '[卡片:...]', or '[卡片]' when nothing readable can be taken from it.
+ */
+function cardFromJson(raw: unknown): string {
+  let card = raw
+  if (typeof card === 'string') {
+    try {
+      card = JSON.parse(card)
+    } catch {
+      return CARD_PLACEHOLDER
+    }
+  }
+  if (!isRecord(card)) return CARD_PLACEHOLDER
+  const block = isRecord(card.meta) ? Object.values(card.meta).find(isRecord) : undefined
+  const inner = block !== undefined ? Object.values(block).find(isRecord) : undefined
+  const plain = (source: Record<string, unknown> | undefined, keys: readonly string[]): string[] =>
+    cardStrings(source, keys).map(cardPlain).filter(field => field !== '')
+  const fields = [plain(block, CARD_TEXT_KEYS), plain(inner, CARD_TEXT_KEYS), plain(card, ['prompt']), plain(card, ['desc'])]
+    .find(list => list.length > 0) ?? []
+  return cardText(fields, [...cardStrings(block, CARD_LINK_KEYS), ...cardStrings(inner, CARD_LINK_KEYS)])
+}
+
+/**
+ * Readable text of an xml segment: brief, title, summary and the url attribute.
+ * @param raw - the segment's data field.
+ * @returns '[卡片:...]', or '[卡片]' when nothing readable can be taken from it.
+ */
+function cardFromXml(raw: unknown): string {
+  if (typeof raw !== 'string') return CARD_PLACEHOLDER
+  const attr = (name: string): string | undefined => {
+    const m = new RegExp('\\b' + name + '=(?:"([^"]*)"|\'([^\']*)\')').exec(raw)
+    return m?.[1] ?? m?.[2]
+  }
+  // [^<>] and [^<] stop at the next tag, which keeps the scan linear on hostile input.
+  const tag = (name: string): string | undefined =>
+    new RegExp('<' + name + '\\b[^<>]*>([^<]*)</' + name + '>').exec(raw)?.[1]
+  const fields = [attr('brief'), tag('title'), tag('summary')].map(value => cardPlain(value ?? ''))
+  return cardText(fields, [attr('url') ?? ''])
+}
+
 /**
  * Parse a OneBot message (segment array preferred, CQ string fallback) into
  * text + media references. Media appear as placeholders in the text; media.ts
@@ -289,7 +402,10 @@ export function parseMessage(segments: OneBotSegment[] | undefined, raw: string)
         }
         break
       case 'json':
-        textParts.push('[卡片]')
+        textParts.push(cardFromJson(seg.data.data))
+        break
+      case 'xml':
+        textParts.push(cardFromXml(seg.data.data))
         break
       case 'mface':
         // Market sticker: keep the image when a url exists, label it like a sticker.
