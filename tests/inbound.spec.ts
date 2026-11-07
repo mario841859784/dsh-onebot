@@ -1197,6 +1197,11 @@ describe('inbound stickers next to photos', () => {
       .toEqual(['图片', '表情包: sticker bytes'])
   })
 
+  it('lands the replacement on a hand-typed identical label placed ahead of the sticker', async () => {
+    expect(await slotsOf(b => [{ type: 'text', data: { text: '[表情包:S.png]' } }, sticker(b + '/sticker')]))
+      .toEqual(['表情包: sticker bytes', '表情包: not a local file: S.png'])
+  })
+
   it('leaves messages without stickers alone', async () => {
     expect(await slotsOf(b => [photo(b + '/photo'), photo(b + '/photo')]))
       .toEqual(['图片: photo bytes', '图片: photo bytes'])

@@ -311,7 +311,7 @@ function cardFromJson(raw: unknown): string {
 function cardFromXml(raw: unknown): string {
   if (typeof raw !== 'string') return CARD_PLACEHOLDER
   const attr = (name: string): string | undefined => {
-    const m = new RegExp('\\b' + name + '=(?:"([^"]*)"|\'([^\']*)\')').exec(raw)
+    const m = new RegExp('(?:\\s|^)' + name + '=(?:"([^"]*)"|\'([^\']*)\')').exec(raw)
     return m?.[1] ?? m?.[2]
   }
   // [^<>] and [^<] stop at the next tag, which keeps the scan linear on hostile input.

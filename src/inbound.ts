@@ -512,6 +512,7 @@ export class InboundPipeline {
     for (const ref of media) {
       const placeholder = placeholderFor(ref)
       const idx = out.indexOf(placeholder)
+      // idx<0：占位符在文本里找不到（如手打的相同标签已先行被消费），跳过失败回退，原文保持不动。
       const annotation = await this.resolveMediaRef(ref, chatId)
       if (idx >= 0 && annotation !== '') {
         out = out.slice(0, idx) + annotation + out.slice(idx + placeholder.length)

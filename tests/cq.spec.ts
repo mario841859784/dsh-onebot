@@ -280,6 +280,11 @@ describe('parseMessage QQ cards', () => {
     expect(textOf(xml('<msg><picture cover="https://example.com/c.jpg"/></msg>'))).toBe('[卡片]')
   })
 
+  it('does not mistake a data-url attribute for the link', () => {
+    expect(textOf(xml('<msg brief="标题" data-url="https://evil.example/x" url="https://example.com/real"></msg>')))
+      .toBe('[卡片:标题 https://example.com/real]')
+  })
+
   it('stays fast on a hostile xml card', () => {
     const started = Date.now()
     expect(textOf(xml('<title'.repeat(200_000)))).toBe('[卡片]')
