@@ -22,6 +22,9 @@ export interface MediaRef {
   fileId?: string
   name?: string
   subType?: string
+  /** Stickers only: the exact `[表情包...]` text parseMessage wrote for this ref,
+   * so buildBody swaps this ref's own slot and not the next photo's `[图片]`. */
+  stickerLabel?: string
 }
 
 /** A fully parsed inbound message. */
@@ -221,15 +224,17 @@ export function parseMessage(segments: OneBotSegment[] | undefined, raw: string)
 
   const appendImage = (data: Record<string, string>): void => {
     const subType = data.sub_type ?? data['sub-type']
+    const ref: MediaRef = { kind: 'image', url: data.url || undefined, file: data.file || undefined, subType }
     if (String(subType) === '1') {
       // Sticker: keep the image entry (some setups can only see it this way)
       // and label it with the file/url like the [文件:...] tag style.
       const label = data.file || data.url
-      textParts.push(label ? `[表情包:${label}]` : '[表情包]')
+      ref.stickerLabel = label ? `[表情包:${label}]` : '[表情包]'
+      textParts.push(ref.stickerLabel)
     } else {
       textParts.push('[图片]')
     }
-    media.push({ kind: 'image', url: data.url || undefined, file: data.file || undefined, subType })
+    media.push(ref)
   }
 
   const list = segments !== undefined && segments.length > 0 ? segments : parseCqString(raw)
@@ -289,8 +294,9 @@ export function parseMessage(segments: OneBotSegment[] | undefined, raw: string)
       case 'mface':
         // Market sticker: keep the image when a url exists, label it like a sticker.
         if (seg.data.url) {
-          media.push({ kind: 'image', url: seg.data.url, file: seg.data.file || undefined })
-          textParts.push(`[表情包:${seg.data.url}]`)
+          const stickerLabel = `[表情包:${seg.data.url}]`
+          media.push({ kind: 'image', url: seg.data.url, file: seg.data.file || undefined, stickerLabel })
+          textParts.push(stickerLabel)
         } else {
           textParts.push('[表情包]')
         }

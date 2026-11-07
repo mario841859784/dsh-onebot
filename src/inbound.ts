@@ -520,6 +520,10 @@ export class InboundPipeline {
         // placeholder silently unresolved.
         this.ctx.log('debug', '媒体解析失败，占位符保留原文: ' + placeholder)
         currentTrace()?.emit('media', { ok: false, reason: TRACE_REASONS.mediaResolveFailed })
+        // A sticker's label names a remote file nothing here can open: keep the bare tag.
+        if (ref.stickerLabel !== undefined) {
+          out = out.slice(0, idx) + '[表情包]' + out.slice(idx + placeholder.length)
+        }
       }
     }
     return out
@@ -555,7 +559,7 @@ export class InboundPipeline {
         const settings = this.ctx.getSettings(chatId)
         settings.lastImagePath = resolved.path
         settings.pendingImageRef = undefined
-        return '[图片:' + resolved.path + ']'
+        return (ref.stickerLabel !== undefined ? '[表情包:' : '[图片:') + resolved.path + ']'
       case 'voice': {
         // M3-D4c: dispatch must not wait on STT — the [语音] placeholder ships
         // now and the transcript steers into the turn when it completes. A
@@ -807,7 +811,7 @@ function numericReplyId(messageId: string): number | undefined {
 /** The placeholder a media ref contributes to the parsed text. */
 function placeholderFor(ref: MediaRef): string {
   switch (ref.kind) {
-    case 'image': return '[图片]'
+    case 'image': return ref.stickerLabel ?? '[图片]'
     case 'voice': return '[语音]'
     case 'video': return '[视频]'
     default: return ref.name !== undefined ? '[文件:' + ref.name + ']' : '[文件]'
