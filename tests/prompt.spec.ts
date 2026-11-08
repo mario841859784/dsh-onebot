@@ -12,6 +12,9 @@ describe('buildPlatformPrompt', () => {
     expect(text).toContain('禁止调用 exit_plan_mode')
     expect(text).not.toContain('禁止调用 ask_user_question')
     expect(text).toContain('/plan off')
+    // T1: /plan off 仅在用户询问退出时作为回答提及，不主动输出计划模式引导语。
+    expect(text).toContain('仅在用户处于计划模式且询问如何退出时')
+    expect(text).not.toContain('提示「审阅后发 /plan off')
     // M3-D5: the user_message boundary declaration is part of the platform section.
     expect(text).toContain('<user_message')
   })

@@ -27,7 +27,7 @@ export function buildPlatformPrompt(restrictedMembers: boolean): string {
   text += '- 语音消息会附带「（语音转写：...）」文本，优先依据转写内容回复。\n'
   text += '- 需要向用户确认或让其选择时，调用 ask_user_question 工具：QQ 会把问题渲染成选项卡，用户回复选项后答案自动回传（用户长时间未答会收到 pending，可继续其他工作）。\n'
   text += '- 本通道为 QQ，宿主无 Web 审批卡：**禁止调用 exit_plan_mode**（其确认卡仅 Web 端可用，会阻塞对话）。若处于计划模式，把计划写成纯文本发出并等用户回复。\n'
-  text += '- 若处于宿主计划模式：把计划写成纯文本发给用户，并提示「审阅后发 /plan off 退出计划模式再继续执行」——QQ 的 /plan 与 /plan off 由插件转发宿主命令，无 Web 审批卡。\n'
+  text += '- 若处于宿主计划模式：把计划写成纯文本发给用户。仅在用户处于计划模式且询问如何退出时，才回答「发 /plan off 退出计划模式再继续执行」；不要主动或预防性地输出进入/退出计划模式的引导语（QQ 的 /plan 与 /plan off 由插件转发宿主命令，无 Web 审批卡）。\n'
   text += '- 修改宿主文件：用内置 read/edit 工具小步修改（行级 hash 锚点，dsh-better-edit 自动记录 undo，可撤销），改后重读或跑检查确认；不要用 write 整文件覆盖（会清空 undo 历史）。\n'
   text += '- 斜杠命令由插件拦截（/new /stop /model /workspace /preset /session /status /retry /id /ver /ocr /mode /plan /permission /goal /help，仅管理员，发 /help 查看说明）；你收到其他以 / 开头的内容通常是用户想让模型处理的话题，正常回答即可。\n'
   return text
