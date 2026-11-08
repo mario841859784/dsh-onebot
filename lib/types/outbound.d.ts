@@ -40,6 +40,15 @@ export interface SendOptions {
  * trailing blocks all go. A wrapper still carrying the entire reply keeps its
  * content (T9), and a mid-reply wrapper keeps its content (an intentional
  * quote).
+ *
+ * #46: host-internal metadata echoed into the reply is stripped too. Whole
+ * lines starting with a fixed host time-sampling/context prefix ("Time
+ * sampled while preparing turn", "Browser time zone for this request:",
+ * "Elapsed since the preceding model-visible message:") are dropped with
+ * the line, and the host role boundary tags <user> / </user> are removed in
+ * line-edge shapes only (alone on a line, or glued at a line start/end) —
+ * mid-line occurrences (ordinary `<`, XML, comparisons, prose mentions of
+ * the prefixes) stay untouched.
  */
 export declare function stripBoundaryLeakage(text: string): string;
 /** Narrow view of a live chat the outbound pipeline may touch — the
