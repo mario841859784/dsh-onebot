@@ -1036,3 +1036,8 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **顺带修复（真机检查揪出）**：会话/媒体组没有 `group.<id>.desc` 词条，宿主 locale 对缺键返回原始 key——面板把「group.session.desc」当描述渲染（真机截图实证）。修复：①补 `group.session.desc`（新会话与工作区）/`group.media.desc`（语音、图片与媒体限额）双词，behavior desc 更新为「回复、限流与消息处理」；②面板防御——desc 词条缺失传 null 不渲染，杜绝同类泄漏。
 - **同步面**：src/client.ts GROUPS（字段随注释搬移，区域头注释更新重排口径）；src/settings-remote.ts SETTINGS_GROUPS + JSDoc（host 侧同构，快照 groups 随之）；tests/client-settings.spec（rowsPerGroup [4,15,20,9,14,7]、连接页=6 键全等断言、归属断言、「session 无通知行」断言从裸「提示」改「提示文案」——提示词文件 label 误伤）；tests/settings-remote.spec（connection 6 键 + behavior 14 键三处数组）；tests/t5-port（六组结构 6/15/14/10/17/7）、t7-port（组尾键序）；README 中英六组覆盖表。
 - **验证**：tsc 0 错误；client-settings+settings-remote+sidebar-entry 99/99；全量 1079 passed + 4 skipped（仅 connection 两条并行时序 flake，--maxWorkers=1 隔离 39/39，同既有口径）；真机回归受阻——本轮应用实例 Chromium 无障碍树未暴露（历史实例正常），合成指针事件无效，可视化点验留待用户（渲染机制与上轮回归一致，仅 GROUPS 数据搬移）。
+
+## 2026-11-10 README.en 换英文界面截图（宿主切英文后实拍）
+
+- **改动**：docs/ 新增 `settings-ui-connection-en.jpg` / `settings-ui-behavior-en.jpg`（宿主切 English 后实拍，亮色主题跟随宿主；连接页同时展示 0.10.0 重排后的纯通道配置形态）；README.en.md 两图换成英文版，并注明中文界面截图在中文 README、面板文案自 0.10.0 起全双语。
+- **意义**：上一轮「英文 README 无英文配图」的待办就此闭环——正是字段文案词典化让这一步从「不可行」变成「切个语言就能截」。

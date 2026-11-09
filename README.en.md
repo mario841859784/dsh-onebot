@@ -258,9 +258,12 @@ The dsh Web GUI settings page exposes this plugin's configuration visually (a ho
 The panel follows the host's native look (since 0.10.0 the client bundle reuses the host's UI primitives and
 `--dsw-*` design tokens; light/dark follows the host):
 
-![Settings page · Connection](docs/settings-ui-connection.jpg)
+![Settings page · Connection](docs/settings-ui-connection-en.jpg)
 
-![Settings page · Behavior](docs/settings-ui-behavior.jpg)
+![Settings page · Behavior](docs/settings-ui-behavior-en.jpg)
+
+(Chinese-UI screenshots for the same panel live in the Chinese README; the panel
+follows the host language — field texts are fully bilingual since 0.10.0.)
 
 ### Six groups, 69 keys (plus 5 notice texts)
 
