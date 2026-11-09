@@ -137,18 +137,42 @@ export function sanitizeNickname(nickname: string): string {
  * Build the group-message metadata prefix the agent sees:
  * "[HH:MM 昵称(QQ)]" plus "[@我]" when the bot was mentioned.
  * @param nickname - sender display name.
+/**
+ * T1 (PR port): 把 OneBot event.time（Unix 秒）格式化为 HH:MM。无效/缺失
+ * （0、NaN、负数）时退回当前时间——与旧行为一致，不再让拉取的旧消息时间戳
+ * 全部错位。
+ * @param seconds - event.time（Unix 秒）。
+ * @returns 'HH:MM'（本地时区，两位补零）。
+ */
+export function formatClock(seconds: number): string {
+  const sec = Number(seconds)
+  const date = Number.isFinite(sec) && sec > 0 ? new Date(sec * 1000) : new Date()
+  const hh = String(date.getHours()).padStart(2, '0')
+  const mm = String(date.getMinutes()).padStart(2, '0')
+  return hh + ':' + mm
+}
+
+/**
+ * T1 (PR port): 私聊消息的时间前缀 `[HH:MM] `。配合 normalizeOneBot11 保留
+ * 的 event.time 使用：拉取旧消息时前缀反映消息真实时间而非处理时刻。
+ */
+export function buildDirectMessagePrefix(seconds: number): string {
+  return '[' + formatClock(seconds) + '] '
+}
+
+/**
+ * Build the single-line group prefix `[HH:MM 昵称(QQ)·档位][@我] `.
+ * @param nickname - sanitized sender nickname.
  * @param userId - sender QQ number.
  * @param mentioned - whether the bot was mentioned.
  * @param role - the sender's tier (权限分档 A1): admin → ·管理员, member → ·成员.
+ * @param seconds - event.time（Unix 秒，T1 PR port）；无效时退回当前时间。
  * @returns the prefix string (never empty: always at least the time stamp).
  */
-export function buildGroupMessagePrefix(nickname: string, userId: string, mentioned: boolean, role: UserRole): string {
-  const now = new Date()
-  const hh = String(now.getHours()).padStart(2, '0')
-  const mm = String(now.getMinutes()).padStart(2, '0')
+export function buildGroupMessagePrefix(nickname: string, userId: string, mentioned: boolean, role: UserRole, seconds: number): string {
   const mention = mentioned ? '[@我]' : ''
   const tier = role === 'admin' ? '管理员' : '成员'
-  return '[' + hh + ':' + mm + ' ' + nickname + '(' + userId + ')·' + tier + ']' + mention + ' '
+  return '[' + formatClock(seconds) + ' ' + nickname + '(' + userId + ')·' + tier + ']' + mention + ' '
 }
 
 /** Soft-cap prefix for restricted (member-role) group users. */

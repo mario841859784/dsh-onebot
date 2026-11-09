@@ -256,6 +256,7 @@ describe('heartbeat pong watchdog', () => {
     removeAllListeners(): void
     close: (...args: unknown[]) => void
     ping: () => void
+    send: (data: string) => void
     terminate: () => void
     emit(event: string, ...args: unknown[]): void
   }
@@ -275,6 +276,7 @@ describe('heartbeat pong watchdog', () => {
       },
       close: vi.fn(),
       ping: vi.fn(),
+      send: vi.fn(),
       terminate: vi.fn(),
       emit(event, ...args) {
         for (const listener of [...(listeners.get(event) ?? [])]) listener(...args)
@@ -284,6 +286,22 @@ describe('heartbeat pong watchdog', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+  })
+
+  it('probes with a get_status action frame (T1 PR port: NapCat 断 1006 于 WS ping)', () => {
+    vi.useFakeTimers()
+    const connection = new OneBotConnection({ ...CONFIG, accessToken: 'tok' })
+    const privateConnection = expose(connection)
+    const socket = makeFakeSocket()
+    privateConnection.socket = socket
+    privateConnection.startHeartbeat()
+    privateConnection.lastPongAt = Date.now() - 15_000
+
+    vi.advanceTimersByTime(30_000)
+    expect(socket.send).toHaveBeenCalledTimes(1)
+    const probe = JSON.parse(String(socket.send.mock.calls[0]?.[0])) as Record<string, unknown>
+    expect(probe).toEqual({ action: 'get_status', echo: 'dsh-onebot-heartbeat' })
+    expect(socket.ping).not.toHaveBeenCalled()
   })
 
   it('terminates after two heartbeat periods without pong, but not before', () => {
@@ -298,17 +316,35 @@ describe('heartbeat pong watchdog', () => {
     const warnSpy = vi.spyOn(console, 'warn')
 
     vi.advanceTimersByTime(30_000)
-    expect(socket.ping).toHaveBeenCalledTimes(1)
+    expect(socket.send).toHaveBeenCalledTimes(1) // the T1 get_status probe
     expect(socket.terminate).not.toHaveBeenCalled()
     expect(warnSpy).not.toHaveBeenCalled()
 
     vi.advanceTimersByTime(30_000)
     expect(socket.terminate).toHaveBeenCalledTimes(1)
-    expect(socket.ping).toHaveBeenCalledTimes(1) // the stale tick terminates instead of pinging again
+    expect(socket.send).toHaveBeenCalledTimes(1) // the stale tick terminates instead of probing again
     expect(warnSpy).toHaveBeenCalledTimes(1)
     expect(String(warnSpy.mock.calls[0]?.[0])).toContain('mode=reverse')
     expect(String(warnSpy.mock.calls[0]?.[0])).toContain('75000ms')
     warnSpy.mockRestore()
+  })
+
+  it('refreshes liveness from any frame on the current socket, not only pongs (T1: the probe reply is not a pong)', () => {
+    vi.useFakeTimers()
+    const connection = new OneBotConnection({ ...CONFIG, accessToken: 'tok' })
+    const privateConnection = expose(connection)
+    const stale = makeFakeSocket()
+    const current = makeFakeSocket()
+    privateConnection.attachSocket(stale)
+    const atAttach = privateConnection.lastPongAt
+    privateConnection.attachSocket(current)
+    vi.setSystemTime(atAttach + 5_000)
+
+    stale.emit('message', '{}')
+    expect(privateConnection.lastPongAt).toBe(atAttach) // a stale socket's frame must not refresh
+
+    current.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: {}, echo: 'dsh-onebot-heartbeat' }))
+    expect(privateConnection.lastPongAt).toBe(atAttach + 5_000) // any frame on the current socket refreshes
   })
 
   it('ignores pong from a replaced socket and refreshes from the current one', () => {
@@ -328,6 +364,55 @@ describe('heartbeat pong watchdog', () => {
 
     current.emit('pong')
     expect(privateConnection.lastPongAt).toBe(atAttach + 5_000) // the current socket does refresh
+  })
+})
+
+describe('notice gate (T1 PR port: 戳一戳放行，其余 notice 仍忽略)', () => {
+  const exposeFrame = (connection: OneBotConnection) => connection as unknown as {
+    onFrame(data: string): void
+    socket: unknown
+  }
+  const feed = (connection: OneBotConnection, event: Record<string, unknown>): void => {
+    exposeFrame(connection).onFrame(JSON.stringify(event))
+  }
+  const pokeNotice = { post_type: 'notice', notice_type: 'poke', user_id: 20003, target_id: 10002 }
+  const notifyPoke = { post_type: 'notice', notice_type: 'notify', sub_type: 'poke', user_id: 20003, target_id: 10002 }
+
+  it('routes poke notices (both poke and notify/poke wire shapes) to onNotice', () => {
+    const connection = new OneBotConnection({ ...CONFIG, accessToken: 'tok' })
+    const seen: OneBotEvent[] = []
+    connection.onNotice = event => seen.push(event)
+    feed(connection, pokeNotice)
+    feed(connection, notifyPoke)
+    expect(seen).toHaveLength(2)
+    expect(seen[0].user_id).toBe(20003)
+    expect(seen[1].notice_type).toBe('notify')
+  })
+
+  it('keeps ignoring other notices and requests, and does nothing with no handler', () => {
+    const connection = new OneBotConnection({ ...CONFIG, accessToken: 'tok' })
+    const seen: OneBotEvent[] = []
+    connection.onNotice = event => seen.push(event)
+    feed(connection, { post_type: 'notice', notice_type: 'group_increase', user_id: 20003 })
+    feed(connection, { post_type: 'notice', notice_type: 'notify', sub_type: 'honor' })
+    feed(connection, { post_type: 'request', request_type: 'friend' })
+    feed(connection, pokeNotice)
+    expect(seen).toHaveLength(1)
+    expect(seen[0].notice_type).toBe('poke')
+
+    // Default (unwired) handler is a noop: a poke must not throw.
+    const bare = new OneBotConnection({ ...CONFIG, accessToken: 'tok' })
+    expect(() => feed(bare, pokeNotice)).not.toThrow()
+  })
+
+  it('logs an onNotice failure instead of crashing the frame loop', () => {
+    const connection = new OneBotConnection({ ...CONFIG, accessToken: 'tok' })
+    connection.onNotice = () => { throw new Error('handler boom') }
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    expect(() => feed(connection, pokeNotice)).not.toThrow()
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('onNotice handler failed'))
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('handler boom'))
+    errorSpy.mockRestore()
   })
 })
 

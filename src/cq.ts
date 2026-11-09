@@ -122,17 +122,35 @@ export function detectExplicitMention(
   raw: string,
   selfId: string,
   botQQ: string,
+  atAllCounts = false,
 ): boolean {
   const bot = selfId !== '' ? selfId : botQQ
   if (bot === '') return false
   if (segments !== undefined) {
-    return segments.some(seg => seg.type === 'at' && (seg.data.qq === bot || seg.data.qq === 'all'))
+    return segments.some(seg => seg.type === 'at' && (seg.data.qq === bot || (atAllCounts && seg.data.qq === 'all')))
   }
   CQ_AT_RE.lastIndex = 0
   for (const m of raw.matchAll(CQ_AT_RE)) {
-    if (m[1] === bot || m[1] === 'all') return true
+    if (m[1] === bot || (atAllCounts && m[1] === 'all')) return true
   }
   return false
+}
+
+/**
+ * T1 (PR port): 唤醒词命中判定——只认消息开头命中。用 startsWith 而非
+ * includes：消息正文里偶然提到唤醒词（如有人在句中写到唤醒词）不再误触；
+ * 大小写不敏感、两侧空白忽略；空词表恒 false。
+ * @param text - 消息纯文本（segmentText 结果）。
+ * @param names - 唤醒词表（管理员档或成员档）。
+ * @returns 是否以任一唤醒词开头。
+ */
+export function detectWakeName(text: string, names: readonly string[]): boolean {
+  const needle = text.trim().toLowerCase()
+  if (needle === '') return false
+  return names.some(name => {
+    const wake = name.trim().toLowerCase()
+    return wake !== '' && needle.startsWith(wake)
+  })
 }
 
 /**
@@ -143,6 +161,7 @@ export function detectExplicitMention(
  * @param raw - CQ string fallback.
  * @param selfId - learned bot QQ id ('' when unknown).
  * @param botQQ - configured fallback bot QQ id.
+ * @param options - T1 (PR port) 引用即叫/@全体即叫 开关（缺省=上游语义）。
  * @returns false for replies whose author cannot be determined synchronously.
  */
 export function detectMention(
@@ -150,11 +169,15 @@ export function detectMention(
   raw: string,
   selfId: string,
   botQQ: string,
+  options: { reply?: boolean; atAll?: boolean } = {},
 ): boolean {
-  if (detectExplicitMention(segments, raw, selfId, botQQ)) return true
+  if (detectExplicitMention(segments, raw, selfId, botQQ, options.atAll === true)) return true
   const bot = selfId !== '' ? selfId : botQQ
   if (bot === '') return false
   const list = segments !== undefined ? segments : parseCqString(raw)
+  // T1 (PR port): 引用即叫——任何回复都算叫机器人，作者核实交由上游
+  // skipQuoteVerify 跳过（见 inbound.ts 的 requireMention 复核块）。
+  if (options.reply === true) return list.some(seg => seg.type === 'reply')
   // A bare reply id contains no author information and cannot imply mention.
   return list.some(seg => seg.type === 'reply' && String(seg.data.qq ?? '') === bot)
 }

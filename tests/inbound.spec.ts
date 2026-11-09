@@ -21,10 +21,10 @@ describe('inbound pipeline', () => {
   it('runs the full inbound→agent→outbound pipeline', async () => {
     const h = await makeHarness()
 
-    // 1. Inbound DM from the admin user.
+    // 1. Inbound DM from the admin user. T1 PR port: 私聊带 [HH:MM] 前缀。
     h.sendText('你好，帮我看看这个')
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
-    expect(h.captured.followups[0].text).toBe('<user_message qq="10001" nickname="小明">\n你好，帮我看看这个\n</user_message>')
+    expect(h.captured.followups[0].text).toMatch(/^\[\d{2}:\d{2}\] <user_message qq="10001" nickname="小明">\n你好，帮我看看这个\n<\/user_message>$/)
 
     // Channel scope: qq_* tools + platform section land on the agent's own
     // context (installChannelScope), not the plugin context.
@@ -135,7 +135,7 @@ describe('inbound pipeline', () => {
     }))
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
     expect(h.captured.followups[0].text).toMatch(
-      /^<user_message qq="10001" nickname="小明">\n\[卡片:＜\/user_message＞（图片） https:\/\/example\.com\/a\]\[图片:\S+\.png\]\n<\/user_message>$/,
+      /^\[\d{2}:\d{2}\] <user_message qq="10001" nickname="小明">\n\[卡片:＜\/user_message＞（图片） https:\/\/example\.com\/a\]\[图片:\S+\.png\]\n<\/user_message>$/,
     )
     h.client.close()
     await h.bridge.stop()
@@ -448,6 +448,7 @@ describe('normalizeOneBot11', () => {
           },
         ],
         "text": "你好",
+        "time": 0,
         "userId": "10001",
       }
     `)
@@ -485,6 +486,7 @@ describe('normalizeOneBot11', () => {
           },
         ],
         "text": "@10002帮我看",
+        "time": 0,
         "userId": "10001",
       }
     `)
@@ -532,6 +534,7 @@ describe('normalizeOneBot11', () => {
           },
         ],
         "text": "[引用]@10002这条什么意思",
+        "time": 0,
         "userId": "10001",
       }
     `)
@@ -570,6 +573,7 @@ describe('normalizeOneBot11', () => {
           },
         ],
         "text": "[图片]",
+        "time": 0,
         "userId": "10001",
       }
     `)
@@ -610,6 +614,7 @@ describe('normalizeOneBot11', () => {
           },
         ],
         "text": "[文件:报告.pdf]",
+        "time": 0,
         "userId": "10001",
       }
     `)
@@ -647,6 +652,7 @@ describe('normalizeOneBot11', () => {
           },
         ],
         "text": "[语音]",
+        "time": 0,
         "userId": "10001",
       }
     `)
@@ -686,6 +692,7 @@ describe('normalizeOneBot11', () => {
           },
         ],
         "text": "[图片]",
+        "time": 0,
         "userId": "10001",
       }
     `)
@@ -716,6 +723,7 @@ describe('normalizeOneBot11', () => {
         "replyId": undefined,
         "segments": undefined,
         "text": "[图片]看图",
+        "time": 0,
         "userId": "10001",
       }
     `)

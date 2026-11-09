@@ -178,8 +178,8 @@ describe('ChatBridge', () => {
     await h.connection.stop()
   })
 
-  it('fails closed to member on turn/start with an empty dispatch queue (host-initiated turn, M1-A2)', async () => {
-    const h = await makeCmdHarness()
+  it('resolves a host-initiated turn role from the chat initiator (T1 PR port: 私聊查管理员名单，群聊 fail-closed member, M1-A2)', async () => {
+    const h = await makeCmdHarness({ allowAllUsers: true })
     h.sendText('你好')
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
     const session = { id: h.sessionIds[0] }
@@ -187,10 +187,32 @@ describe('ChatBridge', () => {
     h.ctx.emit('session/event', session as never, makeEvent('turn/start', { turn: 1 }))
     expect(h.bridge.canEditFiles(h.sessionIds[0])).toBe(true)
     // A turn the plugin never dispatched (host/web input on the same session)
-    // finds the queue empty → member, never inheriting the previous role.
+    // finds the queue empty → the fallback judges by the chat initiator
+    // (private:10001, 10001 ∈ adminUsers → admin) instead of inheriting the
+    // previous role.
     h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
     h.ctx.emit('session/event', session as never, makeEvent('turn/start', { turn: 2 }))
-    expect(h.bridge.canEditFiles(h.sessionIds[0])).toBe(false)
+    expect(h.bridge.canEditFiles(h.sessionIds[0])).toBe(true)
+
+    // A private chat of a NON-admin still fails closed to member.
+    h.sendTextAs('你好', 10003)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    const memberSession = { id: h.sessionIds[1] }
+    h.ctx.emit('session/event', memberSession as never, makeEvent('turn/start', { turn: 1 }))
+    expect(h.bridge.canEditFiles(h.sessionIds[1])).toBe(false)
+
+    // Group chats stay fail-closed even when the initiator is an admin
+    // (群成员身份无法从宿主侧验证). The dispatched admin turn consumes its
+    // queued role first; a further host-initiated turn on the same group
+    // session finds the queue empty → member.
+    h.sendGroupTextAs('你好', 10001)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(3))
+    const groupSession = { id: h.sessionIds[2] }
+    h.ctx.emit('session/event', groupSession as never, makeEvent('turn/start', { turn: 1 }))
+    expect(h.bridge.canEditFiles(h.sessionIds[2])).toBe(true) // the dispatched turn's own queued admin role
+    h.ctx.emit('session/event', groupSession as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    h.ctx.emit('session/event', groupSession as never, makeEvent('turn/start', { turn: 2 }))
+    expect(h.bridge.canEditFiles(h.sessionIds[2])).toBe(false) // host-initiated: group stays fail-closed
 
     h.client.close()
     await h.bridge.stop()
@@ -488,7 +510,8 @@ describe('ChatBridge', () => {
     const h = await makeHarness()
     h.sendText('你好，帮我看看这个')
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
-    expect(h.captured.followups[0].text).toBe('<user_message qq="10001" nickname="小明">\n你好，帮我看看这个\n</user_message>')
+    // T1 PR port: 私聊也带 [HH:MM] 时间前缀（event.time 保留后取消息时间）。
+    expect(h.captured.followups[0].text).toMatch(/^\[\d{2}:\d{2}\] <user_message qq="10001" nickname="小明">\n你好，帮我看看这个\n<\/user_message>$/)
     h.ctx.emit('session/event', { id: h.sessionIds[0] } as never, makeEvent('assistant/message', {
       turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '这是回复' }] },
     }))

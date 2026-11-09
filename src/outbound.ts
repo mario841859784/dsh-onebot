@@ -42,6 +42,36 @@ export function filterBlankTextSegments(segments: OutboundSegment[]): OutboundSe
   })
 }
 
+/**
+ * T1 (PR port): 清洗出站文本里夹带的 ACP 元数据残渣——宿主 ACP 代理的
+ * `<acp tokens="…" type="…" time="…">mNNNNN` 标记头与成对 `</acp>` 标签
+ * 偶尔漏进模型正文；上游 stripBoundaryLeakage 覆盖宿主自有元信息行，
+ * 这两条 ACP 形态是它未覆盖的面。
+ */
+export function stripAcpNoise(text: string): string {
+  return text
+    .replace(/<\/?acp\b[^>]*>/g, '')
+    .replace(/\btokens="\d+"\s+type="[^"]*"\s+time="[^"]*">?m\d+/g, '')
+}
+
+/** T1 (PR port): 逐 text 段清洗 ACP 残渣；无变化的段原样返回（保持引用
+ * 相等），清空后的空白文本段由 sendMsg 里的 filterBlankTextSegments 兜底。 */
+export function sanitizeAcpSegments(segments: OutboundSegment[]): OutboundSegment[] {
+  let changed = false
+  const cleaned = segments.map(segment => {
+    if (segment.type !== 'text') return segment
+    const text = segment.data?.text
+    if (typeof text !== 'string') return segment
+    const stripped = stripAcpNoise(text)
+    if (stripped === text) return segment
+    changed = true
+    return { ...segment, data: { ...segment.data, text: stripped } }
+  })
+  // 无任何变化时保持引用相等：调用方（如按引用比较的缓存/去重路径）
+  // 不会误判内容有变。
+  return changed ? cleaned : segments
+}
+
 /** Options for an explicit outbound send (from tools). */
 export interface SendOptions {
   replyTo?: string
@@ -470,8 +500,8 @@ export class OutboundPipeline {
     else params.user_id = target
     // SnowLuma rejects empty/whitespace-only text segments — strip them at
     // the single wire chokepoint (both the pipeline and the tools funnel
-    // through here).
-    const filtered = filterBlankTextSegments(segments)
+    // through here). T1 (PR port): ACP 残渣清洗挂在同一咽喉点，先清洗后过滤。
+    const filtered = filterBlankTextSegments(sanitizeAcpSegments(segments))
     if (filtered.length === 0 && options.replyTo === undefined) {
       this.ctx.log('debug', '过滤空白文本段后无有效消息段，未发送: ' + chatId)
       this.ctx.trace?.(chatId, { stage: 'outbound', ok: false, reason: TRACE_REASONS.outboundEmptyText })

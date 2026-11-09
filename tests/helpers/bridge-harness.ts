@@ -22,6 +22,7 @@ import { TraceSink } from '../../src/trace.js'
 import { InboundRecorder } from '../../src/record.js'
 import { InjectChannel } from '../../src/inject.js'
 import type { NoticeTexts } from '../../src/notices.js'
+import { createPokeHandler } from '../../src/poke.js'
 
 /** dsh 0.2.2 host-faithful Agent.model stub: current() returns the last
  * recorded selection, else the agentOptions fallback (provider/model), else
@@ -117,7 +118,7 @@ export function makeFakeAgents(
 }
 
 /** Full bridge + WS harness: inbound via real WebSocket, outbound captured. */
-export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; log?: (level: string, message: string) => void; notices?: NoticeTexts; monoFamilies?: readonly string[]; allowPrivateHosts?: boolean; respond?: Record<string, (params: Record<string, unknown>) => unknown>; userQuestions?: unknown }) {
+export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; log?: (level: string, message: string) => void; notices?: NoticeTexts; monoFamilies?: readonly string[]; allowPrivateHosts?: boolean; respond?: Record<string, (params: Record<string, unknown>) => unknown>; userQuestions?: unknown; wakeNamesAdmin?: string[]; wakeNamesMember?: string[]; replyCountsAsMention?: boolean; atAllCountsAsMention?: boolean; pokeEnabled?: boolean }) {
   const ctx = new Context()
   const sessionIds: string[] = []
   const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[], agentListeners: [] as Array<{ event: string; listener: (request: unknown, next: () => Promise<unknown>) => unknown }> }
@@ -159,6 +160,12 @@ export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: st
       // W1/T5: optional recorder / inject channel (absent = feature off).
       recorder: opts?.recorder,
       inject: opts?.inject,
+      // T1 (PR port): wake-name / mention-switch overrides (absent = the
+      // closed defaults: no wake names, reply/@all do not count).
+      ...(opts?.wakeNamesAdmin !== undefined ? { wakeNamesAdmin: opts.wakeNamesAdmin } : {}),
+      ...(opts?.wakeNamesMember !== undefined ? { wakeNamesMember: opts.wakeNamesMember } : {}),
+      ...(opts?.replyCountsAsMention !== undefined ? { replyCountsAsMention: opts.replyCountsAsMention } : {}),
+      ...(opts?.atAllCountsAsMention !== undefined ? { atAllCountsAsMention: opts.atAllCountsAsMention } : {}),
     },
     policy: {
       dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
@@ -179,6 +186,16 @@ export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: st
   connection.onMessage = event => {
     void bridge.handleInbound(event)
   }
+  // T1 (PR port): mirror the index.ts poke wiring so notice-gate tests drive
+  // the real connection→handler→bridge path (absent opts = default-on, as in
+  // production where pokeEnabled defaults to true).
+  connection.onNotice = createPokeHandler({
+    pokeEnabled: opts?.pokeEnabled ?? true,
+    selfId: () => connection.selfId,
+    dispatch: event => {
+      void bridge.handleInbound(event)
+    },
+  })
   bridge.start()
   connection.start()
   await vi.waitFor(() => expect(connection.address()).toBeDefined())
@@ -200,7 +217,23 @@ export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: st
       sender: { user_id: 10001, nickname: '小明' },
     }))
   }
-  return { ctx, sessionIds, captured, sessions, mediaDir, connection, bridge, client, outbound, sendText }
+  // Variant senders (mirror makeCmdHarness): non-default users / group chats.
+  const sendTextAs = (text: string, userId: number): void => {
+    client.send(JSON.stringify({
+      post_type: 'message', message_type: 'private', user_id: userId, self_id: 10002,
+      message: [{ type: 'text', data: { text } }], raw_message: text,
+      sender: { user_id: userId, nickname: '用户' + userId },
+    }))
+  }
+  const sendGroupTextAs = (text: string, userId: number): void => {
+    client.send(JSON.stringify({
+      post_type: 'message', message_type: 'group', group_id: 888, user_id: userId, self_id: 10002,
+      message: [{ type: 'at', data: { qq: '10002' } }, { type: 'text', data: { text } }],
+      raw_message: '[CQ:at,qq=10002]' + text,
+      sender: { user_id: userId, nickname: '用户' + userId },
+    }))
+  }
+  return { ctx, sessionIds, captured, sessions, mediaDir, connection, bridge, client, outbound, sendText, sendTextAs, sendGroupTextAs }
 }
 
 export function makeEvent(type: string, data: unknown): SessionEvent {

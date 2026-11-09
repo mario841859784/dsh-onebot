@@ -191,17 +191,28 @@ describe('existing non-reply-trigger entry points', () => {
     expect(h.emit).toHaveBeenCalledExactlyOnceWith('mention', { ok: false, reason: TRACE_REASONS.inboundUnmentioned })
   })
 
-  const explicit: Array<OneBotSegment[] | string> = [
-    [atBot, body], `[CQ:at,qq=${BOT}] body`, [{ type: 'at', data: { qq: 'all' } }, body],
+  const explicit: Array<{ message: OneBotSegment[] | string; options?: HarnessOptions }> = [
+    { message: [atBot, body] },
+    { message: `[CQ:at,qq=${BOT}] body` },
+    // T1 (PR port): @all wakes only with the atAllCountsAsMention switch on
+    // (default off — the upstream closed semantics).
+    { message: [{ type: 'at', data: { qq: 'all' } }, body], options: { config: { atAllCountsAsMention: true } } },
   ]
-  for (const message of explicit) {
+  for (const item of explicit) {
     it('keeps explicit @ triggers independent of quote lookup', async () => {
-      const h = makeHarness()
-      await h.pipeline.processInbound(inbound(message))
+      const h = makeHarness(item.options)
+      await h.pipeline.processInbound(inbound(item.message))
       expect(h.call).not.toHaveBeenCalled()
       expect(h.dispatchFollowup).toHaveBeenCalledTimes(1)
     })
   }
+
+  it('T1: @all does not wake with atAllCountsAsMention off (default)', async () => {
+    const h = makeHarness()
+    await runWithTrace(h.trace, () => h.pipeline.processInbound(inbound([{ type: 'at', data: { qq: 'all' } }, body])))
+    expect(h.dispatchFollowup).not.toHaveBeenCalled()
+    expect(h.emit).toHaveBeenCalledExactlyOnceWith('mention', { ok: false, reason: TRACE_REASONS.inboundUnmentioned })
+  })
 
   for (const error of [undefined, 'message not found']) {
     it('allows explicit @bot with a quote to another member even if expansion fails', async () => {
@@ -314,5 +325,70 @@ describe('reply id validation', () => {
     expect(await runWithTrace(h.trace, () => h.pipeline.expandQuote('abc'))).toBe('')
     expect(h.call).not.toHaveBeenCalled()
     expect(h.emit).toHaveBeenCalledExactlyOnceWith('quote', { ok: false, reason: TRACE_REASONS.quoteInvalidId })
+  })
+})
+
+describe('wake-name gate (T1 PR port: 唤醒词)', () => {
+  const wakeText: OneBotSegment = { type: 'text', data: { text: '小雪 帮我看看这个' } }
+  const midText: OneBotSegment = { type: 'text', data: { text: '帮我看看小雪这个' } }
+
+  it('wakes a group message that starts with a member wake name (no @ needed)', async () => {
+    // The default harness policy marks OTHER as the admin — demote the sender
+    // to a member so the member wake list is the one consulted.
+    const h = makeHarness({ config: { wakeNamesMember: ['小雪'] }, policy: { adminUsers: ['99999'] } })
+    await runWithTrace(h.trace, () => h.pipeline.processInbound(inbound([wakeText])))
+    expect(h.call).not.toHaveBeenCalled()
+    expect(h.dispatchFollowup).toHaveBeenCalledTimes(1)
+    expect(h.emit).toHaveBeenCalledExactlyOnceWith('mention', {
+      ok: true,
+      reason: TRACE_REASONS.inboundWakeName,
+      data: { names: ['小雪'], textLen: expect.any(Number), preview: expect.any(String), role: 'member' },
+    })
+  })
+
+  it('does not wake on a wake-name substring inside the message body', async () => {
+    const h = makeHarness({ config: { wakeNamesMember: ['小雪'] } })
+    await runWithTrace(h.trace, () => h.pipeline.processInbound(inbound([midText])))
+    expect(h.dispatchFollowup).not.toHaveBeenCalled()
+    expect(h.emit).toHaveBeenCalledExactlyOnceWith('mention', { ok: false, reason: TRACE_REASONS.inboundUnmentioned })
+  })
+
+  it('picks the tier list: admin sender uses wakeNamesAdmin, member sender does not', async () => {
+    // The harness policy marks OTHER (10003) as the admin.
+    const h = makeHarness({ config: { wakeNamesAdmin: ['小雪'], wakeNamesMember: ['阿蜜'] } })
+    await runWithTrace(h.trace, () => h.pipeline.processInbound(inbound([wakeText])))
+    expect(h.dispatchFollowup).toHaveBeenCalledTimes(1)
+
+    const h2 = makeHarness({ config: { wakeNamesAdmin: ['小雪'], wakeNamesMember: ['阿蜜'] } })
+    await runWithTrace(h2.trace, () => h2.pipeline.processInbound(inbound([{ type: 'text', data: { text: '小雪 在吗' } }], { user_id: Number(BOT) })))
+    expect(h2.dispatchFollowup).not.toHaveBeenCalled()
+  })
+
+  it('does not override an explicit @ (mentioned stays true, recheck skipped via wakeNameHit)', async () => {
+    const h = makeHarness({ config: { wakeNamesMember: ['小雪'] } })
+    await runWithTrace(h.trace, () => h.pipeline.processInbound(inbound([atBot, wakeText])))
+    expect(h.dispatchFollowup).toHaveBeenCalledTimes(1)
+    // No wake-name trace: the explicit @ path produced the mention.
+    expect(h.emit).not.toHaveBeenCalled()
+  })
+
+  it('stays silent for private messages and when no wake names are configured', async () => {
+    const h = makeHarness({ config: { wakeNamesMember: ['小雪'] } })
+    await runWithTrace(h.trace, () => h.pipeline.processInbound(inbound([wakeText], { message_type: 'private' })))
+    expect(h.dispatchFollowup).toHaveBeenCalledTimes(1)
+    expect(h.emit).not.toHaveBeenCalled()
+
+    const h2 = makeHarness()
+    await runWithTrace(h2.trace, () => h2.pipeline.processInbound(inbound([wakeText])))
+    expect(h2.dispatchFollowup).not.toHaveBeenCalled()
+  })
+
+  it('replyCountsAsMention: a reply to another member wakes without the author lookup', async () => {
+    const h = makeHarness({ config: { replyCountsAsMention: true }, policy: { adminUsers: ['99999'] } })
+    await runWithTrace(h.trace, () => h.pipeline.processInbound(inbound([reply, body])))
+    // The skipped author verification must not emit a mention-drop trace; the
+    // single get_msg below is the ordinary quote expansion, not the verify.
+    expect(h.emit).not.toHaveBeenCalled()
+    expect(h.dispatchFollowup).toHaveBeenCalledTimes(1)
   })
 })

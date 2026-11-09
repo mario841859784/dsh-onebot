@@ -17,6 +17,7 @@ import type { SessionStore } from '@deepseek-ai/dsh-session'
 import type { ModelSelection } from '@deepseek-ai/dsh-agent'
 import type Z from '@deepseek-ai/schemastery'
 import type { OneBotEvent } from './connection.js'
+import { createPokeHandler } from './poke.js'
 import type { BridgeDeps, WorkspaceRegistryLike } from './bridge.js'
 import type { AccessPolicyConfig } from './chat.js'
 import { homedir } from 'node:os'
@@ -116,6 +117,16 @@ export interface Config {
   reconnectMaxAttempts: number
   botQQ: string
   requireMention: boolean
+  /** T1 (PR port): 戳一戳唤醒开关；false = poke notice 一律忽略。 */
+  pokeEnabled: boolean
+  /** T1 (PR port): 引用即叫——群聊回复任意消息（不限机器人）也算 @机器人。 */
+  replyCountsAsMention: boolean
+  /** T1 (PR port): @全体即叫——群聊 @全体成员 也算 @机器人。 */
+  atAllCountsAsMention: boolean
+  /** T1 (PR port): 管理员唤醒词；群聊消息以任一词开头即视为 @机器人。 */
+  wakeNamesAdmin: string[]
+  /** T1 (PR port): 成员唤醒词；群聊消息以任一词开头即视为 @机器人。 */
+  wakeNamesMember: string[]
   /** Unknown slash-command handling: intercept（默认）=拦截并给建议；passthrough=透传给模型。 */
   unknownCommand: 'intercept' | 'passthrough'
   /** T2 (P1): 任务运行中的新消息处理策略：queue=排队（默认）；steer=插话进当前任务。 */
@@ -248,6 +259,16 @@ export const Config: Z<Config> = z.object({
     .description('机器人自身 QQ 号；留空则从 meta 事件自动学习'),
   requireMention: z.boolean().default(true)
     .description('群聊是否仅在 @机器人（或回复其消息）时响应'),
+  pokeEnabled: z.boolean().default(true)
+    .description('戳一戳唤醒（T1 PR port）：收到“戳一戳”notice 时转为伪消息唤醒机器人——私聊直接响应，群聊补 @机器人 段过 @ 门；仅响应戳机器人本人的戳一戳，同一发起者 3 秒内只响应一次；false=忽略全部戳一戳'),
+  replyCountsAsMention: z.boolean().default(false)
+    .description('引用即叫（T1 PR port）：群聊中回复任意消息（不限于机器人自己的消息）也算 @机器人并跳过引用作者核实；默认关闭=仅回复机器人的消息才唤醒'),
+  atAllCountsAsMention: z.boolean().default(false)
+    .description('@全体即叫（T1 PR port）：群聊中 @全体成员 也算 @机器人；默认关闭=@全体成员不唤醒机器人'),
+  wakeNamesAdmin: z.array(z.string()).default([])
+    .description('管理员唤醒词（T1 PR port）：群聊消息以任一唤醒词开头即视为 @机器人（仅对管理员生效）；留空=不启用'),
+  wakeNamesMember: z.array(z.string()).default([])
+    .description('成员唤醒词（T1 PR port）：群聊消息以任一唤醒词开头即视为 @机器人（仅对成员生效）；留空=不启用'),
   unknownCommand: z.union([z.const('intercept'), z.const('passthrough')]).default('intercept')
     .description('未知斜杠命令处理：intercept（默认）=拦截并提示相近命令或 /help；passthrough=透传给模型（旧行为）'),
   newMessagePolicy: z.union([z.const('queue'), z.const('steer')]).default('queue')
@@ -519,6 +540,16 @@ export function apply(ctx: Context, config: Config): void {
   connection.onMeta = (event: OneBotEvent) => {
     logMetaEvent(connection.selfId, event, config.logLevel)
   }
+  // T1 (PR port): 戳一戳 notice → 伪消息。节流表随插件挂载存续；伪消息
+  // 重新走 bridge.handleInbound 全管线（白名单/@ 门/限流等照常生效）。
+  connection.onNotice = createPokeHandler({
+    pokeEnabled: config.pokeEnabled,
+    selfId: () => connection.selfId,
+    dispatch: event => {
+      void bridge.handleInbound(event)
+    },
+    log,
+  })
   // W2-②③ gate keys: BridgeConfig (bridge.ts) keeps its declared shape; the
   // pipelines read them off the runtime object via optional intersection
   // members (see InboundContext/OutboundContext.config), so the spread here
@@ -528,6 +559,12 @@ export function apply(ctx: Context, config: Config): void {
     actionRatePerMinute: config.actionRatePerMinute,
     actionRatePerDay: config.actionRatePerDay,
     actionAuditEnabled: config.actionAuditEnabled,
+    // T1 (PR port): 引用即叫 / @全体即叫 / 唤醒词——入站管线经可选交叉成员
+    // 读取（见 InboundContext.config），走 spread 以绕过对象字面量多余属性检查。
+    replyCountsAsMention: config.replyCountsAsMention,
+    atAllCountsAsMention: config.atAllCountsAsMention,
+    wakeNamesAdmin: config.wakeNamesAdmin,
+    wakeNamesMember: config.wakeNamesMember,
   }
   const bridge: import('./bridge.js').ChatBridge = new ChatBridge({
     ctx,

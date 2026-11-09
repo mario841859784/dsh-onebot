@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildChatId, splitChatId, sessionIdForChat, classifyUserRole, dmAllowed, groupAllowed,
-  buildGroupMessagePrefix, sanitizeNickname,
+  buildDirectMessagePrefix, buildGroupMessagePrefix, formatClock, sanitizeNickname,
 } from '../src/chat.js'
 import type { AccessPolicyConfig } from '../src/chat.js'
 
@@ -56,19 +56,42 @@ describe('roles and policy', () => {
 })
 
 describe('group prefix', () => {
+  // Fixed event.time (Unix seconds) so the HH:MM assertion is exact regardless
+  // of the test machine's clock/timezone (formatClock renders local time).
+  const at = new Date(2026, 10, 9, 9, 30, 0).getTime() / 1000
   it('includes mention marker', () => {
-    const prefix = buildGroupMessagePrefix('小明', '10001', true, 'member')
-    expect(prefix).toMatch(/^\[\d{2}:\d{2} 小明\(10001\)·成员\]\[@我\] $/)
+    const prefix = buildGroupMessagePrefix('小明', '10001', true, 'member', at)
+    expect(prefix).toBe('[09:30 小明(10001)·成员][@我] ')
   })
   it('omits mention marker when not mentioned', () => {
-    const prefix = buildGroupMessagePrefix('小明', '10001', false, 'member')
-    expect(prefix).toMatch(/^\[\d{2}:\d{2} 小明\(10001\)·成员\] $/)
+    const prefix = buildGroupMessagePrefix('小明', '10001', false, 'member', at)
+    expect(prefix).toBe('[09:30 小明(10001)·成员] ')
     expect(prefix).not.toContain('[@我]')
   })
   it('carries the sender tier (权限分档 A1): admin → ·管理员, member → ·成员', () => {
-    expect(buildGroupMessagePrefix('小明', '10001', false, 'admin')).toMatch(/^\[\d{2}:\d{2} 小明\(10001\)·管理员\] $/)
-    expect(buildGroupMessagePrefix('小明', '20002', false, 'member')).toContain('·成员')
-    expect(buildGroupMessagePrefix('小明', '20002', false, 'member')).not.toContain('·管理员')
+    expect(buildGroupMessagePrefix('小明', '10001', false, 'admin', at)).toBe('[09:30 小明(10001)·管理员] ')
+    expect(buildGroupMessagePrefix('小明', '20002', false, 'member', at)).toContain('·成员')
+    expect(buildGroupMessagePrefix('小明', '20002', false, 'member', at)).not.toContain('·管理员')
+  })
+})
+
+describe('event-time clock (T1 PR port: 拉取旧消息时间戳不再全错)', () => {
+  it('formatClock renders the message time, not the processing time', () => {
+    const at = new Date(2026, 10, 9, 21, 5, 0).getTime() / 1000
+    expect(formatClock(at)).toBe('21:05')
+  })
+  it('pads single-digit hours and minutes', () => {
+    const at = new Date(2026, 10, 9, 7, 3, 0).getTime() / 1000
+    expect(formatClock(at)).toBe('07:03')
+  })
+  it('falls back to the current time for invalid seconds (0/NaN/negative)', () => {
+    for (const bad of [0, Number.NaN, -5]) {
+      expect(formatClock(bad)).toMatch(/^\d{2}:\d{2}$/)
+    }
+  })
+  it('buildDirectMessagePrefix wraps the clock in brackets with a trailing space', () => {
+    const at = new Date(2026, 10, 9, 23, 59, 0).getTime() / 1000
+    expect(buildDirectMessagePrefix(at)).toBe('[23:59] ')
   })
 })
 

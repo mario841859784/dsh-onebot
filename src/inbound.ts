@@ -19,10 +19,10 @@ import { extForInboundName } from './media.js'
 import type { Transcriber } from './stt.js'
 import { transcriptLabel } from './stt.js'
 import type { OneBotSegment, MediaRef } from './cq.js'
-import { cqUnescape, detectExplicitMention, detectMention, parseMessage, segmentText, stripLeadingBotMention } from './cq.js'
+import { cqUnescape, detectExplicitMention, detectMention, detectWakeName, parseMessage, segmentText, stripLeadingBotMention } from './cq.js'
 import type { AccessPolicyConfig, ChatId, UserRole } from './chat.js'
 import {
-  buildChatId, buildGroupMessagePrefix, classifyUserRole, dmAllowed, groupAllowed,
+  buildChatId, buildDirectMessagePrefix, buildGroupMessagePrefix, classifyUserRole, dmAllowed, groupAllowed,
   RESTRICTED_PREFIX, sanitizeNickname, splitChatId, wrapUserMessage,
 } from './chat.js'
 import type { BridgeConfig } from './bridge.js'
@@ -67,6 +67,9 @@ export interface NormalizedInbound {
    * sanitized; the pipeline's M3-D5 identity whitelist sanitizes it before it
    * reaches the prefix, the boundary attribute or lastNickname. */
   nickname: string
+  /** T1 (PR port): OneBot event.time（Unix 秒）。上游 v1 把它丢了，导致
+   * 时间戳前缀永远取处理时刻——拉取旧消息时全错；0 = 事件未带时间。 */
+  time: number
 }
 
 /** The get_msg fields needed to verify a reply author and expand its text. */
@@ -116,6 +119,9 @@ export function normalizeOneBot11(event: OneBotEvent): NormalizedInbound | null 
     forwardId: parsed.forwardId,
     messageId,
     nickname,
+    // T1 (PR port): 保留事件时间（Unix 秒）供时间戳前缀使用；无效值归 0，
+    // 前缀侧退回当前时间。
+    time: Number(event.time) || 0,
   }
 }
 
@@ -205,6 +211,13 @@ export interface InboundContext {
   config: Pick<BridgeConfig, 'botQQ' | 'ignoreSelf' | 'requireMention' | 'rateLimitPerMinute' | 'restrictedMemberPrefix' | 'maxInboundFileBytes' | 'notices'> & Partial<{
     /** W2-② (chatId, message_id) dedup window in seconds; 0 disables. */
     dedupWindowSeconds: number
+    /** T1 (PR port): 引用即叫——回复任意消息也算 @机器人（跳过作者核实）。 */
+    replyCountsAsMention: boolean
+    /** T1 (PR port): @全体即叫——@全体成员 也算 @机器人。 */
+    atAllCountsAsMention: boolean
+    /** T1 (PR port): 管理员/成员唤醒词（消息开头命中即视为 @机器人）。 */
+    wakeNamesAdmin: string[]
+    wakeNamesMember: string[]
   }>
 }
 
@@ -274,11 +287,42 @@ export class InboundPipeline {
       }
     }
 
-    let mentioned = detectMention(inbound.segments, inbound.raw, this.ctx.selfId(), this.ctx.config.botQQ)
+    // T1 (PR port): 引用即叫/@全体即叫 开关与唤醒词门。mentionOpts 传给
+    // detectMention；skipQuoteVerify 打开时跳过下方 requireMention 的引用
+    // 作者复核（引用即叫的语义就是不再核实被引用那条的作者）。
+    const mentionOpts = {
+      reply: this.ctx.config.replyCountsAsMention === true,
+      atAll: this.ctx.config.atAllCountsAsMention === true,
+    }
+    const skipQuoteVerify = mentionOpts.reply
+    let mentioned = detectMention(inbound.segments, inbound.raw, this.ctx.selfId(), this.ctx.config.botQQ, mentionOpts)
     let verifiedQuote: QuotedMessageData | undefined
     let mentionDropReason: string = TRACE_REASONS.inboundUnmentioned
+    // T1 (PR port): 唤醒词门——群聊里消息以唤醒词开头即视为 @机器人。
+    // wakeNameHit 标记防止下方 requireMention 的显式 @ 复核把 mentioned
+    // 置回 false。角色档取管理员/成员各自的唤醒词表。
+    let wakeNameHit = false
+    if (kind === 'group' && !mentioned) {
+      const role = classifyUserRole(userId, policy.adminUsers)
+      const wakeNames = role === 'admin'
+        ? this.ctx.config.wakeNamesAdmin ?? []
+        : this.ctx.config.wakeNamesMember ?? []
+      if (wakeNames.length > 0) {
+        const text = segmentText(inbound.segments, inbound.raw)
+        if (detectWakeName(text, wakeNames)) {
+          mentioned = true
+          wakeNameHit = true
+          currentTrace()?.emit('mention', {
+            ok: true,
+            reason: TRACE_REASONS.inboundWakeName,
+            data: { names: [...wakeNames], textLen: text.length, preview: text.slice(0, 40), role },
+          })
+        }
+      }
+    }
     if (kind === 'group' && this.ctx.config.requireMention
-      && !detectExplicitMention(inbound.segments, inbound.raw, this.ctx.selfId(), this.ctx.config.botQQ)) {
+      && !wakeNameHit && !skipQuoteVerify
+      && !detectExplicitMention(inbound.segments, inbound.raw, this.ctx.selfId(), this.ctx.config.botQQ, mentionOpts.atAll)) {
       mentioned = false
       const bot = this.ctx.selfId() || this.ctx.config.botQQ
       if (bot !== '' && inbound.replyId !== undefined) {
@@ -400,10 +444,13 @@ export class InboundPipeline {
     if (kind === 'group') {
       // 权限分档 A1: the group prefix carries the sender's tier so the model
       // can see who it is talking to without trusting message-internal text.
-      final = buildGroupMessagePrefix(nickname, userId, mentioned, role) + final
+      final = buildGroupMessagePrefix(nickname, userId, mentioned, role, inbound.time) + final
       if (!isAdmin && this.ctx.config.restrictedMemberPrefix) {
         final = RESTRICTED_PREFIX + final
       }
+    } else {
+      // T1 (PR port): 私聊也带时间戳前缀（拉旧消息时反映真实消息时间）。
+      final = buildDirectMessagePrefix(inbound.time) + final
     }
     // T2 (P1): the busy-turn policy seam runs AFTER every gate above (dedup /
     // self / policy / mention / command / rate-limit) and only around the
@@ -616,9 +663,30 @@ export class InboundPipeline {
       const segments = Array.isArray(data.message) ? data.message as OneBotSegment[] : undefined
       const raw = typeof data.raw_message === 'string' ? data.raw_message : ''
       const text = cqUnescape(segmentText(segments, raw))
-      if (text.trim() === '') return ''
+      // T1 (PR port): 引用里带图片时把图落成本地文件喂给模型（上游只留
+      // 文字）。单图落地失败只降级为纯文字引用，不影响其余内容。
+      const imageNotes: string[] = []
+      for (const segment of segments ?? []) {
+        if (segment?.type !== 'image') continue
+        const url = typeof segment.data?.url === 'string' ? segment.data.url : undefined
+        const file = typeof segment.data?.file === 'string' ? segment.data.file : undefined
+        if (url === undefined && file === undefined) continue
+        try {
+          const resolved = await this.ctx.media.resolve({ kind: 'image', url, file }, async (_kind, refFile) => {
+            const got = await this.ctx.call('get_image', { file: refFile }) as { url?: string; file?: string }
+            return { url: got.url, file: got.file }
+          })
+          if (resolved !== undefined && typeof resolved.path === 'string' && resolved.path !== '') {
+            imageNotes.push('[引用里的图片:' + resolved.path + ']')
+          }
+        } catch {
+          // 单图失败静默跳过：引用展开的主路径（文字）不受影响。
+        }
+      }
+      const withImages = imageNotes.length > 0 ? text + '\n' + imageNotes.join('\n') : text
+      if (withImages.trim() === '') return ''
       const name = data.sender?.nickname ?? ''
-      return '[引用]' + (name !== '' ? name + ': ' : '') + text
+      return '[引用]' + (name !== '' ? name + ': ' : '') + withImages
     } catch (error) {
       this.ctx.log('debug', 'quote expansion failed: ' + describeError(error))
       currentTrace()?.emit('quote', { ok: false, reason: '引用消息展开失败，已降级为空引用: ' + describeError(error) })

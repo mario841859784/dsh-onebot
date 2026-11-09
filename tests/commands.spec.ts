@@ -1279,3 +1279,36 @@ describe('commands · serial selection (R2)', () => {
     await h.connection.stop()
   }, 30_000)
 })
+
+describe('T1 PR port: /stop 清 pendingTurnRoles', () => {
+  it('clears queued turn roles on /stop so a later host turn is not elevated by a stale role', async () => {
+    const h = await makeCmdHarness({ unknownCommand: 'passthrough' })
+    h.sendText('启动任务')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const chat = (h.bridge as unknown as { chats: Map<string, { agent: { status: string; cancel: (c: unknown) => void }; pendingTurnRoles: string[] }> }).chats.get('private:10001')
+    expect(chat).toBeDefined()
+    chat!.agent.status = 'running'
+    // 模拟管理员插话后排队的角色位（真实链路：dispatchFollowup 压入 pendingTurnRoles）。
+    chat!.pendingTurnRoles.push('admin', 'member')
+
+    h.sendText('/stop')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('已停止生成'))).toBe(true)
+    })
+    expect(chat!.pendingTurnRoles).toEqual([])
+  })
+
+  it('does not touch the queue when nothing is pending (no empty-array churn on other chats)', async () => {
+    const h = await makeCmdHarness({ unknownCommand: 'passthrough' })
+    h.sendText('启动任务')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const chat = (h.bridge as unknown as { chats: Map<string, { agent: { status: string; cancel: (c: unknown) => void }; pendingTurnRoles: string[] }> }).chats.get('private:10001')
+    chat!.agent.status = 'running'
+    h.sendText('/stop')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('已停止生成'))).toBe(true)
+    })
+    // 空队列保持空数组（长度置零的路径是幂等的）。
+    expect(chat!.pendingTurnRoles).toEqual([])
+  })
+})

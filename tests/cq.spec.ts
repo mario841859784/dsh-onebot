@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { OneBotSegment } from '../src/cq.js'
-import { cqUnescape, parseMessage, detectExplicitMention, detectMention, parseCqString, faceToEmoji, stripLeadingBotMention } from '../src/cq.js'
+import { cqUnescape, parseMessage, detectExplicitMention, detectMention, detectWakeName, parseCqString, faceToEmoji, stripLeadingBotMention } from '../src/cq.js'
 
 describe('cqUnescape', () => {
   it('reverses CQ attribute escaping', () => {
@@ -335,17 +335,66 @@ describe('detectMention', () => {
     expect(detectMention([{ type: 'at', data: { qq: '10001' } }], '', '', '')).toBe(false)
     expect(detectMention([{ type: 'reply', data: { id: '1' } }], '', '', '')).toBe(false)
   })
+  it('A8 keeps working with the T1 mention options (reply/atAll off by default)', () => {
+    // Options object present but switches off → the upstream semantics hold.
+    const opts = { reply: false, atAll: false }
+    expect(detectMention([{ type: 'reply', data: { id: '1', qq: '10001' } }], '', '10001', '', opts)).toBe(true)
+    expect(detectMention([{ type: 'reply', data: { id: '1', qq: '999' } }], '', '10001', '', opts)).toBe(false)
+  })
+  it('T1: reply counts as mention when replyCountsAsMention is on (no author verify here)', () => {
+    const opts = { reply: true }
+    expect(detectMention([{ type: 'reply', data: { id: '1' } }], '', '10001', '', opts)).toBe(true)
+    expect(detectMention(undefined, '[CQ:reply,id=1] hello', '10001', '', opts)).toBe(true)
+    // A reply to someone else also wakes: the switch's documented semantics
+    // (inbound skips the quote-author verification when this is on).
+    expect(detectMention([{ type: 'reply', data: { id: '1', qq: '999' } }], '', '10001', '', opts)).toBe(true)
+  })
+  it('T1: @all counts as mention only when atAllCountsAsMention is on', () => {
+    expect(detectMention([{ type: 'at', data: { qq: 'all' } }], '', '10001', '')).toBe(false)
+    expect(detectMention([{ type: 'at', data: { qq: 'all' } }], '', '10001', '', { atAll: true })).toBe(true)
+    expect(detectMention(undefined, '[CQ:at,qq=all] hi', '10001', '', { atAll: true })).toBe(true)
+    // @bot stays a mention in both modes.
+    expect(detectMention([{ type: 'at', data: { qq: '10001' } }], '', '10001', '', { atAll: true })).toBe(true)
+  })
 })
 
 describe('detectExplicitMention', () => {
   it('never treats a reply as an explicit @, even when its qq names the bot', () => {
     expect(detectExplicitMention([{ type: 'reply', data: { id: '1', qq: '10001' } }], '', '10001', '')).toBe(false)
   })
-  it('preserves explicit @bot and @all triggers in both message formats', () => {
-    for (const qq of ['10001', 'all']) {
-      expect(detectExplicitMention([{ type: 'at', data: { qq } }], '', '10001', '')).toBe(true)
-      expect(detectExplicitMention(undefined, `[CQ:at,qq=${qq}] hi`, '', '10001')).toBe(true)
-    }
+  it('explicit @bot triggers in both message formats', () => {
+    expect(detectExplicitMention([{ type: 'at', data: { qq: '10001' } }], '', '10001', '')).toBe(true)
+    expect(detectExplicitMention(undefined, '[CQ:at,qq=10001] hi', '', '10001')).toBe(true)
+  })
+  it('T1: @all requires the atAllCounts switch (default off — 关闭语义)', () => {
+    expect(detectExplicitMention([{ type: 'at', data: { qq: 'all' } }], '', '10001', '')).toBe(false)
+    expect(detectExplicitMention([{ type: 'at', data: { qq: 'all' } }], '', '10001', '', true)).toBe(true)
+    expect(detectExplicitMention(undefined, '[CQ:at,qq=all] hi', '', '10001', true)).toBe(true)
+  })
+})
+
+describe('detectWakeName (T1 PR port: 唤醒词门)', () => {
+  it('hits only when the message starts with a wake name', () => {
+    expect(detectWakeName('小雪 今天天气怎么样', ['小雪'])).toBe(true)
+    // Substring in the middle/end must NOT trigger (startsWith, not includes).
+    expect(detectWakeName('今天小雪好吗', ['小雪'])).toBe(false)
+    expect(detectWakeName('帮我看下小雪', ['小雪'])).toBe(false)
+  })
+  it('is case-insensitive and trims the message ends', () => {
+    expect(detectWakeName('  Snow 帮我查一下', ['snow'])).toBe(true)
+    expect(detectWakeName('SNOW hi', ['snow'])).toBe(true)
+  })
+  it('ignores empty names and an empty word list', () => {
+    expect(detectWakeName('小雪 hi', ['  ', ''])).toBe(false)
+    expect(detectWakeName('小雪 hi', [])).toBe(false)
+  })
+  it('returns false for blank messages', () => {
+    expect(detectWakeName('   ', ['小雪'])).toBe(false)
+    expect(detectWakeName('', ['小雪'])).toBe(false)
+  })
+  it('matches against the longest shared-prefix names independently', () => {
+    expect(detectWakeName('小雪球 来玩', ['小雪', '小雪球'])).toBe(true)
+    expect(detectWakeName('小 来玩', ['小雪', '小雪球'])).toBe(false)
   })
 })
 

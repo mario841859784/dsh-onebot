@@ -1304,6 +1304,19 @@ export class ChatBridge {
 
   // ------------------------------------------------------------ session events
 
+  /**
+   * T1 (PR port): 非插件 dispatch 的回合（后台/Web 输入，pendingTurnRoles
+   * 队列为空）的回合角色判定。旧实现一律 fail-closed 为 member，管理员的
+   * Web 回合也被当 member，qq_* 工具全拒；现对私聊按管理员名单判档，群聊
+   * 维持 fail-closed member（群成员身份无法从宿主侧验证）。
+   */
+  private hostTurnRole(chatId: ChatId): UserRole {
+    const ref = splitChatId(chatId)
+    if (ref.kind !== 'private') return 'member'
+    const admins = Array.isArray(this.deps.policy.adminUsers) ? this.deps.policy.adminUsers : []
+    return admins.map(String).includes(String(ref.target)) ? 'admin' : 'member'
+  }
+
   private onSessionEvent(session: Session, event: SessionEvent): void {
     if (this.stopping) return
     const chatId = this.bySession.get(session.id)
@@ -1331,8 +1344,9 @@ export class ChatBridge {
       this.interim.onTurnStart(chat)
       // Freeze the running turn's initiator role from the dispatch FIFO
       // (M1-A2): turns the plugin did not dispatch (host/web input) find an
-      // empty queue and fail closed as member.
-      chat.activeTurnRole = chat.pendingTurnRoles.shift() ?? 'member'
+      // empty queue and fall back to the initiator-based判定（T1 PR port：
+      // 私聊查管理员名单，群聊 fail-closed member）。
+      chat.activeTurnRole = chat.pendingTurnRoles.shift() ?? this.hostTurnRole(chatId)
       chat.lastActivityAt = Date.now()
       chat.busy = true
       // T3 (P2): arm the deferred silent-wait window for this turn（每次模型

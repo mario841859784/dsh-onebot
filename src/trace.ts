@@ -87,6 +87,7 @@ export const TRACE_REASONS = {
   inboundDmBlocked: '私聊用户不在允许名单，已忽略',
   inboundGroupBlocked: '群聊不在允许名单，已忽略',
   inboundUnmentioned: '群聊未 @ 机器人，已忽略',
+  inboundWakeName: '群聊唤醒词命中，视为 @机器人',
   inboundReplyLookupFailed: '引用消息查询失败或响应为空，未唤醒机器人',
   inboundReplyAuthorUnknown: '引用消息作者缺失，未唤醒机器人',
   inboundReplyOtherAuthor: '引用消息作者不是机器人，已忽略',

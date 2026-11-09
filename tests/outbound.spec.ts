@@ -13,7 +13,8 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { OneBotActionError, OneBotNotConnectedError } from '../src/connection.js'
-import { ACTION_AUDIT_FILE, OutboundPipeline, stripBoundaryLeakage } from '../src/outbound.js'
+import { ACTION_AUDIT_FILE, OutboundPipeline, sanitizeAcpSegments, stripAcpNoise, stripBoundaryLeakage } from '../src/outbound.js'
+import type { OutboundSegment } from '../src/outbound.js'
 
 import { inboundAndDisconnect, makeCmdHarness, makeEvent, makeHarness, reconnect, sentTexts } from './helpers/bridge-harness.js'
 
@@ -539,4 +540,42 @@ describe('T11: monoFamilies runtime wiring', () => {
     await h.bridge.stop()
     await h.connection.stop()
   }, 60_000)
+})
+
+describe('T1 PR port: ACP 元数据清洗 (stripAcpNoise / sanitizeAcpSegments)', () => {
+  it('strips the ACP token marker line residue', () => {
+    expect(stripAcpNoise('tokens="55" type="text" time="2026-11-02 11:57:12">m01093'))
+      .toBe('')
+    expect(stripAcpNoise('正文前\ntokens="1234" type="text" time="2026-11-02 11:57:12">m01093\n正文后'))
+      .toBe('正文前\n\n正文后')
+  })
+
+  it('strips ACP opening, closing and self-closing tags', () => {
+    expect(stripAcpNoise('<acp>内文</acp>')).toBe('内文')
+    expect(stripAcpNoise('<acp tokens="1" type="text" time="x">内文')).toBe('内文')
+    expect(stripAcpNoise('前<acp/>后')).toBe('前后')
+    expect(stripAcpNoise('<acp-meta>非 acp 标签整词前缀也应清</acp-meta>')).toBe('非 acp 标签整词前缀也应清')
+  })
+
+  it('leaves ordinary text untouched', () => {
+    expect(stripAcpNoise('普通回复，含引号 "tokens" 与 <b>粗体</b>')).toBe('普通回复，含引号 "tokens" 与 <b>粗体</b>')
+  })
+
+  it('sanitizeAcpSegments cleans text segments and keeps other segment kinds', () => {
+    const dirty: OutboundSegment[] = [
+      { type: 'text', data: { text: 'tokens="55" type="text" time="2026-11-02 11:57:12">m01093' } },
+      { type: 'image', data: { url: '<acp>x' } },
+      { type: 'text', data: { text: '干净正文' } },
+    ]
+    const cleaned = sanitizeAcpSegments(dirty)
+    expect(cleaned).toHaveLength(3) // 空文本段交给下游 filterBlankTextSegments 兜底
+    expect(cleaned[0].data.text).toBe('')
+    expect(cleaned[1]).toBe(dirty[1]) // 非 text 段原样保留（引用相等）
+    expect(cleaned[2]).toBe(dirty[2]) // 干净段原样返回（同一引用）
+  })
+
+  it('returns the same array reference when nothing needs cleaning', () => {
+    const clean: OutboundSegment[] = [{ type: 'text', data: { text: '你好' } }]
+    expect(sanitizeAcpSegments(clean)).toBe(clean)
+  })
 })

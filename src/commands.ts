@@ -37,6 +37,8 @@ export interface CommandChatView {
   lastNickname: string
   loopPending: string | null
   loopBuffer: Array<{ id: string; text: string; sentAt: number }>
+  /** T1 (PR port): 排队回合的角色队列（/stop 同步清空，防角色位残留）。 */
+  pendingTurnRoles: UserRole[]
 }
 
 /** The bridge capabilities the command surface may touch. Deliberately
@@ -346,6 +348,15 @@ async function handleStopCommand(ctx: CommandContext, chatId: ChatId): Promise<v
   // /stop 的语义边界是「只终止当前聊天提交的回合」，补发跟踪随行终止；
   // 其他聊天的条目不受影响。
   ctx.stopDeferredTracking(chatId)
+  // T1 (PR port): 同步清空排队回合的角色队列——/stop 终止当前回合后，
+  // 残留的角色位会把下一个回合（可能是后台/Web 发起的）顶成错误档位。
+  const droppedQueued = chat?.pendingTurnRoles?.length ?? 0
+  if (chat !== undefined && chat.pendingTurnRoles !== undefined) {
+    chat.pendingTurnRoles.length = 0
+  }
+  if (droppedQueued > 0) {
+    ctx.log('info', '/stop 清掉排队消息 ' + droppedQueued + ' 条，角色队列已同步清空: ' + chatId)
+  }
 }
 
 /** T3-board /silent defaults and bounds: a bare /silent mutes for 30 minutes;
