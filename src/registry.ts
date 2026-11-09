@@ -16,7 +16,9 @@ import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type { SessionId, SessionStore } from '@deepseek-ai/dsh-session'
 import { SessionId as makeSessionId } from '@deepseek-ai/dsh-session'
 import type { Context } from '@deepseek-ai/cordis'
-import { constants, copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { constants, copyFile, mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 import type { MediaRef } from './cq.js'
 import type { ChatId, UserRole } from './chat.js'
@@ -219,8 +221,12 @@ export interface RegistryDeps {
   workspaceRegistry: WorkspaceRegistryLike | undefined
   agentPresets: AgentPresetsLike | undefined
   defaultModel: (() => ModelSelection | undefined) | undefined
+  /** DSH home directory (host's $DSH_HOME / ~/.dsh). Only used by the
+   * optional 退休会话自动恢复 probe to locate `<dshHome>/sessions`;
+   * undefined falls back to the same env/home resolution index.ts uses. */
+  dshHome?: string
   /** The only config fields the registry reads. */
-  config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'agentPresetGroup' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>
+  config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'agentPresetGroup' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays' | 'groupWorkspacePath' | 'sessionAutoRecover'>
   log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void
   /** Bridge stop flag (guards the resume loop). */
   isStopping(): boolean
@@ -232,6 +238,69 @@ export interface RegistryDeps {
   /** Register the QQ platform prompt section + qq_* tools on a new agent's
    * own scope — bridge-owned because the tools call back into the bridge. */
   installChannelScope(agentCtx: Context): void
+}
+
+/**
+ * T3 port (上游 0.9.19 退休会话自动恢复): probe the host's session
+ * persistence root for the newest still-usable session id of one chat.
+ *
+ * The probe is intentionally standalone and read-only: any failure
+ * (missing root, unreadable dir, unexpected layout) resolves to undefined
+ * so callers degrade silently to the pre-port behavior.
+ *
+ * Host layout (verified against dsh 0.2.2 dsh-session-persistence-jsonl,
+ * replacing the contributor's flat-layout assumption):
+ *   `<root>/<projectKey(cwd)>/<encodeSegment(sessionId)>/session.v4.jsonl[.zstd]`
+ * — two directory levels, with the generation log file named
+ * `session.v<n>.jsonl` (optionally `.zstd`-compressed; v0 was plain
+ * `session.jsonl`). A session dir without a log file is not usable.
+ *
+ * Note on encoding: sessionIdForChat only emits [A-Za-z0-9-], which the
+ * host's encodeSegment keeps verbatim, so the scanned session dir names
+ * can be matched against the raw chat session-id prefix (bare id or
+ * suffixed `<prefix>-xxxx` from create-collision healing).
+ */
+export async function findLatestSessionForChat(
+  sessionsRoot: string,
+  sessionIdPrefix: string,
+): Promise<string | undefined> {
+  // The log filename pattern across generations (v0 plain name included).
+  const logPattern = /^session(?:\.v\d+)?\.jsonl(?:\.zstd)?$/
+  let newest: { id: string; mtimeMs: number } | undefined
+  let projectDirs: string[]
+  try {
+    projectDirs = await readdir(sessionsRoot)
+  } catch {
+    return undefined
+  }
+  for (const projectDir of projectDirs) {
+    const sessionDirs = await readdir(join(sessionsRoot, projectDir), { withFileTypes: true }).catch(() => undefined)
+    if (sessionDirs === undefined) continue
+    for (const entry of sessionDirs) {
+      if (!entry.isDirectory()) continue
+      const dirName = entry.name
+      if (dirName !== sessionIdPrefix && !dirName.startsWith(sessionIdPrefix + '-')) continue
+      // A usable session carries its generation log; the newest log mtime
+      // decides which candidate the chat recovers onto.
+      let newestLogMtimeMs: number | undefined
+      try {
+        for (const fileName of await readdir(join(sessionsRoot, projectDir, dirName))) {
+          if (!logPattern.test(fileName)) continue
+          const fileStat = await stat(join(sessionsRoot, projectDir, dirName, fileName))
+          if (newestLogMtimeMs === undefined || fileStat.mtimeMs > newestLogMtimeMs) {
+            newestLogMtimeMs = fileStat.mtimeMs
+          }
+        }
+      } catch {
+        continue
+      }
+      if (newestLogMtimeMs === undefined) continue
+      if (newest === undefined || newestLogMtimeMs > newest.mtimeMs) {
+        newest = { id: dirName, mtimeMs: newestLogMtimeMs }
+      }
+    }
+  }
+  return newest?.id
 }
 
 /**
@@ -470,7 +539,7 @@ export class ChatRegistry {
     // different id than the one initially attempted); record it everywhere so
     // session events route to this chat and the mapping persists the truth.
     const actualSessionId = handle.agent.session.id
-    await this.attachToWorkspace(actualSessionId, handle.agent.session.header?.cwd)
+    await this.attachToWorkspace(actualSessionId, handle.agent.session.header?.cwd, chatId)
     const chat = this.createChatAgent(chatId, handle, nickname)
     try {
       await handle.agent.whenIdle()
@@ -564,6 +633,23 @@ export class ChatRegistry {
       // before the next restart.
       if (this.retiredSessionIds.has(sessionId)) {
         this.deps.log('debug', 'skipping resume of retired session ' + sessionId + ' for ' + chatId + ' (settings only)')
+        // T3 port (上游 0.9.19, 退休会话自动恢复): the chat's bound session
+        // is retired host-side — try to auto-rebind the newest usable
+        // session of this chat from the host persistence root. Opt-in via
+        // sessionAutoRecover (default off keeps the upstream behavior);
+        // any probe/resume failure silently degrades to the branch below.
+        if (this.deps.config.sessionAutoRecover === true) {
+          const recovered = await this.findRecoverableSession(chatId)
+          if (recovered !== undefined && recovered !== sessionId && !this.retiredSessionIds.has(recovered)) {
+            try {
+              this.deps.log('info', 'auto-recovering latest session for ' + chatId + ': ' + recovered)
+              await this.resumeChat(chatId, recovered)
+              continue
+            } catch (error) {
+              this.deps.log('warn', 'auto-recovery resume failed for ' + chatId + ': ' + describeError(error))
+            }
+          }
+        }
         if (typeof entry === 'object' && entry !== null) this.evictedChats.set(chatId, entry)
         continue
       }
@@ -579,7 +665,49 @@ export class ChatRegistry {
         // workspacePath/goal/mode from the file before the next restart).
         if (typeof entry === 'object' && entry !== null) this.evictedChats.set(chatId, entry)
         this.deps.log('warn', 'resume failed for ' + chatId + ': ' + describeError(error))
+        // T3 port (上游 0.9.19, 退休会话自动恢复): the recorded id just
+        // proved unusable — try the newest usable session of this chat.
+        // Same opt-in gate and silent degradation as the retired-skip
+        // branch above (a failed recovery resume leaves the retire +
+        // evicted-carrier state already in place).
+        if (this.deps.config.sessionAutoRecover === true) {
+          const recovered = await this.findRecoverableSession(chatId)
+          if (recovered !== undefined && recovered !== sessionId && !this.retiredSessionIds.has(recovered)) {
+            try {
+              this.deps.log('info', 'auto-recovering latest session for ' + chatId + ' after failed resume: ' + recovered)
+              await this.resumeChat(chatId, recovered)
+              void this.saveMapping()
+            } catch (recoveryError) {
+              this.deps.log('warn', 'auto-recovery resume failed for ' + chatId + ': ' + describeError(recoveryError))
+            }
+          }
+        }
       }
+    }
+  }
+
+  /** T3 port (上游 0.9.19, 退休会话自动恢复): resolve the sessions root
+   * for the auto-recovery probe — the injected dshHome when the bridge
+   * provides one, else the same $DSH_HOME / ~/.dsh resolution index.ts
+   * uses (duplicated here because registry must not import index.ts). */
+  private sessionsRoot(): string {
+    const home = this.deps.dshHome !== undefined && this.deps.dshHome !== ''
+      ? this.deps.dshHome
+      : (process.env['DSH_HOME'] !== undefined && process.env['DSH_HOME'] !== ''
+        ? process.env['DSH_HOME']
+        : join(homedir() || '/tmp', '.dsh'))
+    return join(home, 'sessions')
+  }
+
+  /** T3 port (上游 0.9.19, 退休会话自动恢复): probe the host persistence
+   * root for the newest usable session of one chat. Independent probe +
+   * silent degradation: any failure resolves to undefined and the caller
+   * keeps the pre-port behavior. */
+  private async findRecoverableSession(chatId: ChatId): Promise<string | undefined> {
+    try {
+      return await findLatestSessionForChat(this.sessionsRoot(), sessionIdForChat(chatId))
+    } catch {
+      return undefined
     }
   }
 
@@ -609,15 +737,23 @@ export class ChatRegistry {
       agentOptions,
       setup: this.buildSetup(recordedPreset),
     })
-    await this.attachToWorkspace(handle.agent.session.id, handle.agent.session.header?.cwd)
+    await this.attachToWorkspace(handle.agent.session.id, handle.agent.session.header?.cwd, chatId)
     // /workspace persistence across restarts: the per-chat override map is
     // in-memory only, but a session's cwd is frozen in its header. When the
     // resumed session's directory differs from what this chat would default
-    // to now, restore it as the override so /workspace and future /new
-    // sessions keep using it.
+    // to now (T3 review fix: the chat's own effective cwd, so a group chat
+    // compares against groupWorkspacePath instead of the main workspacePath),
+    // restore it as the override so /workspace and future /new sessions keep
+    // using it. An override the mapping just restored is never clobbered by
+    // the header — it is the durable record of the user's /workspace choice.
     const headerCwd = handle.agent.session.header?.cwd
-    if (headerCwd !== undefined && headerCwd !== '' && headerCwd !== this.effectiveCwd()) {
-      this.getSettings(chatId).workspacePath = headerCwd
+    const settings = this.getSettings(chatId)
+    if (
+      headerCwd !== undefined && headerCwd !== '' &&
+      (settings.workspacePath === undefined || settings.workspacePath === '') &&
+      headerCwd !== this.effectiveCwd(chatId)
+    ) {
+      settings.workspacePath = headerCwd
       this.deps.log('debug', 'workspace override restored for ' + chatId + ': ' + headerCwd)
     }
     const chat = this.createChatAgent(chatId, handle, '')
@@ -1097,11 +1233,20 @@ export class ChatRegistry {
    * Effective workspace directory for a chat's sessions: the per-chat
    * /workspace override when set, else the configured workspacePath, falling
    * back to the host process cwd.
+   *
+   * T3 port (上游 0.9.19 群工作区): a group chat whose groupWorkspacePath
+   * is configured gets its own workspace directory — the per-chat /workspace
+   * override still wins, private chats and unconfigured deployments behave
+   * exactly as before.
    */
   effectiveCwd(chatId?: ChatId): string {
     if (chatId !== undefined) {
       const override = this.getSettings(chatId).workspacePath
       if (override !== undefined && override !== '') return override
+    }
+    if (chatId !== undefined && chatId.startsWith('group:')) {
+      const groupPath = this.deps.config.groupWorkspacePath
+      if (groupPath !== undefined && groupPath !== '') return groupPath
     }
     const configured = this.deps.config.workspacePath
     return configured !== undefined && configured !== '' ? configured : process.cwd()
@@ -1204,13 +1349,15 @@ export class ChatRegistry {
    * sessions group under a workspace in the GUI instead of "Ungrouped".
    * Best-effort: failure only logs.
    *
-   * A workspace is auto-created only when the session cwd matches the
-   * configured workspacePath (new sessions). A resumed session carrying a
-   * foreign cwd (e.g. created under an earlier host cwd) is attached only when
-   * a workspace already owns that path — never auto-created, so legacy
-   * sessions cannot spawn accidental workspaces.
+   * A workspace is auto-created only when the session cwd matches the chat's
+   * effective cwd (new sessions). A resumed session carrying a foreign cwd
+   * (e.g. created under an earlier host cwd) is attached only when a
+   * workspace already owns that path — never auto-created, so legacy
+   * sessions cannot spawn accidental workspaces. `chatId` keys the effective
+   * cwd: passing it lets a group chat's groupWorkspacePath auto-create/attach
+   * (T3 review fix); omitting it keeps the pre-group behavior.
    */
-  private async attachToWorkspace(sessionId: string, headerCwd: string | undefined): Promise<void> {
+  private async attachToWorkspace(sessionId: string, headerCwd: string | undefined, chatId?: ChatId): Promise<void> {
     const registry = this.deps.workspaceRegistry
     if (registry === undefined) return
     try {
@@ -1220,7 +1367,7 @@ export class ChatRegistry {
       }
       const workspace = await registry.resolveByPath(headerCwd)
       if (workspace === undefined) {
-        if (headerCwd !== this.effectiveCwd()) {
+        if (headerCwd !== this.effectiveCwd(chatId)) {
           this.deps.log('debug', 'workspace attach skipped: no workspace owns ' + headerCwd + ' and it differs from the configured workspacePath')
           return
         }

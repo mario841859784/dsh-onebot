@@ -115,6 +115,14 @@ export interface BridgeConfig {
    * 字段缺失按 'none' 处理。 */
   permissions?: { memberTools?: 'none' | 'all' }
   workspacePath: string
+  /** T3 (PR port 群工作区)：群聊 chat 的会话默认工作区目录——配置后 group:
+   * 前缀 chat 的会话落在群独立目录（per-chat /workspace override 仍最优先，
+   * 私聊不受影响）；absent/空串 = 现行为。 */
+  groupWorkspacePath?: string
+  /** T3 (PR port 退休会话自动恢复)：chat 绑定会话在宿主侧已退休/不存在时，
+   * 扫描宿主 sessions 目录找该 chat 可用的最新会话自动重绑；absent/false =
+   * 关（默认，维持上游默认行为），开启后探测失败仍静默降级为原行为。 */
+  sessionAutoRecover?: boolean
   /** Max inbound file bytes fetched via QQ direct link / base64 (0 = no cap). */
   maxInboundFileBytes: number
   /** B8c: chats idle longer than this many days are evicted on the next
@@ -369,6 +377,7 @@ export class ChatBridge {
       workspaceRegistry: deps.workspaceRegistry,
       agentPresets: deps.agentPresets,
       defaultModel: deps.defaultModel,
+      dshHome: deps.dshHome,
       config: deps.config,
       log: (level, message) => deps.log(level, message),
       isStopping: () => this.stopping,

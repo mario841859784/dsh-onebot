@@ -183,6 +183,10 @@ export interface Config {
   /** 权限分档 A2: 成员档位工具权限（none=成员回合禁用全部 qq_* 工具，默认；all=不限）。 */
   permissions: { memberTools: 'none' | 'all' }
   workspacePath: string
+  /** T3 (PR port 群工作区)：群聊会话的默认工作区目录；空串=现行为。 */
+  groupWorkspacePath: string
+  /** T3 (PR port 退休会话自动恢复)：退休会话自动重绑开关；false=默认关。 */
+  sessionAutoRecover: boolean
   inboundFileMaxBytes: number
   /** @deprecated D4a alias of inboundFileMaxBytes; honored for one release. */
   maxInboundFileBytes?: number
@@ -380,6 +384,10 @@ export const Config: Z<Config> = z.object({
   }),
   workspacePath: z.string().default('')
     .description('QQ 会话的工作区目录（写入会话 cwd，并自动归入该工作区，不存在则创建）；留空时使用宿主进程工作目录并在启动时告警提醒（宿主未提供可编程查询的默认工作区），单聊 /workspace 覆盖优先且已持久化到会话映射文件，重启/恢复失败均不丢失'),
+  groupWorkspacePath: z.string().default('')
+    .description('群工作区目录（T3 PR 移植）：设置后群聊会话默认落在该独立目录（自动归入该工作区），私聊不受影响；单聊 /workspace 覆盖仍最优先；留空 = 群聊与私聊同源 workspacePath（默认，维持现行为）'),
+  sessionAutoRecover: z.boolean().default(false)
+    .description('退休会话自动恢复（T3 PR 移植）：chat 绑定的会话在宿主侧已退休/不存在时，启动加载扫描宿主 sessions 目录，找该 chat 可用的最新会话自动重绑；扫描失败/无候选时静默降级为原行为（保持退休跳过或重新建会话）；默认关（不改变现行为）'),
   inboundFileMaxBytes: z.number().default(INBOUND_FILE_MAX_BYTES)
     .description('QQ 入站文件最大字节数（直链/base64 拉取，0 = 不限制）'),
   maxInboundFileBytes: z.number().deprecated()
@@ -649,6 +657,8 @@ export function apply(ctx: Context, config: Config): void {
       agentPresetGroup: config.agentPresetGroup,
       permissions: { memberTools: config.permissions.memberTools },
       workspacePath: config.workspacePath,
+      groupWorkspacePath: config.groupWorkspacePath,
+      sessionAutoRecover: config.sessionAutoRecover,
       maxInboundFileBytes: config.inboundFileMaxBytes,
       chatIdleEvictDays: config.chatIdleEvictDays,
       ...gateConfig,
