@@ -242,22 +242,34 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 
 dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `onebotSettings`，写入 profile 层
 `cordis.patch.yml` 中 `dsh-onebot` 条目的 config 覆盖行——与手改 patch、宿主原生设置页是同一个持久层）。
+面板为宿主原生风格（0.10.0 起客户端直接复用宿主 UI 原语与 `--dsw-*` 设计 token，明暗主题跟随宿主）：
 
-### 三组 19 键
+![设置页 · 连接](docs/settings-ui-connection.jpg)
 
-| 组 | 键 |
+![设置页 · 行为](docs/settings-ui-behavior.jpg)
+
+### 六组 69 键（另含 5 条通知文案）
+
+面板按六个页签分组：
+
+| 组 | 覆盖 |
 |---|---|
-| connection（连接） | `mode`、`host`、`port`、`url`、`accessToken`、`botQQ` |
-| permissions（权限） | `requireMention`、`adminUsers`、`dmPolicy`、`groupPolicy`、`allowAllUsers`、`allowFrom`、`groupAllowFrom` |
-| behavior（行为） | `interimMessages`、`interimRecall`、`interimRecallMs`、`sendErrorNotice`、`unknownCommand`、`rateLimitPerMinute`、`newMessagePolicy`、`autoSteerPolicy`、`deferredTimeoutMs` |
+| 连接 | 连接模式（反向/正向 WS 及对应地址端口）、`accessToken`（脱敏）、机器人 QQ 号、私聊/群聊默认工作区路径、提示词文件、内网地址放行、首页侧边栏入口 |
+| 权限 | 私聊/群聊策略与白名单、管理员、唤醒词、@ 唤醒细则、表情呈现、戳一戳、受限前缀、敏感词正则 |
+| 行为 | 中间消息与自动撤回、错误通知、未知命令、频率上限、新消息排队/插话、连发合并、会话标题同步 |
+| 会话 | 新会话问候、首条按 User 注入、记忆文件、智能体预设 |
+| 媒体 | 语音转写（引擎/命令/模型）、长文转图片卡片、卡片字体、出入站媒体大小上限、GIF 分帧 |
+| 诊断 | 主动写审计、决策追踪、入站录制与脱敏、事件注入与 dry-run、日志级别 |
+
+另有 5 条 `notices.*` 回执文案（插话/排队/回答/超时补发/限流）随「行为」组展示，支持自定义文案。
 
 `accessToken` 在设置页做密码型输入，快照返回侧脱敏（不回显明文）；写入侧仍在 patch 文件明文落盘。
 
 ### 与 patch config 的优先级
 
 **schema 默认值 ← bundle/底层 patch（继承层） ← profile 覆盖行（设置页写这里）**；同一层内后写的 patch
-条目胜出。设置页键与手改 patch 是同一层的同一行，不存在两套优先级。三组 19 键之外的键
-（media/STT/性能/`agentPreset` 等低频键）不设 UI，仍在同一行 config 手改 patch。
+条目胜出。设置页键与手改 patch 是同一层的同一行，不存在两套优先级。面板键之外的键
+（`chatIdleEvictDays` 等低频键）不设 UI，仍在同一行 config 手改 patch。
 
 ### 生效方式
 

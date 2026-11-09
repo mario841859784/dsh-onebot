@@ -255,14 +255,28 @@ Reply IDs must be exactly representable decimal integers (negative IDs are suppo
 The dsh Web GUI settings page exposes this plugin's configuration visually (a host-plane Remote
 `onebotSettings` that writes the config override of the `dsh-onebot` entry in the profile-level
 `cordis.patch.yml` — the same persistence layer as a hand-edited patch and the host's native settings page).
+The panel follows the host's native look (since 0.10.0 the client bundle reuses the host's UI primitives and
+`--dsw-*` design tokens; light/dark follows the host):
 
-### Three groups, 19 keys
+![Settings page · Connection](docs/settings-ui-connection.jpg)
 
-| Group | Keys |
+![Settings page · Behavior](docs/settings-ui-behavior.jpg)
+
+### Six groups, 69 keys (plus 5 notice texts)
+
+The panel is organized into six tabs (UI text is Chinese; group coverage below):
+
+| Group | Coverage |
 |---|---|
-| connection | `mode`, `host`, `port`, `url`, `accessToken`, `botQQ` |
-| permissions | `requireMention`, `adminUsers`, `dmPolicy`, `groupPolicy`, `allowAllUsers`, `allowFrom`, `groupAllowFrom` |
-| behavior | `interimMessages`, `interimRecall`, `interimRecallMs`, `sendErrorNotice`, `unknownCommand`, `rateLimitPerMinute`, `newMessagePolicy`, `autoSteerPolicy`, `deferredTimeoutMs` |
+| Connection | Connection mode (reverse/forward WS with its address/port), `accessToken` (redacted), bot QQ id, default workspace paths (DM/group), prompt files, private-host download allow, sidebar entry |
+| Permissions | DM/group policies and allowlists, admins, wake names, mention details, face rendering, poke, restricted prefix, sensitive patterns |
+| Behavior | Interim messages and auto-recall, error notice, unknown commands, rate limit, queue/steer, inbound burst merging, session title sync |
+| Session | New-session greeting, first message as User, memory files, agent preset |
+| Media | Speech-to-text (engine/command/model), long-text-to-image cards, card fonts, inbound/outbound media size caps, GIF frame splitting |
+| Diagnostics | Action audit, decision trace, inbound recording with redaction, event injection and dry-run, log level |
+
+Five `notices.*` receipt texts (steer/queue/answer/deferred-timeout/rate-limit) are shown under the
+Behavior tab and support custom text.
 
 `accessToken` is a password-style input in the settings page; snapshots redact it on return (no plaintext echo);
 the write side still lands in the patch file as plaintext.
@@ -271,8 +285,8 @@ the write side still lands in the patch file as plaintext.
 
 **schema defaults ← bundle/base patch (inherited layer) ← profile override line (what the settings page writes)**;
 within the same layer, later patch entries win. Settings-page keys and a hand-edited patch are the same line in
-the same layer — there are no two competing priorities. Keys outside the 19 (media/STT/performance/
-`agentPreset` and other low-frequency keys) get no UI; hand-edit the patch in the same config line.
+the same layer — there are no two competing priorities. Keys outside the panel (`chatIdleEvictDays` and other
+low-frequency keys) get no UI; hand-edit the patch in the same config line.
 
 ### How changes take effect
 

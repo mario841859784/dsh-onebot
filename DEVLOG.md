@@ -998,3 +998,8 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
   4. CSS 全量重写：token 全部引用 `--dsw-alias-*`/`--dsw-radius-*`（每个带字面回落值 + 明暗回落块）；自造紫色 accent/胶囊页签/容器查询三档栅格/hint-inline 布局分支全部退出；textarea/select 无宿主表单级原语，自绘但度量对齐原生 Input（32px 高/.5px l4 边/radius-md）。
 - **测试**：client-settings.spec.ts 渲染契约更新到 ui 桩注入——62/62 全绿（externals=react+seed 模块两处 require、控件计数 9 分段/12 多行/30 开关/17 文本/1 密码/1 清除勾选、原始 input 归零断言、密文三态经 Tag/Checkbox、折叠移除断言、dsw token CSS 断言、picker「填入」改 ui.Button 桩）；sidebar-entry.spec 不受影响全绿；全量 vitest 57 文件 1075 passed + 4 skipped（connection.spec 两条重连用例并行时序 flake，`--maxWorkers=1` 隔离重跑 39/39 全绿，按 T8 期同口径处理）。
 - **边界**：纯逻辑零改动（GROUPS/DEFAULTS/draft/computePatch/computeDirtyKeys/mergeOnConflict/NUMBER_RANGE/workspace 数据流/冲突合并/confirm/beforeunload 守卫）；locale 仅删 `diagnostics.summary`/`diagnostics.dirtyMark` 两键（折叠遗留）；descriptor/键集/默认值契约原样（tests 契约核对全过）；版本号未动（发版收口由维护者拍板）。
+
+## 2026-11-09 设置页文档补新版 UI 截图（docs-only）
+
+- **改动**：docs/ 新增 `settings-ui-connection.jpg` / `settings-ui-behavior.jpg`（0.10.0 原生风格真机截图，DeepSeek Harness 桌面应用 1280×820 实拍）；README.md / README.en.md「设置页」一节嵌入两图，并把过时的「三组 19 键」口径更新为「六组 69 键（+5 条通知文案）」——分组覆盖表替代旧键列法，非面板键口径同步为 `chatIdleEvictDays` 等。仓库此前并无 UI 截图（仅架构图），本次为新增而非替换。
+- **同步**：与 08dcf5f 同分支；截图为 JPEG（~70KB/张）按现状直存 docs/。
