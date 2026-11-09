@@ -1028,3 +1028,11 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **问题**：`gifFramesEnabled` 的面板 hint 写「发送 GIF 时拆成多帧序列（默认关）」（en "when sending"）——描述成出站方向；实现实际在**入站**（src/inbound.ts:620/692）：QQ 侧 GIF 落地后抽 4 帧拼纵向长图 `<原名>-frames.png`，消息注入 `[动图分帧:<路径>]`，让只看得到静帧的视觉模型看懂动画过程；GIF 本身不改动。用户「应该是接收到 gif 进行拆分吧」的提问暴露了这处文案与实现相反。
 - **修正**：zh hint →「收到 GIF 时在消息旁附一张抽 4 帧的纵向长图，让模型看懂动画过程（默认关）」；en 同步（"Attach a 4-frame vertical strip next to received GIFs…"）。en 词条随 EN_GROUPS 一起改（zh 自动灌入机制下单点改动生效）。
 - **逻辑确认记录**：分帧 = 接收端辅助视图；开关默认关（关=不装 gifuct-js、不碰 FS）；上限 ≤8MB/≤1024px/≤150 帧；任何失败静默空串不挡消息；帧合成遵守 disposal 清除/恢复规则。
+
+## 2026-11-10 连接页重排（方案 A：连接=通道配置，用户裁定）
+
+- **动机（用户报告）**：连接页 14 键里 8 项不属于「通道配置」——历史上无更合适分组就顺手塞进 connection 组（W7 工作区、本地加提示词文件/内网放行/忽略自己、T11 侧边栏入口）。原生面板重排后各归其位。
+- **方案（AskUserQuestion 用户裁定）**：方案 A + 侧边栏入口归行为——**连接 6 键**（mode/host/port/url/accessToken/botQQ，纯通道）；**会话 5→10**（+workspacePath/groupWorkspacePath/forceSessionId/dmPromptFile/groupPromptFile）；**行为 12→14**（+ignoreSelf/sidebarEntryEnabled）；**媒体 16→17**（+allowPrivateHosts）；权限/诊断不变。总 69 键不变，showIf 隐藏键不变（61 可见）。
+- **顺带修复（真机检查揪出）**：会话/媒体组没有 `group.<id>.desc` 词条，宿主 locale 对缺键返回原始 key——面板把「group.session.desc」当描述渲染（真机截图实证）。修复：①补 `group.session.desc`（新会话与工作区）/`group.media.desc`（语音、图片与媒体限额）双词，behavior desc 更新为「回复、限流与消息处理」；②面板防御——desc 词条缺失传 null 不渲染，杜绝同类泄漏。
+- **同步面**：src/client.ts GROUPS（字段随注释搬移，区域头注释更新重排口径）；src/settings-remote.ts SETTINGS_GROUPS + JSDoc（host 侧同构，快照 groups 随之）；tests/client-settings.spec（rowsPerGroup [4,15,20,9,14,7]、连接页=6 键全等断言、归属断言、「session 无通知行」断言从裸「提示」改「提示文案」——提示词文件 label 误伤）；tests/settings-remote.spec（connection 6 键 + behavior 14 键三处数组）；tests/t5-port（六组结构 6/15/14/10/17/7）、t7-port（组尾键序）；README 中英六组覆盖表。
+- **验证**：tsc 0 错误；client-settings+settings-remote+sidebar-entry 99/99；全量 1079 passed + 4 skipped（仅 connection 两条并行时序 flake，--maxWorkers=1 隔离 39/39，同既有口径）；真机回归受阻——本轮应用实例 Chromium 无障碍树未暴露（历史实例正常），合成指针事件无效，可视化点验留待用户（渲染机制与上轮回归一致，仅 GROUPS 数据搬移）。

@@ -263,8 +263,17 @@ describe('T8 客户端 bundle — 六组 69 键（与 host SETTINGS_GROUPS 逐�
     )
     // T24：标题同步开关落位 behavior 组
     expect(groups.find((group) => group.id === 'behavior')!.fields.map((field) => field.key)).toContain('titleSyncEnabled')
-    // T11：侧边栏入口开关落位 connection 组
-    expect(groups.find((group) => group.id === 'connection')!.fields.map((field) => field.key)).toContain('sidebarEntryEnabled')
+    // 0.10.0 重排（方案 A）：侧边栏入口/忽略自己落 behavior，工作区/强制会话/提示词文件落 session，内网放行落 media
+    expect(groups.find((group) => group.id === 'behavior')!.fields.map((field) => field.key)).toEqual(
+      expect.arrayContaining(['ignoreSelf', 'sidebarEntryEnabled']),
+    )
+    expect(groups.find((group) => group.id === 'session')!.fields.map((field) => field.key)).toEqual(
+      expect.arrayContaining(['workspacePath', 'groupWorkspacePath', 'forceSessionId', 'dmPromptFile', 'groupPromptFile']),
+    )
+    expect(groups.find((group) => group.id === 'media')!.fields.map((field) => field.key)).toContain('allowPrivateHosts')
+    expect(groups.find((group) => group.id === 'connection')!.fields.map((field) => field.key)).toEqual([
+      'mode', 'host', 'port', 'url', 'accessToken', 'botQQ',
+    ])
   })
 
   it('默认值逐字对齐 host SCHEMA_DEFAULTS（T8 恢复全等，无豁免；notices 走面板 5 真键不在 DEFAULTS）', () => {
@@ -325,7 +334,7 @@ describe('T8 notices 面板 — 5 真键（本仓 schema 无贡献者 newSession
     expect(behavior).toContain('超时补发提示')
     expect(behavior).toContain('限流提示')
     expect(behavior).not.toContain('排队提示')
-    expect(flat(renderGroup('session', {}))).not.toContain('提示')
+    expect(flat(renderGroup('session', {}))).not.toContain('提示文案') // 无通知文案行（0.10.0 起提示词文件在 session 组，裸「提示」会被 label 误伤）
   })
 
   it('policy=queue 档位切换：显排队提示、隐插话提示（贡献者三元组面板语义保留到真键）', () => {
@@ -419,12 +428,12 @@ describe('T8 showIf 条件显隐 — 贡献者面板交互契约', () => {
     expect(visibleLabels('session', { memoryFilesEnabled: true })).toContain('记忆文件路径')
   })
 
-  it('渲染行计数与 showIf 自洽：默认草稿顶层字段行 69 行 = 全键 - 8 个隐藏键（host/port/interimRecallMs/inboxQueueDelayMs/memoryFiles/sttCommand/sttArgs/sttModel）', () => {
+  it('渲染行计数与 showIf 自洽：默认草稿顶层字段行 69 行 = 全键 - 8 个隐藏键（host/port/interimRecallMs/inboxQueueDelayMs/memoryFiles/sttCommand/sttArgs/sttModel）；0.10.0 重排后 connection 4（6-2 隐藏）/ behavior 20（12 字段 + 4 通知开关 + 4 文案）/ session 9（10-1 隐藏）/ media 14（17-3 隐藏）', () => {
     const visible = (field: { showIf?: { key: string; value: unknown } }) => !field.showIf || baseDraft()[field.showIf.key] === field.showIf.value
     const expectedVisible = allFields.filter(visible).length
     expect(expectedVisible).toBe(61)
     const rowsPerGroup = groups.map((group) => topFieldRows(renderGroup(group.id, {})).length)
-    expect(rowsPerGroup).toEqual([12, 15, 18, 4, 13, 7]) // behavior 18 = 10 字段 + 4 通知开关行 + 4 文案行；connection 12 含 T11 sidebarEntryEnabled
+    expect(rowsPerGroup).toEqual([4, 15, 20, 9, 14, 7])
     expect(rowsPerGroup.reduce((sum, count) => sum + count, 0)).toBe(69)
   })
 })

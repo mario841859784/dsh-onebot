@@ -268,11 +268,11 @@ The panel is organized into six tabs (UI text is Chinese; group coverage below):
 
 | Group | Coverage |
 |---|---|
-| Connection | Connection mode (reverse/forward WS with its address/port), `accessToken` (redacted), bot QQ id, default workspace paths (DM/group), prompt files, private-host download allow, sidebar entry |
+| Connection | Connection mode (reverse/forward WS with its address/port), `accessToken` (redacted), bot QQ id — channel config only (regrouped in 0.10.0) |
 | Permissions | DM/group policies and allowlists, admins, wake names, mention details, face rendering, poke, restricted prefix, sensitive patterns |
-| Behavior | Interim messages and auto-recall, error notice, unknown commands, rate limit, queue/steer, inbound burst merging, session title sync |
-| Session | New-session greeting, first message as User, memory files, agent preset |
-| Media | Speech-to-text (engine/command/model), long-text-to-image cards, card fonts, inbound/outbound media size caps, GIF frame splitting |
+| Behavior | Interim messages and auto-recall, error notice, unknown commands, rate limit, queue/steer, inbound burst merging, session title sync, ignore own messages, home sidebar entry |
+| Session | New-session greeting, first message as User, memory files, agent preset, default workspace paths (DM/group), forced session id, DM/group prompt files |
+| Media | Speech-to-text (engine/command/model), long-text-to-image cards, card fonts, inbound/outbound media size caps, private-host download allow, GIF frame splitting |
 | Diagnostics | Action audit, decision trace, inbound recording with redaction, event injection and dry-run, log level |
 
 Five `notices.*` receipt texts (steer/queue/answer/deferred-timeout/rate-limit) are shown under the

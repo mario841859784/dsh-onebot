@@ -283,7 +283,8 @@ describe('T7 设置键：inboxQueueEnabled/inboxQueueDelayMs', () => {
     expect(() => validatePatch({ inboxQueueEnabled: 'yes' })).toThrow()
   })
 
-  it('behavior 组键序：deferredTimeoutMs 之后追加两键', () => {
-    expect(SETTINGS_GROUPS.behavior.slice(-4)).toEqual(['deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled'])
+  it('behavior 组键序：deferredTimeoutMs 之后追加两键（0.10.0 重排后组尾再续 ignoreSelf/sidebarEntryEnabled）', () => {
+    expect(SETTINGS_GROUPS.behavior.slice(-4)).toEqual(['inboxQueueDelayMs', 'titleSyncEnabled', 'ignoreSelf', 'sidebarEntryEnabled'])
+    expect(SETTINGS_GROUPS.behavior.slice(-6, -4)).toEqual(['deferredTimeoutMs', 'inboxQueueEnabled'])
   })
 })

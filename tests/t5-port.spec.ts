@@ -38,14 +38,14 @@ describe('T5 键表完整性（SCHEMA_DEFAULTS 与 schema 无孤儿键）', () =
   const resolved = Config({}) as Record<string, unknown>
   const groupKeys = Object.values(SETTINGS_GROUPS).flat()
 
-  it('六组结构对齐贡献者 0.9.19 + T6/T7/T24 增键：connection 14 / permissions 15 / behavior 9+2+1 / session 5 / media 15+1 / diagnostics 7', () => {
+  it('六组结构（T8/T11/T24 增键 + 0.10.0 重排方案 A）：connection 6 / permissions 15 / behavior 12+2 / session 5+5 / media 16+1 / diagnostics 7', () => {
     expect(Object.keys(SETTINGS_GROUPS)).toEqual(['connection', 'permissions', 'behavior', 'session', 'media', 'diagnostics'])
-    expect(SETTINGS_GROUPS.connection).toHaveLength(14) // T11：13→14（+sidebarEntryEnabled）
+    expect(SETTINGS_GROUPS.connection).toHaveLength(6) // 0.10.0 重排：连接=通道配置（-8 键）
     expect(SETTINGS_GROUPS.permissions).toHaveLength(15)
-    expect(SETTINGS_GROUPS.behavior).toHaveLength(12) // T24：11→12（+titleSyncEnabled）
+    expect(SETTINGS_GROUPS.behavior).toHaveLength(14) // T24：+titleSyncEnabled；0.10.0：+ignoreSelf/sidebarEntryEnabled
     expect(SETTINGS_GROUPS.behavior).toEqual(expect.arrayContaining(['inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled']))
-    expect(SETTINGS_GROUPS.session).toHaveLength(5)
-    expect(SETTINGS_GROUPS.media).toHaveLength(16)
+    expect(SETTINGS_GROUPS.session).toHaveLength(10) // 0.10.0：5→10（+工作区×2/强制会话/提示词文件×2）
+    expect(SETTINGS_GROUPS.media).toHaveLength(17) // T6：+gifFramesEnabled；0.10.0：+allowPrivateHosts
     expect(SETTINGS_GROUPS.media).toContain('gifFramesEnabled')
     expect(SETTINGS_GROUPS.diagnostics).toHaveLength(7)
   })

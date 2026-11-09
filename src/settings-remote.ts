@@ -61,9 +61,12 @@ export const REMOTE_EFFECT = 'restart'
 
 /** 设置页 UI 六组 71 键（T5：键表对齐贡献者 0.9.19 版——connection 14 /
  *  permissions 15 / behavior 10 / session 5 / media 15 / diagnostics 7；T6 media
- *  组尾增 gifFramesEnabled=16、T7 behavior 组尾增 inboxQueueEnabled/
- *  inboxQueueDelayMs、T11 connection 组尾增 sidebarEntryEnabled=14、T24
- *  behavior 组尾增 titleSyncEnabled；与
+ *  组尾增 gifFramesEnabled、T7 behavior 组尾增 inboxQueueEnabled/
+ *  inboxQueueDelayMs、T11 组尾增 sidebarEntryEnabled、T24 behavior 组尾增
+ *  titleSyncEnabled；0.10.0 重排：connection 6 键（通道配置）、
+ *  workspacePath/groupWorkspacePath/forceSessionId/dmPromptFile/groupPromptFile
+ *  归 session（6→10）、allowPrivateHosts 归 media（17）、ignoreSelf/
+ *  sidebarEntryEnabled 归 behavior（12→14）；与
  *  src/index.ts Config schema 一一对应，未入库功能的键
  *  先行进表、schema 定义随后批接上，见 PENDING_SCHEMA_KEYS）。T1 四组 29 键
  *  仍为前四组前缀，旧面板（lib/client.js 手写真相源，T8 重写）继续可渲染。
@@ -71,11 +74,13 @@ export const REMOTE_EFFECT = 'restart'
  *  贡献者键表（T4 提示词/记忆文件、T5 媒体限额键的 UI 归属）。gifFramesEnabled
  *  为本仓 T6 批次自有开关（贡献者无对应键），归入 media 组。 */
 export const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>> = {
-  connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath', 'groupWorkspacePath', 'forceSessionId', 'dmPromptFile', 'groupPromptFile', 'allowPrivateHosts', 'ignoreSelf', 'sidebarEntryEnabled'],
+  // 0.10.0 重排（用户裁定方案 A）：连接=通道配置 6 键；工作区/强制会话/提示词文件
+  // 归 session；allowPrivateHosts 归 media；ignoreSelf/sidebarEntryEnabled 归 behavior。
+  connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ'],
   permissions: ['requireMention', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'replyCountsAsMention', 'atAllCountsAsMention', 'faceStyle', 'pokeEnabled', 'restrictedMemberPrefix', 'sensitivePatterns'],
-  behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled'],
-  session: ['newSessionGreeting', 'firstMessageAsUser', 'memoryFilesEnabled', 'memoryFiles', 'agentPreset'],
-  media: ['sttEnabled', 'sttEngine', 'sttCommand', 'sttArgs', 'sttModel', 'textImageEnabled', 'textImageThreshold', 'cardFooter', 'fontFiles', 'fontFamilies', 'outboundImageMaxBytes', 'maxVoiceBytes', 'maxFileBytes', 'inboundImageMaxPx', 'inboundFileMaxBytes', 'gifFramesEnabled'],
+  behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled', 'ignoreSelf', 'sidebarEntryEnabled'],
+  session: ['newSessionGreeting', 'firstMessageAsUser', 'memoryFilesEnabled', 'memoryFiles', 'agentPreset', 'workspacePath', 'groupWorkspacePath', 'forceSessionId', 'dmPromptFile', 'groupPromptFile'],
+  media: ['sttEnabled', 'sttEngine', 'sttCommand', 'sttArgs', 'sttModel', 'textImageEnabled', 'textImageThreshold', 'cardFooter', 'fontFiles', 'fontFamilies', 'outboundImageMaxBytes', 'maxVoiceBytes', 'maxFileBytes', 'inboundImageMaxPx', 'inboundFileMaxBytes', 'gifFramesEnabled', 'allowPrivateHosts'],
   diagnostics: ['actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun', 'logLevel'],
 }
 

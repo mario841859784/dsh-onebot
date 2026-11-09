@@ -385,7 +385,7 @@ describe('onebotSettings remote — W7 workspacePath 白名单扩展（connectio
     const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
     expect(ALL_KEYS).toHaveLength(71) // T5：键表对齐贡献者 0.9.19（W7 25→26（workspacePath）、T2 26→27（newMessagePolicy 入 behavior 组）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs））、T6 66→67（gifFramesEnabled）、T7 67→69（inboxQueueEnabled/inboxQueueDelayMs）、T11 69→70（sidebarEntryEnabled）、T24 70→71（titleSyncEnabled）
     expect(SCHEMA_DEFAULTS.workspacePath).toBe('')
-    expect(SETTINGS_GROUPS.connection).toEqual(['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath', 'groupWorkspacePath', 'forceSessionId', 'dmPromptFile', 'groupPromptFile', 'allowPrivateHosts', 'ignoreSelf', 'sidebarEntryEnabled'])
+    expect(SETTINGS_GROUPS.connection).toEqual(['mode', 'host', 'port', 'url', 'accessToken', 'botQQ']) // 0.10.0 重排：连接=通道配置（工作区/提示词文件归 session，allowPrivateHosts 归 media，ignoreSelf/sidebarEntryEnabled 归 behavior）
     expect(snapshot.groups.connection).toEqual(SETTINGS_GROUPS.connection)
     expect(snapshot.config.workspacePath).toBe('')
   })
@@ -492,7 +492,7 @@ describe('onebotSettings remote — P1/T2 newMessagePolicy 白名单扩展（beh
     expect(ALL_KEYS).toHaveLength(71) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）、T6 66→67（gifFramesEnabled）、T7 67→69（inboxQueueEnabled/inboxQueueDelayMs）、T11 69→70（sidebarEntryEnabled）、T24 70→71（titleSyncEnabled）
     expect(SCHEMA_DEFAULTS.newMessagePolicy).toBe('steer')
     expect(SETTINGS_GROUPS.behavior).toEqual([
-      'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled',
+      'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled', 'ignoreSelf', 'sidebarEntryEnabled', // 0.10.0 重排组尾追加
     ])
     expect(snapshot.groups.behavior).toEqual(SETTINGS_GROUPS.behavior)
     expect(snapshot.config.newMessagePolicy).toBe('steer')
@@ -535,7 +535,7 @@ describe('onebotSettings remote — T9 autoSteerPolicy 白名单扩展（behavio
     expect(ALL_KEYS).toHaveLength(71) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）、T6 66→67（gifFramesEnabled）、T7 67→69（inboxQueueEnabled/inboxQueueDelayMs）、T11 69→70（sidebarEntryEnabled）、T24 70→71（titleSyncEnabled）
     expect(SCHEMA_DEFAULTS.autoSteerPolicy).toBe('admin')
     expect(SETTINGS_GROUPS.behavior).toEqual([
-      'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled',
+      'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled', 'ignoreSelf', 'sidebarEntryEnabled', // 0.10.0 重排组尾追加
     ])
     expect(snapshot.groups.behavior).toEqual(SETTINGS_GROUPS.behavior)
     expect(snapshot.config.autoSteerPolicy).toBe('admin')
@@ -578,7 +578,7 @@ describe('onebotSettings remote — T3 deferredTimeoutMs 白名单扩展（behav
     expect(ALL_KEYS).toHaveLength(71) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）、T6 66→67（gifFramesEnabled）、T7 67→69（inboxQueueEnabled/inboxQueueDelayMs）、T11 69→70（sidebarEntryEnabled）、T24 70→71（titleSyncEnabled）
     expect(SCHEMA_DEFAULTS.deferredTimeoutMs).toBe(600_000)
     expect(SETTINGS_GROUPS.behavior).toEqual([
-      'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled',
+      'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled', 'ignoreSelf', 'sidebarEntryEnabled', // 0.10.0 重排组尾追加
     ])
     expect(snapshot.groups.behavior).toEqual(SETTINGS_GROUPS.behavior)
     expect(snapshot.config.deferredTimeoutMs).toBe(600_000)

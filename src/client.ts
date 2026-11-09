@@ -108,10 +108,12 @@ window.__ModuleLoader__.load({
 		var SIDEBAR_PANEL_ID = "qq-bot";
 		//#endregion
 
-		//#region 六组 67 键字段定义（T8 重写：分组/键集/类型与
+		//#region 六组 69 键字段定义（T8 重写、0.10.0 重排：分组/键集/类型与
 		//  src/settings-remote.ts SETTINGS_GROUPS 逐字对齐，DEFAULTS 与 SCHEMA_DEFAULTS
-		//  逐字对齐，tests/client-settings.spec.ts 断言一致性。chatIdleEvictDays 不上面板
-		// （host SETTINGS_GROUPS 同样不含），仍走 patch config 手改。）
+		//  逐字对齐，tests/client-settings.spec.ts 断言一致性。0.10.0 分组口径：连接=通道
+		//  配置 6 键（mode/host/port/url/accessToken/botQQ）；工作区/强制会话/提示词文件
+		//  归会话组，allowPrivateHosts 归媒体组，ignoreSelf/sidebarEntryEnabled 归行为组。
+		//  chatIdleEvictDays 不上面板（host SETTINGS_GROUPS 同样不含），仍走 patch config 手改。）
 		/** 字段类型：enum（下拉）/ number / boolean / string / stringArray（多行文本）/ secret（密码型）。 */
 		var GROUPS = [
 			{
@@ -124,23 +126,6 @@ window.__ModuleLoader__.load({
 					{ key: "url", label: "正向 WS 服务器地址",  showIf: { key: "mode", value: "forward" }, type: "string", hint: "正向模式服务器地址" },
 					{ key: "accessToken", label: "访问令牌（AccessToken）", type: "secret" },
 					{ key: "botQQ", label: "机器人 QQ 号", type: "string" },
-					// W7：workspacePath 入面板（connection 组键序追加）。语义（对齐 README「会话工作区选择」）：
-					// 修改只对新会话生效；已设 per-chat /workspace 覆盖的会话不受影响。
-					{ key: "workspacePath", label: "私聊默认工作区路径", type: "string", hint: "私聊新会话的默认目录" },
-					{ key: "groupWorkspacePath", label: "群聊默认工作区路径", type: "string", hint: "群聊新会话的默认目录；留空则同私聊" },
-				// T8：forceSessionId 入面板（host SETTINGS_GROUPS connection 组列出，默认 ''）。
-				{ key: "forceSessionId", label: "强制会话 ID", type: "string", hint: "填了就固定用这个会话 id（高级用法，一般留空）" },
-					// 本地加（2026-10-30）：提示词走文件，不塞进 yml——两段各一万多字，块写法容易被手改花。
-					// 语义：路径填了且读得到就用文件内容当 dmPrompt/groupPrompt（每行左侧空白全删），
-					// 读不到或留空就退回 yml 里的内联文本；改完文件要保存一次让插件重启才生效。
-					{ key: "dmPromptFile", label: "私聊提示词文件（txt 路径）", type: "string", placeholder: "~/.dsh/onebot/prompts/dm.txt" },
-					{ key: "groupPromptFile", label: "群聊提示词文件（txt 路径）", type: "string", placeholder: "~/.dsh/onebot/prompts/group.txt" },
-					// 本地加（2026-11-01）：NapCat 文件服务/反代在本机或内网时，下载检查得放行。
-					{ key: "allowPrivateHosts", label: "允许下载本机/内网地址", type: "boolean", hint: "默认拦内网链接防伪造；NapCat 文件服务在本机时开" },
-					{ key: "ignoreSelf", label: "忽略自己发的消息", type: "boolean", hint: "机器人自己的回声不处理" },
-					// T11：DSH 首页左侧边栏入口开关（关=不注册侧边栏入口与配对面板；
-					// 插件菜单下的设置页入口保留。客户端按启动时快照决定，改完刷新生效）。
-					{ key: "sidebarEntryEnabled", label: "首页侧边栏入口", type: "boolean", hint: "在 DSH 首页左侧边栏显示「QQ Bot」入口；改动需刷新页面生效" },
 				],
 			},
 			{
@@ -188,6 +173,10 @@ window.__ModuleLoader__.load({
 					{ key: "inboxQueueDelayMs", label: "合并等待窗口（毫秒）", type: "number", hint: "每条消息先等一个窗口再投递；0 = 立即", showIf: { key: "inboxQueueEnabled", value: true } },
 					// T24：会话标题同步（开关默认关；用户在宿主里钉住的标题永不覆盖）。
 					{ key: "titleSyncEnabled", label: "QQ 会话标题同步", type: "boolean", hint: "每条消息后让宿主刷新会话标题（一次小 LLM 调用）；宿主里手动命名的标题不会被覆盖" },
+					{ key: "ignoreSelf", label: "忽略自己发的消息", type: "boolean", hint: "机器人自己的回声不处理" },
+					// T11：DSH 首页左侧边栏入口开关（关=不注册侧边栏入口与配对面板；
+					// 插件菜单下的设置页入口保留。客户端按启动时快照决定，改完刷新生效）。
+					{ key: "sidebarEntryEnabled", label: "首页侧边栏入口", type: "boolean", hint: "在 DSH 首页左侧边栏显示「QQ Bot」入口；改动需刷新页面生效" },
 														],
 			},
 			{
@@ -199,6 +188,17 @@ window.__ModuleLoader__.load({
 					{ key: "memoryFilesEnabled", label: "新会话读记忆文件", type: "boolean" },
 					{ key: "memoryFiles", label: "记忆文件路径", type: "stringArray", placeholder: "文件绝对路径；分割方式：逗号、顿号、换行", showIf: { key: "memoryFilesEnabled", value: true } },
 					{ key: "agentPreset", label: "新会话智能体预设（填预设 id，如 standard；留空用宿主默认）", type: "string", placeholder: "standard" },
+					// W7：workspacePath 入面板（0.10.0 重排入会话组）。语义（对齐 README「会话工作区选择」）：
+					// 修改只对新会话生效；已设 per-chat /workspace 覆盖的会话不受影响。
+					{ key: "workspacePath", label: "私聊默认工作区路径", type: "string", hint: "私聊新会话的默认目录" },
+					{ key: "groupWorkspacePath", label: "群聊默认工作区路径", type: "string", hint: "群聊新会话的默认目录；留空则同私聊" },
+				// T8：forceSessionId 入面板（host SETTINGS_GROUPS session 组列出，默认 ''）。
+				{ key: "forceSessionId", label: "强制会话 ID", type: "string", hint: "填了就固定用这个会话 id（高级用法，一般留空）" },
+					// 本地加（2026-10-30）：提示词走文件，不塞进 yml——两段各一万多字，块写法容易被手改花。
+					// 语义：路径填了且读得到就用文件内容当 dmPrompt/groupPrompt（每行左侧空白全删），
+					// 读不到或留空就退回 yml 里的内联文本；改完文件要保存一次让插件重启才生效。
+					{ key: "dmPromptFile", label: "私聊提示词文件（txt 路径）", type: "string", placeholder: "~/.dsh/onebot/prompts/dm.txt" },
+					{ key: "groupPromptFile", label: "群聊提示词文件（txt 路径）", type: "string", placeholder: "~/.dsh/onebot/prompts/group.txt" },
 				],
 			},
 			{
@@ -222,6 +222,8 @@ window.__ModuleLoader__.load({
 					{ key: "inboundFileMaxBytes", label: "入站文件大小上限（字节）", type: "number", placeholder: "默认 20971520（20MB）；0 = 不限" },
 					// T6 转正：GIF 分帧（默认关；关闭时不装依赖也不触碰 FS）。
 					{ key: "gifFramesEnabled", label: "GIF 动图分帧", type: "boolean", hint: "收到 GIF 时在消息旁附一张抽 4 帧的纵向长图，让模型看懂动画过程（默认关）" },
+					// 本地加（2026-11-01）：NapCat 文件服务/反代在本机或内网时，下载检查得放行。
+					{ key: "allowPrivateHosts", label: "允许下载本机/内网地址", type: "boolean", hint: "默认拦内网链接防伪造；NapCat 文件服务在本机时开" },
 				],
 			},
 			{
@@ -705,7 +707,9 @@ window.__ModuleLoader__.load({
 			"workspace.fetchFailed": "本次拉取 workspace 列表失败，可直接输入路径。",
 			"group.connection.desc": "连 NapCat 的通道",
 			"group.permissions.desc": "谁能触发与使用",
-			"group.behavior.desc": "回复与限流",
+			"group.behavior.desc": "回复、限流与消息处理",
+			"group.session.desc": "新会话与工作区",
+			"group.media.desc": "语音、图片与媒体限额",
 			"group.diagnostics.desc": "日志与调试",
 			// 批 3 词条（UX §5.4/§5.6 + integration §3：冲突合并保留 + 数字行内校验，
 			// zh/en 同批齐平；既有键文案不改）。
@@ -761,7 +765,9 @@ window.__ModuleLoader__.load({
 			"workspace.fetchFailed": "Couldn't fetch the workspace list this time — you can type a path directly.",
 			"group.connection.desc": "How it links to NapCat",
 			"group.permissions.desc": "Who can trigger it",
-			"group.behavior.desc": "Replies and limits",
+			"group.behavior.desc": "Replies, limits and message handling",
+			"group.session.desc": "New sessions and workspace",
+			"group.media.desc": "Voice, images and media caps",
 			"group.diagnostics.desc": "Logs and debugging",
 			// 批 3（UX §5.4/§5.6）：与 zh 同批新增的 4 键（冲突合并保留 + 数字行内校验）。
 			"conflict.kept": "Kept {count} non-conflicting change(s) — review and save again.",
@@ -2215,7 +2221,8 @@ window.__ModuleLoader__.load({
 						return renderGroup(React, group, Object.assign({}, changeHandlers, {
 							ui: UI,
 							texts: texts,
-							groupDesc: t("group." + group.id + ".desc"),
+							// 词条缺失（新组忘配 desc）时传 null，不把原始 key 当描述渲染
+							groupDesc: zh["group." + group.id + ".desc"] != null ? t("group." + group.id + ".desc") : null,
 							modeInactiveKeys: modeInactiveKeys,
 						}));
 					}),
