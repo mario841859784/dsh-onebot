@@ -202,6 +202,11 @@ export interface Config {
   actionRatePerDay: number
   /** W2-③: proactive-write audit jsonl (mediaDir/qq-actions.log). */
   actionAuditEnabled: boolean
+  /** T2 (PR port): 出站防御总开关——复读/信封清洗、残留标记兜底与
+   * [[at:QQ]] 拆段；默认 false（上游 0.9.19 原始行为）。 */
+  outboundDefenseEnabled: boolean
+  /** T2 (PR port): 纯括号旁白（如「（嗯……）」）静默丢弃；默认 false。 */
+  asideOnlySilentEnabled: boolean
   /** W1: decision-trace jsonl (mediaDir/qq-trace.jsonl); default off — zero
    * file, zero behavior difference vs 0.6.0. */
   traceEnabled: boolean
@@ -395,6 +400,10 @@ export const Config: Z<Config> = z.object({
     .description('主动写操作每日（本地自然日）全桥合计上限（W2-③）：口径同 actionRatePerMinute；超限拒发并记 warn 与审计，次日自动恢复；0 = 禁用日限额'),
   actionAuditEnabled: z.boolean().default(true)
     .description('主动写审计（W2-③）：每次主动写（成功/失败）与拒发事件追加写一行 JSON 到 mediaDir/qq-actions.log（含 ts/chatId/action/ok/reason）；写失败仅 warn 不影响发送'),
+  outboundDefenseEnabled: z.boolean().default(false)
+    .description('出站防御（T2 移植）：回复正文先经 cleanOutboundText 清洗——砍复读（同一小段连着 8 次以上或整行连着 5 行以上）、切掉模型复读出来的 <user_message> 宿主信封尾巴、剥半截 DSML/收尾标记与独立 URL 行，残留的 [[reply…]]/[[qq_forward]] 歪写标记兜底删除，正文里的 [[at:QQ号]] 换成真 at 段；默认关闭——与上游 0.9.19 行为逐字节等价'),
+  asideOnlySilentEnabled: z.boolean().default(false)
+    .description('旁白静默（T2 移植）：整条回复只剩括号旁白（如「（嗯……）」）时静默不发送；默认关闭——照常发送'),
   traceEnabled: z.boolean().default(false)
     .description('链路追踪（W1）：为每条入站消息生成 traceId 并贯穿入站→模型回合→出站，决策事件（含限流/去重/白名单/@ 门控/闸门拒发与每个静默丢弃分支的中文 reason）逐行 JSON 落盘 mediaDir/qq-trace.jsonl（4MiB 改名轮转，保留 qq-trace.1/2.jsonl；同一原因 5 分钟限频）；默认关闭——关闭时不生成 traceId、不落盘、决策行为与 0.6.0 完全一致'),
   traceLevel: z.union([z.const('debug'), z.const('warn')]).default('debug')
@@ -565,6 +574,10 @@ export function apply(ctx: Context, config: Config): void {
     atAllCountsAsMention: config.atAllCountsAsMention,
     wakeNamesAdmin: config.wakeNamesAdmin,
     wakeNamesMember: config.wakeNamesMember,
+    // T2 (PR port): 出站防御与旁白静默——出站管线经可选交叉成员读取
+    //（见 OutboundContext.config），同上走 spread 接线。
+    outboundDefenseEnabled: config.outboundDefenseEnabled,
+    asideOnlySilentEnabled: config.asideOnlySilentEnabled,
   }
   const bridge: import('./bridge.js').ChatBridge = new ChatBridge({
     ctx,

@@ -439,7 +439,9 @@ export class InboundPipeline {
       currentTrace()?.emit('dispatch', { ok: false, reason: TRACE_REASONS.inboundEmptyContent })
       return
     }
-    let final = wrapUserMessage(content, userId, nickname)
+    // T2 (PR port): 带上本条消息的 message_id（<user_message mid="…">），
+    // 模型可用 [[reply:<mid>]] 精确引用（出站半边见 outbound.ts sendToChat）。
+    let final = wrapUserMessage(content, userId, nickname, inbound.messageId)
     const role: UserRole = isAdmin ? 'admin' : 'member'
     if (kind === 'group') {
       // 权限分档 A1: the group prefix carries the sender's tier so the model
@@ -853,7 +855,9 @@ export class InboundPipeline {
         currentTrace()?.emit('forward', { ok: false, reason: '合并转发未展开: ' + reason })
         return { text: '[合并转发 id=' + forwardId + ' 未展开: ' + reason + ']', media }
       }
-      return { text: '[合并转发]\n' + truncateForwardLines(lines).join('\n'), media }
+      // T2 (PR port): 成功展开也带上 id——模型看到 [合并转发 id=…] 后可以用
+      // [[reply:<mid>]] 引用原消息，或经 get_forward_msg 自助复查。
+      return { text: '[合并转发 id=' + forwardId + ']\n' + truncateForwardLines(lines).join('\n'), media }
     } catch (error) {
       this.ctx.log('info', 'forward expansion failed: resId=' + forwardId + ': ' + describeError(error))
       currentTrace()?.emit('forward', { ok: false, reason: '合并转发展开失败: ' + describeError(error) })

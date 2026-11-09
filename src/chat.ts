@@ -191,8 +191,13 @@ export const RESTRICTED_PREFIX = '[受限用户:仅问答] '
  * @param content - the assembled untrusted message content.
  * @param userId - sender QQ number (OneBot user_id, digits).
  * @param nickname - the sender display name (sanitized again defensively).
+ * @param messageId - T2 (PR port): the OneBot message_id of this inbound
+ * message, emitted as the `mid` boundary attribute so the model can reply
+ * with an exact [[reply:<mid>]] reference (see outbound.ts sendToChat).
+ * Absent or empty → no attribute (upstream 0.9.19 shape).
  * @returns the boundary-wrapped content.
  */
-export function wrapUserMessage(content: string, userId: string, nickname: string): string {
-  return '<user_message qq="' + userId + '" nickname="' + sanitizeNickname(nickname) + '">\n' + content + '\n</user_message>'
+export function wrapUserMessage(content: string, userId: string, nickname: string, messageId?: string): string {
+  const mid = messageId === undefined || messageId === '' ? '' : ' mid="' + sanitizeNickname(messageId) + '"'
+  return '<user_message qq="' + userId + '" nickname="' + sanitizeNickname(nickname) + '"' + mid + '>\n' + content + '\n</user_message>'
 }

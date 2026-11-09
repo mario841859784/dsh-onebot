@@ -14,6 +14,9 @@ import type { ChatBridge } from './bridge.js'
 import type { OneBotConnection } from './connection.js'
 import { fileToBase64, isUrl } from './media.js'
 import { splitChatId } from './chat.js'
+// T2 (PR port): 出站清洗单一入口——与 outbound 主路径（sendToChat）共用
+// 同一个 cleanOutboundText，避免主路径与工具两侧各抄一份、规则漂移。
+import { cleanOutboundText } from './outbound.js'
 import { stripMarkdown } from './split.js'
 import type { OneBotSegment } from './cq.js'
 import { parseMessage, cqUnescape } from './cq.js'
@@ -319,6 +322,31 @@ export function registerTools(
       const chatId = resolveChat(bridge, exec, a.chat_id)
       await bridge.sendForward(chatId, nodes)
       return { sent: true, messageId: null }
+    },
+  }))
+
+  // T2 (PR port): qq_send_text —— 一条独立文字消息，可用 reply_to 精确引用。
+  // 场景：对方一次连发多张图/多条消息时，一张一句地回，每句引住对应那条
+  //（mid 来自入站 <user_message mid="…">）。清洗走与主路径共用的
+  // cleanOutboundText；[[reply:<mid>]] / [[at:QQ]] 标记由 sendToChat 统一处理。
+  register(defineTool({
+    name: 'qq_send_text',
+    description: '向 QQ 会话发送一条独立的文字消息，可选地引用某条消息（reply_to=那条消息的 messageId）。对方一次连发多条时用它一条一条答。',
+    parameters: {
+      text: { type: 'string', required: true, description: '要发送的文字' },
+      chat_id: { type: 'string', description: '目标会话，格式 private:<QQ号> 或 group:<群号>；省略时默认当前会话' },
+      reply_to: { type: 'string', description: '要引用的消息 id（<user_message mid="…"> 里那个），省略=不引用' },
+    },
+    output: sendOutput(),
+    isConcurrencySafe: () => false,
+    execute: async (args, exec) => {
+      const a = args as { text?: unknown; chat_id?: unknown; reply_to?: unknown }
+      const text = cleanOutboundText(typeof a.text === 'string' ? a.text : '')
+      if (text.trim() === '') throw new Error('qq_send_text: text 不能为空')
+      const chatId = resolveChat(bridge, exec, a.chat_id)
+      const replyTo = typeof a.reply_to === 'string' && a.reply_to.trim() !== '' ? a.reply_to.trim() : undefined
+      const ids = await bridge.sendToChat(chatId, text, replyTo === undefined ? {} : { replyTo })
+      return { sent: true, messageId: ids.length > 0 ? String(ids[ids.length - 1]) : null }
     },
   }))
 
