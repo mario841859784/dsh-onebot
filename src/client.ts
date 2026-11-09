@@ -1,0 +1,2112 @@
+declare const window: any;
+declare const document: any;
+/**
+ * dsh-onebot — client bundle（QQ Bot 设置面板，T8 · 贡献者 0.9.19 版重写）
+ *
+ * 结构模板：dsh-expert-orchestrator/lib/client.js（CJS 包裹 + slots/remote 挂载模式），
+ * 业务与契约全部对齐本仓库 docs/settings-page-design.md（T1 定案）与宿主侧
+ * lib/settings-remote.js（T3 实现）。契约唯一来源：T1 §3 / §3.1 / §4 / §5。
+ *
+ * 宿主装载契约（对照 0.1.7-alpha.2 dsh-client-modules 校验与 expert-orchestrator 先例）：
+ *   - CJS 包裹：banner `window.__ModuleLoader__.load({ id, factory: (require) => {`，
+ *     footer `return module.exports; } });`；externals 仅 react（平台冻结模块表）。
+ *   - 入口导出 `inject`（宿主客户端服务名数组）与 `apply(ctx) => disposer`。
+ *   - 面板注册：`ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register(
+ *     {name, key, locale}, render))`（keyed，key = 组合包 npm 包名）。
+ *   - 数据通道：Typert Remote（`ctx.remote.$mount(ONEBOT_SETTINGS_REMOTE)` 后
+ *     `ctx.get('remote.onebotSettings')`）；所有读写经 Remote 调 host 侧，host 经
+ *     configEditor.edit 写 profile patch 中 dsh-onebot 条目的 config 覆盖行
+ *     （T1 §3：设置页/手改 patch/宿主原生设置页三方同源）。
+ *
+ * descriptor 同步说明（重要）：宿主侧 lib/settings-remote.js（T3）导出的是
+ * SETTINGS_GROUPS / SCHEMA_DEFAULTS / SECRET_KEYS / 服务实现，**未导出客户端
+ * Typert descriptor 数组**（descriptor 是浏览器侧 client bundle 的挂载清单，
+ * host 侧服务经原型发现注册，两侧各持一份）。因此本文件内联定义
+ * ONEBOT_SETTINGS_DESCRIPTORS，并以下述不变量与宿主侧逐字对齐（由
+ * tests/client-settings.spec.ts 对 src/settings-remote.js 的导出常量断言）：
+ *   - namespace/service = `onebotSettings`（T1 §4）；
+ *   - 方法集 = getSettings() / updateSettings(patch, expectedRevision) /
+ *     listWorkspaces()（W7：只读查询宿主 workspace 注册表，{available, workspaces:
+ *     [{id,path,sessionCount}]}；registry 缺席降级 available:false 不抛错），
+ *     全 positional（宿主网关 methodParameterNames 拒绝解构/默认值/rest）；
+ *   - 快照结构 = T1 §3 OnebotSettingsSnapshot（revision/entryActive/config(69 键，
+ *     含 notices 对象)/secrets/groups(6 组)/effect='restart'），accessToken 恒 ''（脱敏）；
+ *   - 六组 67 键面板分组与 schema 默认值 = src/settings-remote.ts 常量（T8 口径：
+ *     SETTINGS_GROUPS 67 面板键 + chatIdleEvictDays 只在 config 不上面板）。
+ *
+ * T8 相对贡献者版的差异（编排者评审硬要求 + 本仓裁决）：
+ *   1. 补回上游缺口①：W6「非默认」徽标（值≠默认值的键一律挂标，title=与默认值不同）；
+ *   2. 补回上游缺口②：诊断组折叠记忆（sessionStorage，details/summary 原生折叠）；
+ *   3. 键表对齐 src/settings-remote.ts：+forceSessionId/gifFramesEnabled/
+ *      inboxQueueEnabled/inboxQueueDelayMs，DEFAULTS 取本仓拍板值
+ *      （dmPromptFile/groupPromptFile/memoryFilesEnabled 关）；
+ *   4. notices 面板改 5 真键（本仓 schema 无 newSession）；
+ *   5. patchSchema/configSchema 覆盖全部 69 键（防网关按 schema 剥键丢编辑）；
+ *   6. 侧边栏入口留给 T11，本批不做。
+ * 任一侧变更 descriptor/分组/键集/默认值时，必须同步本文件并在 DEVLOG 记录。
+ *
+ * 生效语义（T1 §5）：19 键统一「保存即热生效」——插件 fiber 秒级原地重启，
+ * QQ 桥（NapCat ws-reverse/forward）自动重连；在途回合中断、频控窗口与中间
+ * 消息缓冲清零；会话映射/历史不受影响。保存冲突（onebot-settings/conflict）
+ * 时提示并重拉快照（revision 语义 = T1 §3.1，任何来源的已提交变更都 +1）。
+ */
+
+window.__ModuleLoader__.load({
+	id: "dsh-onebot-qq",
+	factory: (require: any) => {
+		var module: any = { exports: {} };
+		var exports = module.exports;
+
+		//#region 外部模块（平台冻结表内：react）
+		var reactModule = require("react");
+		var React = reactModule != null && typeof reactModule.createElement === "function"
+			? reactModule
+			: reactModule.default;
+		if (React == null || typeof React.createElement !== "function") {
+			throw new Error("dsh-onebot client: react 不可用");
+		}
+		//#endregion
+
+		//#region 常量
+		var PLUGIN_ID = "dsh-onebot-qq";
+		var REMOTE_NS = "onebotSettings"; // Typert Remote 命名空间（T1 §4，与 host 服务键一致）
+		var NS = "dsh-onebot"; // locale 命名空间
+		//#endregion
+
+		//#region 六组 67 键字段定义（T8 重写：分组/键集/类型与
+		//  src/settings-remote.ts SETTINGS_GROUPS 逐字对齐，DEFAULTS 与 SCHEMA_DEFAULTS
+		//  逐字对齐，tests/client-settings.spec.ts 断言一致性。chatIdleEvictDays 不上面板
+		// （host SETTINGS_GROUPS 同样不含），仍走 patch config 手改。）
+		/** 字段类型：enum（下拉）/ number / boolean / string / stringArray（多行文本）/ secret（密码型）。 */
+		var GROUPS = [
+			{
+				id: "connection",
+				title: "连接",
+				fields: [
+					{ key: "mode", label: "连接模式", type: "enum", options: ["reverse", "forward"], optionLabels: { reverse: "反向 WebSocket（NapCat 连接本插件）", forward: "正向 WebSocket（插件连接 NapCat）" }, hint: "反向=它连我，正向=我连它" },
+					{ key: "host", label: "反向 WS 监听地址",  showIf: { key: "mode", value: "reverse" }, type: "string", hint: "反向模式监听地址" },
+					{ key: "port", label: "反向 WS 监听端口",  showIf: { key: "mode", value: "reverse" }, type: "number", hint: "反向模式监听端口" },
+					{ key: "url", label: "正向 WS 服务器地址",  showIf: { key: "mode", value: "forward" }, type: "string", hint: "正向模式服务器地址" },
+					{ key: "accessToken", label: "访问令牌（AccessToken）", type: "secret" },
+					{ key: "botQQ", label: "机器人 QQ 号", type: "string" },
+					// W7：workspacePath 入面板（connection 组键序追加）。语义（对齐 README「会话工作区选择」）：
+					// 修改只对新会话生效；已设 per-chat /workspace 覆盖的会话不受影响。
+					{ key: "workspacePath", label: "私聊默认工作区路径", type: "string", hint: "私聊新会话的默认目录" },
+					{ key: "groupWorkspacePath", label: "群聊默认工作区路径", type: "string", hint: "群聊新会话的默认目录；留空则同私聊" },
+				// T8：forceSessionId 入面板（host SETTINGS_GROUPS connection 组列出，默认 ''）。
+				{ key: "forceSessionId", label: "强制会话 ID", type: "string", hint: "填了就固定用这个会话 id（高级用法，一般留空）" },
+					// 本地加（2026-10-30）：提示词走文件，不塞进 yml——两段各一万多字，块写法容易被手改花。
+					// 语义：路径填了且读得到就用文件内容当 dmPrompt/groupPrompt（每行左侧空白全删），
+					// 读不到或留空就退回 yml 里的内联文本；改完文件要保存一次让插件重启才生效。
+					{ key: "dmPromptFile", label: "私聊提示词文件（txt 路径）", type: "string", placeholder: "~/.dsh/onebot/prompts/dm.txt" },
+					{ key: "groupPromptFile", label: "群聊提示词文件（txt 路径）", type: "string", placeholder: "~/.dsh/onebot/prompts/group.txt" },
+					// 本地加（2026-11-01）：NapCat 文件服务/反代在本机或内网时，下载检查得放行。
+					{ key: "allowPrivateHosts", label: "允许下载本机/内网地址", type: "boolean", hint: "默认拦内网链接防伪造；NapCat 文件服务在本机时开" },
+					{ key: "ignoreSelf", label: "忽略自己发的消息", type: "boolean", hint: "机器人自己的回声不处理" },
+				],
+			},
+			{
+				id: "permissions",
+				title: "权限",
+				// 本地加：权限分「私聊 / 群聊」两块展示。
+				sections: [
+					{ title: "私聊", keys: ["dmPolicy", "allowFrom", "allowAllUsers", "adminUsers"] },
+					{ title: "群聊", keys: ["requireMention", "groupPolicy", "groupAllowFrom", "wakeNamesAdmin", "wakeNamesMember", "replyCountsAsMention", "atAllCountsAsMention", "faceStyle", "pokeEnabled", "restrictedMemberPrefix"] },
+					{ title: "通用", keys: ["sensitivePatterns"] },
+				],
+				fields: [
+					{ key: "requireMention", label: "群聊必须 @ 机器人", type: "boolean" },
+					{ key: "adminUsers", label: "管理员用户列表", type: "stringArray" },
+					{ key: "dmPolicy", label: "私聊策略", type: "enum", options: ["open", "allowlist", "disabled"], optionLabels: { open: "开放", allowlist: "白名单", disabled: "禁用" } },
+					{ key: "groupPolicy", label: "群聊策略", type: "enum", options: ["open", "allowlist", "disabled"], optionLabels: { open: "开放", allowlist: "白名单", disabled: "禁用" } },
+					{ key: "allowAllUsers", label: "允许所有用户", type: "boolean" },
+					{ key: "allowFrom", label: "私聊白名单", type: "stringArray" },
+					{ key: "groupAllowFrom", label: "群聊白名单", type: "stringArray" },
+					{ key: "wakeNamesAdmin", label: "用户唤醒词", type: "stringArray" },
+					{ key: "wakeNamesMember", label: "他人唤醒词", type: "stringArray" },
+					{ key: "replyCountsAsMention", label: "被引用唤醒", type: "boolean", hint: "引用别人的消息也算叫我" },
+					{ key: "atAllCountsAsMention", label: "@全体唤醒", type: "boolean", hint: "@全体成员也算叫我" },
+					{ key: "faceStyle", label: "QQ 表情呈现方式", type: "enum", options: ["name", "emoji"], optionLabels: { name: "官方表情表", emoji: "emoji 近似（旧观感）" }, hint: "表情名或 emoji 近似" },
+				{ key: "pokeEnabled", label: "戳一戳叫醒", type: "boolean" },
+					{ key: "restrictedMemberPrefix", label: "群聊非管理员加受限前缀", type: "boolean", hint: "打开后非管理员的消息带 [受限用户:仅问答] 标记：只答问题，可以要图片和表情包；关掉一视同仁" },
+					{ key: "sensitivePatterns", label: "出站敏感词正则", type: "stringArray", placeholder: "正则，一行一个；留空用内置" },
+				],
+			},
+			{
+				id: "behavior",
+				title: "行为",
+				fields: [
+					{ key: "interimMessages", label: "中间消息", type: "boolean", hint: "回合中发中间消息" },
+					{ key: "interimRecall", label: "自动撤回中间消息",  showIf: { key: "interimMessages", value: true }, type: "boolean" },
+					{ key: "interimRecallMs", label: "中间消息保留时长（毫秒）",  showIf: { key: "interimRecall", value: true }, type: "number" },
+					{ key: "sendErrorNotice", label: "发送错误通知", type: "boolean" },
+					{ key: "unknownCommand", label: "未知命令处理", type: "enum", options: ["intercept", "passthrough"], optionLabels: { intercept: "拦截", passthrough: "透传" } },
+					{ key: "rateLimitPerMinute", label: "每分钟消息频率上限", type: "number" },
+					{ key: "newMessagePolicy", label: "任务运行中的新消息", type: "enum", options: ["queue", "steer"], optionLabels: { queue: "排队", steer: "插话" } },
+					{ key: "autoSteerPolicy", label: "自动插话资格",  showIf: { key: "newMessagePolicy", value: "steer" }, type: "enum", options: ["admin", "all"], optionLabels: { admin: "仅管理员", all: "所有成员" } },
+					{ key: "deferredTimeoutMs", label: "等待模型回复超时（毫秒）", type: "number" },
+					// T7 转正：入站连发合并（开关默认关；合并窗口 600ms，首条起最多 3000ms 封顶）。
+					{ key: "inboxQueueEnabled", label: "入站连发合并", type: "boolean", hint: "同会话连发的多条消息合成一条投递" },
+					{ key: "inboxQueueDelayMs", label: "合并等待窗口（毫秒）", type: "number", hint: "每条消息先等一个窗口再投递；0 = 立即", showIf: { key: "inboxQueueEnabled", value: true } },
+														],
+			},
+			{
+				id: "session",
+				title: "会话",
+				fields: [
+										{ key: "newSessionGreeting", label: "新会话主动开口", type: "boolean", hint: "/new 后我先说一句" },
+					{ key: "firstMessageAsUser", label: "首条按 User 注入", type: "boolean", hint: "开了宿主才会按第一条消息自动命名（默认关）" },
+					{ key: "memoryFilesEnabled", label: "新会话读记忆文件", type: "boolean" },
+					{ key: "memoryFiles", label: "记忆文件路径", type: "stringArray", placeholder: "文件绝对路径；分割方式：逗号、顿号、换行", showIf: { key: "memoryFilesEnabled", value: true } },
+					{ key: "agentPreset", label: "新会话智能体预设（填预设 id，如 standard；留空用宿主默认）", type: "string", placeholder: "standard" },
+				],
+			},
+			{
+				id: "media",
+				title: "媒体",
+				fields: [
+					{ key: "sttEnabled", label: "语音转写", type: "boolean", hint: "语音消息先转成文字" },
+					{ key: "sttEngine", label: "语音转写引擎", type: "enum", options: ["auto", "openai", "whisper-cpp", "custom"], optionLabels: { auto: "自动探测", openai: "openai", "whisper-cpp": "whisper-cpp", custom: "自定义命令" } },
+					{ key: "sttCommand", label: "自定义转写程序", type: "string", hint: "程序名或绝对路径", showIf: { key: "sttEngine", value: "custom" } },
+					{ key: "sttArgs", label: "转写参数模板", type: "stringArray", placeholder: "一行一个；{file} 和 {out} 会被替换", showIf: { key: "sttEngine", value: "custom" } },
+					{ key: "sttModel", label: "转写模型", type: "string", hint: "openai: small/base/medium…；whisper.cpp: 模型名或 .bin 路径", showIf: { key: "sttEngine", value: "openai" } },
+					{ key: "textImageEnabled", label: "长文转图片卡片", type: "boolean" },
+					{ key: "textImageThreshold", label: "转卡片的字数阈值",  showIf: { key: "textImageEnabled", value: true }, type: "number", placeholder: "0–10000；0 = 不转卡片" },
+					{ key: "cardFooter", label: "卡片页脚角标", type: "string", placeholder: "OneBot" },
+					{ key: "fontFiles", label: "卡片字体文件", type: "stringArray", placeholder: "一行一个字体文件路径（ttf/otf）；留空用系统字体" },
+					{ key: "fontFamilies", label: "卡片字体家族名", type: "stringArray", placeholder: "一行一个字体家族名；留空用平台默认" },
+					{ key: "outboundImageMaxBytes", label: "出站图片大小上限（字节）", type: "number", placeholder: "默认 8388608（8MB）；最高 104857600（100MB）" },
+					{ key: "maxVoiceBytes", label: "出站语音大小上限（字节）", type: "number", placeholder: "默认 15728640（15MB）；最高 52428800（50MB）" },
+					{ key: "maxFileBytes", label: "出站文件/视频大小上限（字节）", type: "number", placeholder: "默认 20971520（20MB）；最高 4294967296（4G）" },
+					{ key: "inboundImageMaxPx", label: "入站图片长边上限（像素）", type: "number", placeholder: "默认 2048；推荐 1440 以上" },
+					{ key: "inboundFileMaxBytes", label: "入站文件大小上限（字节）", type: "number", placeholder: "默认 20971520（20MB）；0 = 不限" },
+					// T6 转正：GIF 分帧（默认关；关闭时不装依赖也不触碰 FS）。
+					{ key: "gifFramesEnabled", label: "GIF 动图分帧", type: "boolean", hint: "发送 GIF 时拆成多帧序列（默认关）" },
+				],
+			},
+			{
+				id: "diagnostics",
+				title: "诊断",
+				fields: [
+					{ key: "actionAuditEnabled", label: "主动写审计", type: "boolean", hint: "发送动作记一行审计" },
+					{ key: "traceEnabled", label: "决策追踪（trace）", type: "boolean", hint: "写决策日志，排查用" },
+					{ key: "recordInbound", label: "入站事件录制", type: "boolean", hint: "录制收到的消息" },
+					{ key: "inboxRedact", label: "录制脱敏", type: "boolean", hint: "录制时给号码打码" },
+					{ key: "injectEnabled", label: "事件注入（仅调试）", type: "boolean", hint: "离线注入消息，调试用" },
+					{ key: "injectDryRun", label: "注入 dry-run", type: "boolean", hint: "注入不真发，仅测试" },
+					{ key: "logLevel", label: "日志级别", type: "enum", options: ["debug", "info", "warn", "error"], optionLabels: { debug: "debug 全量", info: "info 常规", warn: "warn 警告", error: "error 仅错误" } },
+				],
+			},
+		];
+		/** 全部 67 键扁平表（顺序 = 六组声明顺序，与 host SETTINGS_GROUPS 逐字对齐）。 */
+		var ALL_FIELDS: any[] = [];
+		for (var groupIndex = 0; groupIndex < GROUPS.length; groupIndex++) {
+			for (var fieldIndex = 0; fieldIndex < GROUPS[groupIndex].fields.length; fieldIndex++) {
+				ALL_FIELDS.push(GROUPS[groupIndex].fields[fieldIndex]);
+			}
+		}
+		/** schema 默认值（T1 §4 表；重置按钮与空快照兜底的唯一来源；与
+		 *  src/settings-remote.ts SCHEMA_DEFAULTS 逐字对齐）。 */
+		var DEFAULTS: any = {
+			mode: "forward",
+			host: "127.0.0.1",
+			port: 8643,
+			url: "ws://127.0.0.1:3001",
+			accessToken: "",
+			botQQ: "",
+			workspacePath: "",
+			groupWorkspacePath: "",
+			forceSessionId: "",
+			dmPromptFile: "", // T4 拍板默认关（贡献者默认 ~/.dsh 路径不收）
+			groupPromptFile: "", // 同上
+			requireMention: true,
+			adminUsers: [],
+			dmPolicy: "open",
+			groupPolicy: "open",
+			allowAllUsers: false,
+			allowFrom: [],
+			groupAllowFrom: [],
+			wakeNamesAdmin: [],
+			wakeNamesMember: [],
+			replyCountsAsMention: false,
+			atAllCountsAsMention: false,
+			faceStyle: "name",
+			pokeEnabled: true,
+			interimMessages: true,
+			interimRecall: false,
+			interimRecallMs: 90000,
+			sendErrorNotice: false,
+			unknownCommand: "intercept",
+			rateLimitPerMinute: 30,
+			newMessagePolicy: "steer",
+			autoSteerPolicy: "admin",
+			deferredTimeoutMs: 600000,
+			newSessionGreeting: true,
+			firstMessageAsUser: true,
+			memoryFilesEnabled: false, // T4 拍板默认关（贡献者 true）
+			memoryFiles: [],
+			ignoreSelf: true,
+			sttEnabled: true,
+			agentPreset: "",
+			chatIdleEvictDays: 7,
+			logLevel: "info",
+			textImageEnabled: true,
+			textImageThreshold: 350,
+			cardFooter: "OneBot",
+			allowPrivateHosts: true,
+			restrictedMemberPrefix: true,
+			sensitivePatterns: [],
+			outboundImageMaxBytes: 8388608,
+			maxVoiceBytes: 15728640,
+			maxFileBytes: 20971520,
+			inboundImageMaxPx: 2048,
+			inboundFileMaxBytes: 20971520,
+			fontFiles: [],
+			fontFamilies: [],
+			sttEngine: "auto",
+			sttCommand: "",
+			sttArgs: [],
+			sttModel: "small",
+			actionAuditEnabled: true,
+			traceEnabled: false,
+			recordInbound: false,
+			inboxRedact: true,
+			injectEnabled: true,
+			injectDryRun: false,
+			// T6/T7 转正键（T8 入面板）。
+			gifFramesEnabled: false,
+			inboxQueueEnabled: false,
+			inboxQueueDelayMs: 600,
+		};
+		// T8：notices 通知开关补上面板。值可以是 false=不发 / true=默认文案 /
+		// 字符串=自定义文案。5 键对齐 src/settings-remote.ts NOTICE_KEYS（本仓
+		// schema 无贡献者的 newSession）；默认文案抄自 src/ 各调用点：
+		// steerAccepted=src/commands.ts STEER_ACCEPTED_NOTICE、queue/answerAccepted=
+		// src/bridge.ts、deferredTimeout=src/deferred.ts（X 为运行时秒数占位）、
+		// rateLimited=src/inbound.ts。
+		var NOTICE_KEYS = [
+			{ key: "steerAccepted", label: "插话提示", def: "✅ 已作为补充指令提交给当前任务，模型将在下一步读取。" },
+			{ key: "queue", label: "排队提示", def: "⏳ 当前任务运行中，新消息已排队，将在当前任务结束后依次处理。" },
+			{ key: "answerAccepted", label: "回答回执", def: "✔ 已提交回答" },
+			{ key: "deferredTimeout", label: "超时补发提示", def: "⏳ 等待模型回复超时（已静默等待约 X 秒），任务仍在后台运行；完成后将自动补发最终结果。如需停止请发送 /stop。" },
+			{ key: "rateLimited", label: "限流提示", def: "⏳ 消息太频繁，请稍后再试。" },
+		];
+		/** notices 某个值 → {on, text}：false/空串=关；true/缺省=默认文案；字符串=自定义。 */
+		function noticeToDraft(value: any, def: any) {
+			if (value === false || value === "") return { on: false, text: def };
+			if (typeof value === "string") return { on: true, text: value };
+			return { on: true, text: def };
+		}
+		/** {on, text} → notices 值：关=不发；文案等于默认 → true（跟随上游默认）；否则存字面量。 */
+		function draftToNotice(state: any, def: any) {
+			if (state == null || state.on !== true) return false;
+			var text = typeof state.text === "string" ? state.text : def;
+			return text === def ? true : text;
+		}
+		/** 分组 → 键数组（与 host SETTINGS_GROUPS 同构；供契约核对与快照渲染兜底）。 */
+		var GROUP_KEYS: any = {};
+		for (var gk = 0; gk < GROUPS.length; gk++) {
+			GROUP_KEYS[GROUPS[gk].id] = GROUPS[gk].fields.map(function (field) { return field.key; });
+		}
+		//#endregion
+
+		//#region 极简 schema 校验（替代 zod，供 Typert 严格 codec 使用；与模板同款）
+		function vString(min?: any, max?: any) {
+			return {
+				parse(value: any) {
+					if (typeof value !== "string" || value.length < min || value.length > max) {
+						throw new TypeError("expected string(" + min + ".." + max + ")");
+					}
+					return value;
+				},
+			};
+		}
+		function vInt(min?: any) {
+			return {
+				parse(value: any) {
+					if (typeof value !== "number" || !Number.isInteger(value) || value < min) {
+						throw new TypeError("expected int>=" + min);
+					}
+					return value;
+				},
+			};
+		}
+		function vNumber(min?: any, max?: any) {
+			return {
+				parse(value: any) {
+					if (typeof value !== "number" || !Number.isFinite(value)) throw new TypeError("expected finite number");
+					if (min !== undefined && value < min) throw new TypeError("expected number >= " + min);
+					if (max !== undefined && value > max) throw new TypeError("expected number <= " + max);
+					return value;
+				},
+			};
+		}
+		function vBoolean() {
+			return {
+				parse(value: any) {
+					if (typeof value !== "boolean") throw new TypeError("expected boolean");
+					return value;
+				},
+			};
+		}
+		function vArray(item: any) {
+			return {
+				parse(value: any) {
+					if (!Array.isArray(value)) throw new TypeError("expected array");
+					return value.map((entry) => item.parse(entry));
+				},
+			};
+		}
+		/** 可选字段：缺席（undefined/null）时保持缺席，不参与 parse。 */
+		function vOptional(inner: any) {
+			return {
+				parse(value: any) {
+					if (value === undefined || value === null) return undefined;
+					return inner.parse(value);
+				},
+			};
+		}
+		/** notices 子值：false=不发 / true=默认文案 / string=自定义文案；缺省跟随默认。 */
+		function vNoticeValue() {
+			return {
+				parse(value: any) {
+					if (value === undefined || value === null) return undefined;
+					if (typeof value !== "boolean" && typeof value !== "string") {
+						throw new TypeError("expected boolean|string");
+					}
+					return value;
+				},
+			};
+		}
+		/** 与 zod object 默认行为一致：声明外字段剥离，声明内字段逐个 parse。 */
+		function vObject(shape: any) {
+			return {
+				parse(value: any) {
+					if (value === null || typeof value !== "object" || Array.isArray(value)) {
+						throw new TypeError("expected object");
+					}
+					var out: any = {};
+					for (var key of Object.keys(shape)) out[key] = shape[key].parse(value[key]);
+					return out;
+				},
+			};
+		}
+		function vEnum(values: any) {
+			return {
+				parse(value: any) {
+					if (typeof value !== "string" || values.indexOf(value) < 0) {
+						throw new TypeError("expected one of " + values.join("|"));
+					}
+					return value;
+				},
+			};
+		}
+		//#endregion
+
+		//#region Remote 契约 schema（与 host lib/settings-remote.js 快照/校验逐字对齐）
+		/** 69 键生效值（host buildSnapshot 的 effectiveConfig 全键返回；accessToken 恒 ''；
+		 *  notices 为 5 子键对象）。声明外键会被 vObject 剥离，故必须逐键列出。 */
+		var configSchema = vObject({
+			mode: vEnum(["reverse", "forward"]),
+			host: vString(0, 256),
+			port: vNumber(),
+			url: vString(0, 512),
+			accessToken: vString(0, 256),
+			botQQ: vString(0, 64),
+			workspacePath: vString(0, 1024),
+			groupWorkspacePath: vString(0, 1024),
+			forceSessionId: vString(0, 256),
+			dmPromptFile: vString(0, 1024),
+			groupPromptFile: vString(0, 1024),
+			requireMention: vBoolean(),
+			adminUsers: vArray(vString(0, 64)),
+			dmPolicy: vEnum(["open", "allowlist", "disabled"]),
+			groupPolicy: vEnum(["open", "allowlist", "disabled"]),
+			allowAllUsers: vBoolean(),
+			allowFrom: vArray(vString(0, 64)),
+			groupAllowFrom: vArray(vString(0, 64)),
+			wakeNamesAdmin: vArray(vString(0, 64)),
+			wakeNamesMember: vArray(vString(0, 64)),
+			replyCountsAsMention: vBoolean(),
+			atAllCountsAsMention: vBoolean(),
+			faceStyle: vEnum(["name", "emoji"]),
+			pokeEnabled: vBoolean(),
+			interimMessages: vBoolean(),
+			interimRecall: vBoolean(),
+			interimRecallMs: vNumber(),
+			sendErrorNotice: vBoolean(),
+			unknownCommand: vEnum(["intercept", "passthrough"]),
+			rateLimitPerMinute: vNumber(),
+			newMessagePolicy: vEnum(["queue", "steer"]),
+			autoSteerPolicy: vEnum(["admin", "all"]),
+			deferredTimeoutMs: vNumber(),
+			newSessionGreeting: vBoolean(),
+			firstMessageAsUser: vBoolean(),
+			memoryFilesEnabled: vBoolean(),
+			memoryFiles: vArray(vString(0, 1024)),
+			ignoreSelf: vBoolean(),
+			sttEnabled: vBoolean(),
+			agentPreset: vString(0, 128),
+			chatIdleEvictDays: vNumber(),
+			logLevel: vEnum(["debug", "info", "warn", "error"]),
+			textImageEnabled: vBoolean(),
+			textImageThreshold: vNumber(),
+			cardFooter: vString(0, 128),
+			allowPrivateHosts: vBoolean(),
+			restrictedMemberPrefix: vBoolean(),
+			sensitivePatterns: vArray(vString(0, 512)),
+			outboundImageMaxBytes: vNumber(),
+			maxVoiceBytes: vNumber(),
+			maxFileBytes: vNumber(),
+			inboundImageMaxPx: vNumber(),
+			inboundFileMaxBytes: vNumber(),
+			fontFiles: vArray(vString(0, 1024)),
+			fontFamilies: vArray(vString(0, 256)),
+			sttEngine: vEnum(["auto", "openai", "whisper-cpp", "custom"]),
+			sttCommand: vString(0, 1024),
+			sttArgs: vArray(vString(0, 512)),
+			sttModel: vString(0, 512),
+			actionAuditEnabled: vBoolean(),
+			traceEnabled: vBoolean(),
+			recordInbound: vBoolean(),
+			inboxRedact: vBoolean(),
+			injectEnabled: vBoolean(),
+			injectDryRun: vBoolean(),
+			// T6/T7 转正键（T8 入面板）。
+			gifFramesEnabled: vBoolean(),
+			inboxQueueEnabled: vBoolean(),
+			inboxQueueDelayMs: vNumber(),
+			notices: vObject({
+				steerAccepted: vNoticeValue(),
+				queue: vNoticeValue(),
+				answerAccepted: vNoticeValue(),
+				deferredTimeout: vNoticeValue(),
+				rateLimited: vNoticeValue(),
+			}),
+		});
+		var snapshotSchema = vObject({
+			revision: vInt(0),
+			entryActive: vBoolean(),
+			config: configSchema,
+			secrets: vArray(vObject({ path: vArray(vString(1, 64)), set: vBoolean() })),
+			groups: vObject({
+				connection: vArray(vString(1, 64)),
+				permissions: vArray(vString(1, 64)),
+				behavior: vArray(vString(1, 64)),
+				session: vArray(vString(1, 64)),
+				media: vArray(vString(1, 64)),
+				diagnostics: vArray(vString(1, 64)),
+			}),
+			effect: vEnum(["restart"]), // T1 §5：19 键统一插件级热重启
+		});
+		/** updateSettings 入参（T8：69 键任意子集的扁平 JSON；accessToken 缺省=不改，''=清空；
+		 *  notices 为 5 子键对象任意子集。客户端网关可能按本 schema 剥键，缺键=编辑被静默
+		 *  丢弃，故全键逐字列出——数字界与 src/settings-remote.ts NUMBER_RANGE 对齐）。 */
+		var patchSchema = vObject({
+			mode: vOptional(vEnum(["reverse", "forward"])),
+			host: vOptional(vString(0, 256)),
+			port: vOptional(vNumber(1, 65535)),
+			url: vOptional(vString(0, 512)),
+			accessToken: vOptional(vString(0, 256)),
+			botQQ: vOptional(vString(0, 64)),
+			workspacePath: vOptional(vString(0, 1024)),
+			groupWorkspacePath: vOptional(vString(0, 1024)),
+			forceSessionId: vOptional(vString(0, 256)),
+			dmPromptFile: vOptional(vString(0, 1024)),
+			groupPromptFile: vOptional(vString(0, 1024)),
+			allowPrivateHosts: vOptional(vBoolean()),
+			ignoreSelf: vOptional(vBoolean()),
+			requireMention: vOptional(vBoolean()),
+			adminUsers: vOptional(vArray(vString(0, 64))),
+			dmPolicy: vOptional(vEnum(["open", "allowlist", "disabled"])),
+			groupPolicy: vOptional(vEnum(["open", "allowlist", "disabled"])),
+			allowAllUsers: vOptional(vBoolean()),
+			allowFrom: vOptional(vArray(vString(0, 64))),
+			groupAllowFrom: vOptional(vArray(vString(0, 64))),
+			wakeNamesAdmin: vOptional(vArray(vString(0, 64))),
+			wakeNamesMember: vOptional(vArray(vString(0, 64))),
+			replyCountsAsMention: vOptional(vBoolean()),
+			atAllCountsAsMention: vOptional(vBoolean()),
+			faceStyle: vOptional(vEnum(["name", "emoji"])),
+			pokeEnabled: vOptional(vBoolean()),
+			restrictedMemberPrefix: vOptional(vBoolean()),
+			sensitivePatterns: vOptional(vArray(vString(0, 512))),
+			interimMessages: vOptional(vBoolean()),
+			interimRecall: vOptional(vBoolean()),
+			interimRecallMs: vOptional(vNumber(0)),
+			sendErrorNotice: vOptional(vBoolean()),
+			unknownCommand: vOptional(vEnum(["intercept", "passthrough"])),
+			rateLimitPerMinute: vOptional(vNumber(0)),
+			newMessagePolicy: vOptional(vEnum(["queue", "steer"])),
+			autoSteerPolicy: vOptional(vEnum(["admin", "all"])),
+			deferredTimeoutMs: vOptional(vNumber(0)),
+			inboxQueueEnabled: vOptional(vBoolean()),
+			inboxQueueDelayMs: vOptional(vNumber(0)),
+			newSessionGreeting: vOptional(vBoolean()),
+			firstMessageAsUser: vOptional(vBoolean()),
+			memoryFilesEnabled: vOptional(vBoolean()),
+			memoryFiles: vOptional(vArray(vString(0, 1024))),
+			agentPreset: vOptional(vString(0, 128)),
+			sttEnabled: vOptional(vBoolean()),
+			sttEngine: vOptional(vEnum(["auto", "openai", "whisper-cpp", "custom"])),
+			sttCommand: vOptional(vString(0, 1024)),
+			sttArgs: vOptional(vArray(vString(0, 512))),
+			sttModel: vOptional(vString(0, 512)),
+			textImageEnabled: vOptional(vBoolean()),
+			textImageThreshold: vOptional(vNumber(0)),
+			cardFooter: vOptional(vString(0, 128)),
+			fontFiles: vOptional(vArray(vString(0, 1024))),
+			fontFamilies: vOptional(vArray(vString(0, 256))),
+			outboundImageMaxBytes: vOptional(vNumber(1, 104857600)),
+			maxVoiceBytes: vOptional(vNumber(1, 52428800)),
+			maxFileBytes: vOptional(vNumber(1, 4294967296)),
+			inboundImageMaxPx: vOptional(vNumber(0)),
+			inboundFileMaxBytes: vOptional(vNumber(0)),
+			gifFramesEnabled: vOptional(vBoolean()),
+			chatIdleEvictDays: vOptional(vNumber(0)),
+			logLevel: vOptional(vEnum(["debug", "info", "warn", "error"])),
+			actionAuditEnabled: vOptional(vBoolean()),
+			traceEnabled: vOptional(vBoolean()),
+			recordInbound: vOptional(vBoolean()),
+			inboxRedact: vOptional(vBoolean()),
+			injectEnabled: vOptional(vBoolean()),
+			injectDryRun: vOptional(vBoolean()),
+			notices: vOptional(vObject({
+				steerAccepted: vNoticeValue(),
+				queue: vNoticeValue(),
+				answerAccepted: vNoticeValue(),
+				deferredTimeout: vNoticeValue(),
+				rateLimited: vNoticeValue(),
+			})),
+		});
+		//#endregion
+
+		//#region Typert Remote 严格 descriptor（与 host lib/settings-remote.js 服务方法面
+		//  逐字对齐：getSettings() / updateSettings(patch, expectedRevision) /
+		//  listWorkspaces()（W7），全 positional。
+		//  host 侧未导出客户端 descriptor 数组——两侧各自持有一份，本数组为客户端真相源，
+		//  变更须同步宿主侧并在 DEVLOG 记录；tests/client-settings.spec.ts 做契约核对。）
+		/** W7：listWorkspaces 返回值（host WorkspaceListResult 同构）。 */
+		var workspaceListSchema = vObject({
+			available: vBoolean(),
+			workspaces: vArray(vObject({ id: vString(1, 256), path: vString(0, 1024), sessionCount: vInt(0) })),
+		});
+		function strictCodec(typeSymbol: any, schema: any) {
+			return { mode: "strict", typeSymbol: typeSymbol, create: () => schema, schema: schema };
+		}
+		function jsonParameter(name: any, typeSymbol: any, schema: any) {
+			return { name: name, wire: name, source: "json", codec: strictCodec(typeSymbol, schema) };
+		}
+		function onebotMethod(method: any, parameters: any, resultSchema?: any, typeSymbol?: any) {
+			return {
+				id: PLUGIN_ID + "#" + REMOTE_NS + "/" + method,
+				service: REMOTE_NS,
+				namespace: REMOTE_NS,
+				method: method,
+				invocation: { kind: "direct" },
+				parameters: parameters,
+				result: strictCodec(typeSymbol != null ? typeSymbol : "OnebotSettingsSnapshot", resultSchema || snapshotSchema),
+			};
+		}
+		var ONEBOT_SETTINGS_DESCRIPTORS = [
+			onebotMethod("getSettings", []),
+			onebotMethod("updateSettings", [
+				jsonParameter("patch", "OnebotSettingsPatch", patchSchema),
+				jsonParameter("expectedRevision", "number", vOptional(vInt(0))),
+			]),
+			onebotMethod("listWorkspaces", [], workspaceListSchema, "WorkspaceListResult"),
+		];
+		var ONEBOT_SETTINGS_REMOTE = { package: PLUGIN_ID, descriptors: ONEBOT_SETTINGS_DESCRIPTORS };
+		//#endregion
+
+		//#region 双语词条（zh 为 key 集真相源，en 逐 key 对齐；占位符用平台 {word} 形式。
+		//  分组标题与字段 label 是中文常量（T4 要求），不走词条。）
+		var zh = {
+			"settings.title": "QQ Bot（OneBot）设置",
+			"settings.desc": "配置持久化为 profile 层 cordis.patch.yml 中 dsh-onebot 条目的 config 覆盖行，与手改 patch、宿主原生设置页同源。",
+			"settings.loading": "正在加载设置…",
+			"settings.reload": "重新加载",
+			"settings.reset": "恢复默认",
+			"save.submit": "保存设置",
+			"save.saving": "正在保存…",
+			"save.done": "设置已保存。保存即热生效：插件秒级重启，QQ 桥会自动重连。",
+			"save.noChanges": "没有需要保存的变更。",
+			"save.badNumber": "数字字段不合法：{keys}",
+			"effect.hint": "保存即热生效（无需重启宿主）：插件秒级原地重启，QQ 桥会自动重连；在途回合中断、频控窗口与中间消息缓冲清零，会话映射/历史不受影响。",
+			"effect.entryInactive": "dsh-onebot 条目当前未激活，保存后可能无法生效，请检查插件加载状态。",
+			"secret.set": "已配置（脱敏，不回显）",
+			"secret.unset": "未配置",
+			"secret.placeholder": "留空 = 不修改",
+			"secret.clear": "清除已保存的 AccessToken",
+			"conflict.title": "保存冲突：设置已被其他来源修改（revision 不一致），已重新拉取最新配置，请检查后重试。",
+			"status.error": "出错",
+			"revision.label": "revision",
+			// 批 2 第二档词条（integration §2.4/§2.5：交互文案 zh/en 同批新增，既有键
+			// 文案不改）——脏状态 badge/保存禁用 title/危险操作确认框/密文清除三态
+			// 提示/mode 联动 hint/加载与 workspace 重试/诊断折叠 summary/组描述（UX §2.2 版）。
+			"common.retry": "重试",
+			"save.dirtyBadge": "{count} 项未保存",
+			"save.noChangesTitle": "没有未保存的修改",
+			"confirm.discardChanges": "将丢弃 {count} 项未保存修改，确定继续吗？",
+			"effect.entryInactiveTitle": "插件条目未激活，修改可能无法生效。",
+			"secret.clearPending": "保存后清空",
+			"secret.clearHint": "将清除已保存的值",
+			"field.modeInactive": "当前模式不生效",
+			"workspace.fetchFailed": "本次拉取 workspace 列表失败，可直接输入路径。",
+			"diagnostics.summary": "{total} 项 · {enabled} 项默认开",
+			"diagnostics.dirtyMark": "● 含未保存修改",
+			"group.connection.desc": "连 NapCat 的通道",
+			"group.permissions.desc": "谁能触发与使用",
+			"group.behavior.desc": "回复与限流",
+			"group.diagnostics.desc": "日志与调试",
+			// 批 3 词条（UX §5.4/§5.6 + integration §3：冲突合并保留 + 数字行内校验，
+			// zh/en 同批齐平；既有键文案不改）。
+			"conflict.kept": "已保留 {count} 项未冲突的修改，请核对后重新保存。",
+			"conflict.secretCleared": "accessToken 输入已清空，如需修改请重新输入。",
+			"field.numberInvalid": "必须是 {range} 的有限数字",
+			"field.remoteOverwritten": "已被其他来源修改，已同步为最新值",
+		};
+		var en = {
+			"settings.title": "QQ Bot (OneBot) settings",
+			"settings.desc": "Settings persist as the config override row of the dsh-onebot entry in the profile-layer cordis.patch.yml — same source as hand-edited patches and the host's native settings page.",
+			"settings.loading": "Loading settings…",
+			"settings.reload": "Reload",
+			"settings.reset": "Reset to defaults",
+			"save.submit": "Save settings",
+			"save.saving": "Saving…",
+			"save.done": "Settings saved. Hot-applied on save: the plugin restarts within seconds and the QQ bridge reconnects automatically.",
+			"save.noChanges": "Nothing to save.",
+			"save.badNumber": "Invalid number fields: {keys}",
+			"effect.hint": "Hot-applied on save (no host restart): the plugin fiber restarts in place within seconds; the QQ bridge reconnects automatically. In-flight turns are interrupted and rate-limit windows/interim buffers reset; session mappings and history are unaffected.",
+			"effect.entryInactive": "The dsh-onebot entry is currently inactive; saving may not take effect. Check the plugin's load state.",
+			"secret.set": "Configured (redacted, never echoed)",
+			"secret.unset": "Not configured",
+			"secret.placeholder": "Leave empty = keep current",
+			"secret.clear": "Clear the saved AccessToken",
+			"conflict.title": "Save conflict: settings were changed by another source (revision mismatch). The latest snapshot has been re-fetched — review and retry.",
+			"status.error": "Error",
+			"revision.label": "revision",
+			"common.retry": "Retry",
+			"save.dirtyBadge": "{count} unsaved",
+			"save.noChangesTitle": "No unsaved changes",
+			"confirm.discardChanges": "Discard {count} unsaved change(s)?",
+			"effect.entryInactiveTitle": "The plugin entry is inactive; changes may not take effect.",
+			"secret.clearPending": "Clears on save",
+			"secret.clearHint": "The saved value will be cleared",
+			"field.modeInactive": "Not active in the current mode",
+			"workspace.fetchFailed": "Couldn't fetch the workspace list this time — you can type a path directly.",
+			"diagnostics.summary": "{total} items · {enabled} on by default",
+			"diagnostics.dirtyMark": "● Unsaved changes",
+			"group.connection.desc": "How it links to NapCat",
+			"group.permissions.desc": "Who can trigger it",
+			"group.behavior.desc": "Replies and limits",
+			"group.diagnostics.desc": "Logs and debugging",
+			// 批 3（UX §5.4/§5.6）：与 zh 同批新增的 4 键（冲突合并保留 + 数字行内校验）。
+			"conflict.kept": "Kept {count} non-conflicting change(s) — review and save again.",
+			"conflict.secretCleared": "The accessToken input has been cleared; re-enter it if you still want to change it.",
+			"field.numberInvalid": "Must be a finite number {range}",
+			"field.remoteOverwritten": "Changed by another source — synced to the latest value",
+		};
+		/** 双语 key 集一致性自检：缺漏仅告警不致崩溃。 */
+		function assertSameKeys(a: any, b: any) {
+			var missing = Object.keys(a).filter((key) => !(key in b));
+			var extra = Object.keys(b).filter((key) => !(key in a));
+			if (missing.length > 0 || extra.length > 0) {
+				console.warn("[dsh-onebot] 双语词条 key 不齐 zh缺:" + missing.join(",") + " en缺:" + extra.join(","));
+			}
+		}
+		assertSameKeys(zh, en);
+		//#endregion
+
+		//#region 面板样式（一次注入，随插件卸载移除；类名前缀 obx-）
+		// 批 1 视觉基线（docs/design/settings-page-visual-proposal.md §1–§6）：
+		// §5.1 token 表色值逐字采用（WCAG AA 实测校准），不自创/不改值；
+		// 附加的 -bg / --obx-card-border / --obx-error-ring 为方案正文（§2/§3.1/§4.2）
+		// 点名引用而 §5.1 未列值的衍生位——卡片描边延续现状组分隔发丝线色值，
+		// 横幅浅底取同 hue alpha 淡化（延续原 error 浅底 .08 同族）。
+		var CSS = [
+			".obx-panel{--obx-fg:inherit;--obx-fg-muted:#6b7280;--obx-border:rgba(128,128,128,.75);--obx-border-strong:rgba(128,128,128,1);--obx-card-bg:rgba(128,128,128,.06);--obx-card-border:rgba(128,128,128,.2);--obx-input-bg:transparent;--obx-accent:var(--dsh-accent,#6e57af);--obx-focus-ring:rgba(110,87,175,.45);--obx-error:#e5484d;--obx-error-text:#d93036;--obx-error-bg:rgba(229,72,77,.10);--obx-error-ring:rgba(229,72,77,.45);--obx-warning:#d97706;--obx-warning-text:#92400e;--obx-warning-bg:rgba(217,119,6,.12);--obx-success:#2f9e63;--obx-success-text:#1a7f4b;--obx-success-bg:rgba(47,158,99,.10);--obx-switch-off:rgba(128,128,128,.45);--obx-switch-knob:#ffffff;--obx-radius-sm:6px;--obx-radius-md:8px;--obx-radius-lg:10px;--obx-fs-xs:11px;--obx-fs-sm:12px;--obx-fs-base:13px;--obx-fs-md:14px;--obx-fs-lg:16px;--obx-space-1:4px;--obx-space-2:8px;--obx-space-3:12px;--obx-space-4:16px;--obx-space-5:20px;--obx-space-6:24px;--obx-dur-fast:150ms ease;display:flex;flex-direction:column;gap:16px;font-size:var(--obx-fs-md);line-height:1.5;max-width:720px;container-type:inline-size;container-name:obx}",
+			"@media (prefers-color-scheme: dark){.obx-panel{--obx-fg-muted:#9ca3af;--obx-border:rgba(255,255,255,.35);--obx-border-strong:rgba(255,255,255,.5);--obx-card-bg:rgba(128,128,128,.10);--obx-card-border:rgba(128,128,128,.2);--obx-accent:var(--dsh-accent,#8f79d6);--obx-focus-ring:rgba(143,121,214,.55);--obx-error-text:#ff8a8a;--obx-warning-text:#fbbf24;--obx-success-text:#4ade80;--obx-switch-off:rgba(128,128,128,.55);--obx-switch-knob:#e8e8e8}}",
+			// §1 结构：720px 内容上限（左对齐不居中，由块级布局天然实现）
+			".obx-title{font-size:var(--obx-fs-lg);font-weight:600;margin:0}",
+			".obx-desc{color:var(--obx-fg-muted);font-size:var(--obx-fs-sm);margin:4px 0 0}",
+			".obx-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}",
+			".obx-spacer{flex:1}",
+			// §4.2：revision 徽章 / entryInactive 升级 pill（badge 族 11px）
+			".obx-meta{color:var(--obx-fg-muted);font-size:var(--obx-fs-xs);border:1px solid var(--obx-border);border-radius:999px;padding:1px 8px}",
+			".obx-warn{color:var(--obx-warning-text);background:var(--obx-warning-bg);border-color:var(--obx-warning)}",
+			// §4.2 反馈三态：左 3px 实色条 + 浅底 + 前置图标（CSS ::before 字形，DOM 零增节点；
+			// 冲突态 obx-error--conflict 批 3 起由面板显式冲突状态挂载，见 OnebotSettingsPanel）
+			".obx-error{border:1px solid var(--obx-error);border-left-width:3px;background:var(--obx-error-bg);color:var(--obx-error-text);border-radius:var(--obx-radius-md);padding:10px 12px;white-space:pre-wrap}",
+			".obx-alert[role=alert]{white-space:pre-wrap}",
+			".obx-error::before{content:'!';font-weight:700;margin-right:6px}",
+			".obx-error--conflict::before{content:'↻'}",
+			".obx-notice{border:1px solid var(--obx-success);border-left-width:3px;background:var(--obx-success-bg);color:var(--obx-success-text);border-radius:var(--obx-radius-md);padding:10px 12px;white-space:pre-wrap}",
+			".obx-notice::before{content:'✓';font-weight:700;margin-right:6px}",
+			// §4.1 热生效提示条：保留虚线框语义，升级为提示条样式（ⓘ 前缀同为 ::before 字形）
+			".obx-effect{border:1px dashed var(--obx-border);border-radius:var(--obx-radius-md);padding:8px 12px;color:var(--obx-fg-muted);background:var(--obx-card-bg);font-size:var(--obx-fs-sm)}",
+			".obx-effect::before{content:'ⓘ';margin-right:6px}",
+			// §2 组卡片：r10、卡间距 16（.obx-panel gap）、组内字段行间 12
+			".obx-group{display:flex;flex-direction:column;gap:12px;background:var(--obx-card-bg);border:1px solid var(--obx-card-border);border-radius:var(--obx-radius-lg);padding:14px 16px 16px}",
+			".obx-group-title{font-size:var(--obx-fs-md);font-weight:600;margin:0}",
+			// §6 旧内核兜底：字段行保留现状 flex-wrap；容器查询三档见末尾 @container 块
+			".obx-field{display:flex;flex-direction:column;gap:6px;align-items:stretch}",
+			".obx-field-head{display:flex;align-items:flex-start;gap:8px;flex-wrap:nowrap;width:100%}",
+			".obx-field-head .obx-label{flex:none;min-width:0;white-space:nowrap}",
+			".obx-field-head .obx-badge{flex:none;font-size:9.4px;padding:0 7px;line-height:1.6}",
+			// §3.1/§5.1：字段 label 13px/400 + fg-muted（原 opacity 灰度不达 AA）
+			".obx-label{font-size:var(--obx-fs-base);color:var(--obx-fg-muted);min-width:180px}",
+			".obx-control{display:flex;flex-wrap:wrap;gap:8px;align-items:center;flex:1;min-width:240px}",
+			".obx-input,.obx-select,.obx-textarea{flex:1;min-width:160px;max-width:420px;box-sizing:border-box;border:1px solid var(--obx-border);border-radius:var(--obx-radius-md);background:var(--obx-input-bg);color:inherit;padding:5px 10px;font-family:inherit;font-size:var(--obx-fs-base)}",
+			".obx-input,.obx-select{height:32px}",
+			".obx-textarea{max-width:520px;min-height:44px;height:44px;resize:vertical}",
+			".obx-input:hover:not(:disabled),.obx-select:hover:not(:disabled),.obx-textarea:hover:not(:disabled){border-color:var(--obx-border-strong)}",
+			".obx-input:focus-visible,.obx-select:focus-visible,.obx-textarea:focus-visible,.obx-btn:focus-visible{outline:none;box-shadow:0 0 0 2px var(--obx-focus-ring);border-color:var(--obx-accent)}",
+			".obx-input:disabled,.obx-select:disabled,.obx-textarea:disabled{opacity:.45;cursor:not-allowed;background:var(--obx-card-bg)}",
+			// §3.1 数字输入收窄至 160px（渲染层经 obx-input--number 挂载）
+			".obx-input--number{max-width:160px}",
+			// §3.1 invalid 描红——批 2 预铺样式，批 3（UX §5.6 数字行内校验）挂载
+			".obx-input--invalid{border-color:var(--obx-error);box-shadow:0 0 0 2px var(--obx-error-ring)}",
+			// §3.2 纯 CSS 开关：36×20 轨道 + 16 滑块，checkbox 语义保留（视觉隐藏 +
+			// 24×24 命中区覆盖轨道；track 为紧随 input 的兄弟节点，由兄弟选择器驱动）
+			".obx-toggle{position:relative;display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:var(--obx-fs-base)}",
+			".obx-hint{color:var(--obx-fg-muted);font-size:var(--obx-fs-sm);flex-basis:100%}",
+			// §3.4 密文徽章 + 8px 状态点（已配置=accent / 未配置=border-strong）
+			".obx-secret-badge{font-size:var(--obx-fs-xs);border:1px solid var(--obx-border);border-radius:999px;padding:0 8px;color:var(--obx-fg-muted)}",
+			".obx-secret-badge::before{content:'';display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--obx-border-strong);margin-right:6px;vertical-align:middle}",
+			".obx-secret-badge--set::before{background:var(--obx-accent)}",
+			".obx-badge{font-size:var(--obx-fs-xs);border:1px solid var(--obx-border);border-radius:999px;padding:0 8px;color:var(--obx-fg-muted)}",
+			// §3.5 按钮规格：primary 实底 accent / 次级描边（底色 card-bg，hover 描边 currentColor 保留）
+			".obx-btn{cursor:pointer;border:1px solid var(--obx-border);border-radius:var(--obx-radius-md);background:var(--obx-card-bg);color:inherit;padding:6px 12px;height:32px;box-sizing:border-box;font-family:inherit;font-size:var(--obx-fs-base)}",
+			".obx-btn:hover:not(:disabled){border-color:currentColor}",
+			".obx-btn:disabled{opacity:.45;cursor:not-allowed}",
+			".obx-btn.primary{background:var(--obx-accent);color:#fff;border:none;font-weight:600}",
+			".obx-btn.primary:hover:not(:disabled){filter:brightness(1.06)}",
+			// §3.6 workspace 选择器：卡片内嵌次级行
+			".obx-workspace-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--obx-card-bg);border-radius:var(--obx-radius-md);padding:8px 12px}",
+			// §6 容器查询三档（面板自身为查询源；旧内核不识别 @container → 回落上方 flex-wrap 兜底）
+			"@container obx (min-width:720px){.obx-field{display:grid;grid-template-columns:176px minmax(240px,1fr) auto;column-gap:12px;row-gap:4px;align-items:center}.obx-field>.obx-label{grid-column:1;grid-row:1}.obx-field>.obx-input,.obx-field>.obx-select,.obx-field>.obx-textarea,.obx-field>.obx-control,.obx-field>.obx-toggle{grid-column:2;grid-row:1}.obx-field>.obx-badge{grid-column:3;grid-row:1}.obx-field>.obx-hint{grid-column:2/-1;grid-row:2}}",
+			"@container obx (max-width:719px){.obx-field{display:grid;grid-template-columns:1fr;row-gap:4px}.obx-field>.obx-label{grid-column:1}.obx-field>.obx-badge{grid-column:1;justify-self:start}}",
+			"@container obx (max-width:479px){.obx-toolbar .obx-btn{flex:1 1 auto}.obx-toolbar .obx-btn.primary{order:-1}.obx-input,.obx-select,.obx-textarea{max-width:none}.obx-group{padding:12px}.obx-secret-badge{flex-basis:100%}}",
+			// 批 2 交互逻辑（UX §3.1/§3.2/§5.1/§6/§7 + integration §2.4）：
+			// 诊断组 details/summary 折叠——summary 行 = 组标题 + 组描述 + meta pill
+			//（「N 项 · M 项默认开」复用 .obx-meta）+ 脏标记；details 即组卡片本体。
+			".obx-group-desc{color:var(--obx-fg-muted);font-size:var(--obx-fs-sm);margin:0}",
+			".obx-group>.obx-group-desc{margin-top:-8px}",
+			".obx-group-summary{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;cursor:pointer;list-style:none}",
+			".obx-group-summary::-webkit-details-marker{display:none}",
+			".obx-group-summary::before{content:'▸';flex:none;color:var(--obx-fg-muted);transition:transform var(--obx-dur-fast)}",
+			".obx-group--collapsible[open]>.obx-group-summary::before{transform:rotate(90deg)}",
+			"@media (prefers-reduced-motion: reduce){.obx-group-summary::before{transition:none}}",
+			// 折叠 summary 脏标记 / mode 联动与密文清除的行内强调 hint（warning 文本色）
+			".obx-group-dirty{color:var(--obx-warning-text);font-size:var(--obx-fs-xs);font-weight:600}",
+			".obx-hint--warn{color:var(--obx-warning-text)}",
+			// 批 3（UX §5.6）：数字行内校验红字 hint（错误文本色，与冲突横幅同族 token）
+			".obx-hint--invalid{color:var(--obx-error-text)}",
+			// UX §6 勾选清除：输入框描边 + 徽标转 warning（token 复用批 1 §5.1 色值）
+			".obx-input--warn{border-color:var(--obx-warning)}",
+			".obx-secret-badge--clear{color:var(--obx-warning-text);background:var(--obx-warning-bg);border-color:var(--obx-warning)}",
+			".obx-secret-badge--clear::before{background:var(--obx-warning)}",
+			// UX §4 workspace 拉取失败重试入口（行内链接式按钮）
+			".obx-link-btn{cursor:pointer;border:none;background:none;color:var(--obx-accent);padding:0 0 0 4px;font:inherit;font-size:var(--obx-fs-sm);text-decoration:underline}",
+			".obx-link-btn:disabled{opacity:.45;cursor:not-allowed;text-decoration:none}",
+			// 本地加（2026-10-31）：整页版布局——头部（标题/状态/页签）+ 滚动主体 + 底部保存条。
+			".obx-shell{max-width:880px;width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:0;padding:0}",
+			".obx-head{display:flex;flex-direction:column;gap:10px;padding:14px 16px 10px;border-bottom:1px solid var(--obx-card-border)}",
+			".obx-head-row{display:flex;flex-wrap:nowrap;gap:8px;align-items:center;min-width:0}",
+			".obx-head-row .obx-title{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+			".obx-head-row .obx-meta,.obx-head-row .obx-badge{flex:none;white-space:nowrap}",
+			".obx-tabs{display:flex;gap:6px;flex-wrap:wrap;width:100%}",
+			".obx-tab{flex:1 1 0;text-align:center;justify-content:center;border:1px solid var(--obx-card-border);background:transparent;color:var(--obx-fg-muted);border-radius:999px;padding:4px 7px;font:inherit;font-size:var(--obx-fs-sm);cursor:pointer}",
+			".obx-tab[aria-selected=true]{background:var(--obx-accent);border-color:var(--obx-accent);color:#fff}",
+			".obx-body{flex:1;min-height:0;overflow-y:auto;padding:14px 16px 18px;display:flex;flex-direction:column;gap:12px;-webkit-overflow-scrolling:touch}",
+			".obx-body .obx-group{background:var(--obx-card-bg);border:1px solid var(--obx-card-border);border-radius:var(--obx-radius-lg);padding:12px 14px}",
+			// 本地加（2026-10-31）：布尔开关行——左说明右开关，行间发丝分隔（DSH 设置页同款）。
+			".obx-field--row{display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;justify-content:space-between;gap:14px;padding:11px 2px;border-top:1px solid var(--obx-card-border)}",
+			".obx-field--row:first-child{border-top:0;padding-top:4px}",
+			".obx-field--row:last-child{padding-bottom:2px}",
+			".obx-field-text{display:flex;flex:1;min-width:0;flex-direction:column;gap:3px;cursor:pointer}",
+			".obx-field-text .obx-badge{align-self:flex-start}",
+			".obx-field--row .obx-toggle{flex:none}",
+			".obx-field--row .obx-hint{margin:0}",
+			".obx-toggle--svg{cursor:pointer;line-height:0}",
+			".obx-toggle--svg:focus-visible svg{outline:2px solid var(--obx-focus-ring);outline-offset:2px;border-radius:12px}",
+			// 本地加：动作行与长椭圆按钮（和开关同一形状语言）；按下变黑底白字做点击反馈。
+			".obx-actions{display:flex;align-items:center;gap:8px}",
+			".obx-actions-side{flex:1 1 0;display:flex;justify-content:flex-start;min-width:0}",
+			".obx-actions-side--center{justify-content:center}",
+			".obx-actions-side--end{justify-content:flex-end}",
+			".obx-actions-end{display:flex;gap:8px;align-items:center}",
+			".obx-btn--pill{border-radius:999px;padding:3px 13px;line-height:1.3;font-size:12px}",
+			".obx-btn--pill:active:not(:disabled){background:#111;border-color:#111;color:#fff}",
+			".obx-btn--pill.primary:active:not(:disabled){background:#111;border-color:#111;color:#fff}",
+			"@media (prefers-color-scheme: dark){.obx-btn--pill:active:not(:disabled),.obx-btn--pill.primary:active:not(:disabled){background:#fff;border-color:#fff;color:#111}}",
+			// 本地加：顶部居中浮窗（固定定位，滚动不影响可见）。
+			".obx-toast-wrap{position:sticky;top:0;z-index:20;display:flex;flex-direction:column;gap:8px;margin:0 0 4px}",
+			".obx-toast{pointer-events:auto;box-shadow:0 10px 28px rgba(0,0,0,.18);margin:0}",
+			".obx-input::placeholder{color:var(--obx-fg-muted);opacity:.8;letter-spacing:.08em}",
+						".obx-hint-inline{flex:0 1 auto;color:var(--obx-fg-muted);font-size:var(--obx-fs-xs);font-weight:400;line-height:1.45;min-width:0;padding-top:1px}",
+			".obx-hint-inline .obx-hint{display:inline;margin:0}",
+			".obx-group-desc--inline{color:var(--obx-fg-muted);font-size:var(--obx-fs-xs);font-weight:400;margin-left:2px}",
+			".obx-group-head{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}",
+			".obx-subgroup-title{margin:8px 0 2px;font-size:13px;font-weight:600;color:inherit}",
+			".obx-subgroup-title:first-child{margin-top:0}",
+		].join("\n");
+		//#endregion
+
+		//#region 工具（纯函数，模块级可测）
+		function format(template: any, params: any) {
+			return String(template).replace(/\{(\w+)\}/g, (match, key) =>
+				Object.prototype.hasOwnProperty.call(params, key) ? String(params[key]) : match);
+		}
+		function messageOf(cause: any) {
+			return cause instanceof Error ? cause.message : String(cause);
+		}
+		/** RemoteResult 解包：{ok:true,value}|{ok:false,error:{message}}。 */
+		function unwrap(result: any) {
+			if (result != null && result.ok === true) return result.value;
+			var detail = result != null && result.error != null ? result.error.message : "unknown remote error";
+			var error: any = new Error(detail);
+			if (result != null && result.error != null && result.error.code != null) error.code = result.error.code;
+			throw error;
+		}
+		/** 保存冲突判定（T1 §3.1：expectedRevision ≠ 当前 revision 拒写，
+		 *  host 抛 RemoteError('onebot-settings/conflict')；message 兜底只匹配该
+		 *  错误路径本身——不过宽匹配含 "revision" 的无关错误（评审 B5）。 */
+		var CONFLICT_RE = /onebot-settings\/conflict/i;
+		function isConflictError(cause: any) {
+			if (cause == null) return false;
+			return cause.code === "onebot-settings/conflict" || CONFLICT_RE.test(String(cause.message || ""));
+		}
+		/** 快照生效值 → 表单草稿（展示形态：number/stringArray/secret 均为可编辑文本；
+		 *  accessToken 恒 ''，明文绝不进入草稿——host 快照已脱敏）。 */
+		function snapshotValueToDraft(field: any, value: any) {
+			if (field.type === "secret") return ""; // 脱敏回显：密码框恒空（T1 §3 敏感字段行）
+			if (field.type === "stringArray") return Array.isArray(value) ? value.join(", ") : "";
+			if (field.type === "number") return value === undefined || value === null ? "" : String(value);
+			if (field.type === "boolean") return value === true;
+			return value === undefined || value === null ? "" : String(value);
+		}
+		function draftFromSnapshot(snapshot: any) {
+			var config = snapshot != null && snapshot.config != null ? snapshot.config : {};
+			var draft: any = {};
+			for (var field of ALL_FIELDS) draft[field.key] = snapshotValueToDraft(field, config[field.key]);
+			// T8：notices 通知开关的草稿形态 {on, text}
+			var noticesCfg = config.notices != null && typeof config.notices === "object" ? config.notices : {} as any;
+			for (var nk of NOTICE_KEYS) draft["notices." + nk.key] = noticeToDraft(noticesCfg[nk.key], nk.def);
+			return draft;
+		}
+		function draftFromDefaults() {
+			return draftFromSnapshot({ config: DEFAULTS });
+		}
+		/** 草稿展示值 → patch 值（stringArray 文本 → 行数组；number 文本 → 数字）。 */
+		function coerceValue(field: any, raw: any) {
+			if (field.type === "number") {
+				var n = typeof raw === "number" ? raw : Number(String(raw).trim());
+				return Number.isFinite(n) ? n : NaN;
+			}
+			if (field.type === "boolean") return raw === true;
+			if (field.type === "stringArray") {
+				// 本地加：只认逗号（中英文）、顿号、换行。空格不当分隔符——
+				// 字体家族名（Noto Sans CJK SC）、正则、转写参数、带空格的路径都会被拆坏。
+				return String(raw == null ? "" : raw).split(/[,\uFF0C\u3001\r\n]+/).map((item) => item.trim()).filter((item) => item !== "");
+			}
+			return String(raw == null ? "" : raw);
+		}
+		function valueEquals(a: any, b: any) {
+			return JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b);
+		}
+		/**
+		 * 计算保存 patch（T1 §4 + W6 + W7：29 键任意子集的扁平 JSON）。
+		 * @param draft 表单草稿（snapshotValueToDraft 形态）
+		 * @param config 快照生效值（snapshot.config）
+		 * @param opts.secretDraft 密码框输入（'' = 不修改 accessToken）
+		 * @param opts.clearSecret true = 显式下发 accessToken: ''（host 语义：'' = 清空）
+		 * @returns {patch, invalidKeys} 与生效值有差异的键集合；invalidKeys 为未通过
+		 *          客户端数字校验的键（host validatePatch 仍会二次校验）。
+		 */
+		function computePatch(draft: any, config: any, opts: any) {
+			var options = opts == null ? {} : opts;
+			var config_ = config == null ? {} : config;
+			var patch: any = {};
+			var invalidKeys = [];
+			for (var field of ALL_FIELDS) {
+				if (field.type === "secret") continue; // accessToken 走 secretDraft/clearSecret 专用通道
+				var next = coerceValue(field, draft[field.key]);
+				if (field.type === "number" && Number.isNaN(next)) {
+					invalidKeys.push(field.key);
+					continue;
+				}
+				if (!valueEquals(next, config_[field.key])) patch[field.key] = next;
+			}
+			// T8：notices 通知开关——上游一个键都不过面板，这里补上。
+			var noticesCfg = config_.notices != null && typeof config_.notices === "object" ? config_.notices : {} as any;
+			var noticesPatch: any = {};
+			var noticesDirty = false;
+			for (var nk of NOTICE_KEYS) {
+				var nState = draft["notices." + nk.key];
+				if (nState == null) continue;
+				var nNext = draftToNotice(nState, nk.def);
+				var nCur = noticeToDraft(noticesCfg[nk.key], nk.def);
+				if (!valueEquals(nNext, draftToNotice(nCur, nk.def)) && nNext !== (noticesCfg[nk.key] === undefined ? true : noticesCfg[nk.key])) {
+					noticesPatch[nk.key] = nNext;
+					noticesDirty = true;
+				}
+			}
+			if (noticesDirty) patch.notices = Object.assign({}, noticesCfg, noticesPatch);
+			var secretDraft = options.secretDraft;
+			if (options.clearSecret === true) patch.accessToken = ""; // host 语义：'' = 清空
+			else if (typeof secretDraft === "string" && secretDraft !== "") patch.accessToken = secretDraft;
+			// secretDraft 为空且未勾选清除 → 不含 accessToken 键 = 不修改（host 缺省语义）
+			return { patch: patch, invalidKeys: invalidKeys };
+		}
+
+		/**
+		 * 批 3（UX §5.6）：数字键行内校验合法范围——逐字抄自 host NUMBER_RANGE
+		 * （src/settings-remote.ts L204-218；前端字面量副本，host 常量不改）。
+		 * port 1–65535，时长/频控类 ≥0（max undefined = 无上限）。
+		 */
+		var NUMBER_RANGE: any = {
+			port: [1, 65535],
+			interimRecallMs: [0, undefined],
+			rateLimitPerMinute: [0, undefined],
+			deferredTimeoutMs: [0, undefined],
+			inboxQueueDelayMs: [0, undefined],
+			textImageThreshold: [0, undefined],
+			// 本地加（2026-11-01）：媒体上限都做防呆——多打一位数当场标红。
+			// 键序与 ALL_FIELDS（媒体组字段序）一致，便于测试逐位对齐。
+			outboundImageMaxBytes: [1, 104857600],
+			maxVoiceBytes: [1, 52428800],
+			maxFileBytes: [1, 4294967296],
+			inboundImageMaxPx: [0, undefined],
+			inboundFileMaxBytes: [0, undefined],
+		};
+
+		/**
+		 * 批 3（UX §5.6）：数字行内校验——判定语义与 host validatePatch 逐字对齐
+		 * （src/settings-remote.ts L351-353：Number.isFinite && >= min &&
+		 * (max === undefined || <= max)）。'' 经 Number('')=0 入范围判定（与
+		 * computePatch→coerceValue 同口径）；非数字文本（NaN）同样判非法。
+		 * @returns null = 合法；string = 合法范围文案（"1–65535"/"≥0"），供
+		 *          format(t("field.numberInvalid"), { range }) 组装行内红字。
+		 */
+		function numberRangeInvalid(field: any, raw: any) {
+			if (field == null || field.type !== "number") return null;
+			var range = Object.prototype.hasOwnProperty.call(NUMBER_RANGE, field.key) && Array.isArray(NUMBER_RANGE[field.key])
+				? NUMBER_RANGE[field.key]
+				: [0, undefined];
+			var n = coerceValue(field, raw);
+			if (Number.isFinite(n) && n >= range[0] && (range[1] === undefined || n <= range[1])) return null;
+			return range[1] === undefined ? "≥" + range[0] : range[0] + "–" + range[1];
+		}
+
+		/**
+		 * 批 3（UX §5.4）：冲突合并保留——保存遇 revision 冲突重拉快照后，不再
+		 * 全量重建草稿（旧路径静默丢弃全部未保存编辑），改为逐键比较新旧快照值
+		 *（旧 = 发起保存时 snapshot.config，新 = refetch 结果，复用 valueEquals）：
+		 *   - 新旧快照值一致的键：保留草稿编辑（大概率可原样重提）；
+		 *   - 新旧快照值不一致的键：跟随新快照（草稿按新值重写为展示形态）；其中
+		 *     本地也改过的键记入 conflictKeys（本地编辑被丢弃，调用方行内橙标
+		 *     「已被其他来源修改，已同步为最新值」）；
+		 *   - 密文例外：secret 键不参与合并（脱敏值无法比对）——草稿恒 ''，明文
+		 *     通道（secretDraft/clearSecret）由调用方一律清空并提示。
+		 * 纯函数：不改任何入参。脏判定与 computePatch 同口径（coerceValue 后比较，
+		 * 未编辑键不计脏）。
+		 * @param draft 冲突前的表单草稿（snapshotValueToDraft 展示形态）
+		 * @param oldCfg 发起保存时的 snapshot.config
+		 * @param nextCfg 冲突重拉的新 snapshot.config
+		 * @returns {draft, conflictKeys, keptCount} keptCount = 脏键数（draft 与
+		 *          oldCfg 有差异的非 secret 键）− conflictKeys.length，即 UX §5.4
+		 *          「已保留 N 项未冲突的修改」的 N；全部脏键被外部修改时为 0
+		 *         （调用方退化为现状提示——此时 draft 与全量重建结果同值）。
+		 */
+		function mergeOnConflict(draft: any, oldCfg: any, nextCfg: any) {
+			var sourceDraft = draft == null ? {} : draft;
+			var oldConfig = oldCfg == null ? {} : oldCfg;
+			var nextConfig = nextCfg == null ? {} : nextCfg;
+			var merged: any = {};
+			var conflictKeys = [];
+			var dirtyCount = 0;
+			for (var field of ALL_FIELDS) {
+				if (field.type === "secret") {
+					merged[field.key] = ""; // 密文例外（UX §5.4）：明文通道由调用方清空
+					continue;
+				}
+				var remoteChanged = !valueEquals(oldConfig[field.key], nextConfig[field.key]);
+				var dirty = Object.prototype.hasOwnProperty.call(sourceDraft, field.key)
+					&& !valueEquals(coerceValue(field, sourceDraft[field.key]), oldConfig[field.key]);
+				if (dirty) dirtyCount += 1;
+				if (remoteChanged) {
+					merged[field.key] = snapshotValueToDraft(field, nextConfig[field.key]);
+					if (dirty) conflictKeys.push(field.key);
+				} else {
+					// 远端未变：保留草稿（含未编辑键——缺键防御经 snapshotValueToDraft
+					// 重写为展示形态，与 draftFromSnapshot 同构）
+					merged[field.key] = Object.prototype.hasOwnProperty.call(sourceDraft, field.key)
+						? sourceDraft[field.key]
+						: snapshotValueToDraft(field, nextConfig[field.key]);
+				}
+			}
+			return { draft: merged, conflictKeys: conflictKeys, keptCount: dirtyCount - conflictKeys.length };
+		}
+
+		/**
+		 * W7：把选中的 workspace path 填入草稿（「快速填入」的唯一写入口）。
+		 * 纯函数、只返回新草稿对象——绝不触达 remote.updateSettings；保存仍走
+		 * 「保存设置」显式通道（computePatch → updateSettings）。
+		 */
+		function fillWorkspacePath(draft: any, path: any, key: any) {
+			var next = Object.assign({}, draft == null ? {} : draft);
+			next[key === undefined || key === "" ? "workspacePath" : key] = String(path == null ? "" : path);
+			return next;
+		}
+
+		/**
+		 * 批 2（UX §5.1）：脏状态派生——与保存流共用同一 computePatch 口径，键集 =
+		 * 与快照生效值有差异的键 + 密文通道（secretDraft 非空 / clearSecret）。纯
+		 * 客户端计算，不依赖冲突合并（mergeOnConflict 为批 3 范围）；数字非法键不进
+		 * patch 故不入 dirtyKeys（badNumber 反馈仍走 save() 通道）。
+		 */
+		function computeDirtyKeys(draft: any, config: any, opts: any) {
+			return Object.keys(computePatch(draft, config, opts).patch);
+		}
+
+		/**
+		 * 批 2（UX §3.2）：mode 联动变暗禁用——反向连接只走 url、正向只走 host/port。
+		 * 禁用≠清空：值保留在草稿，computePatch 值比较语义不变（patch 仍按原值比较）。
+		 */
+		function deriveModeInactiveKeys(mode: any) {
+			if (mode === "reverse") return ["url"];
+			if (mode === "forward") return ["host", "port"];
+			return [];
+		}
+
+		/** 批 2（UX §3.1）：诊断组折叠态 sessionStorage 键（"1" = 展开；缺省 = 默认折叠）。
+		 *  T8 补回上游缺口②：贡献者版删了折叠记忆（常量/状态/传参），这里恢复。 */
+		var DIAGNOSTICS_EXPANDED_KEY = PLUGIN_ID + ".diagnosticsExpanded";
+		/** 批 2（UX §4）：workspace 拉取失败后的重试冷却（10s 内不重复请求）。 */
+		var WORKSPACE_RETRY_COOLDOWN_MS = 10000;
+		//#endregion
+
+		//#region 渲染（模块级可测的纯渲染函数：renderGroup 不依赖 hooks/副作用）
+		function h(ReactImpl?: any, tag?: any, props?: any, ...children: any[]) {
+			var children = Array.prototype.slice.call(arguments, 3);
+			return ReactImpl.createElement.apply(ReactImpl, [tag, props].concat(children));
+		}
+		/**
+		 * 渲染一个设置分组（纯函数；值全部经 snapshotValueToDraft 脱敏形态传入，
+		 * accessToken 明文按契约绝不进入本函数——host 快照侧已脱敏为 ''）。
+		 * @param opts.onChange (field, nextDisplayValue) => void
+		 * @param opts.onSecretChange (nextText) => void
+		 * @param opts.onClearSecretChange (nextBoolean) => void
+		 * @param opts.secretSet boolean（快照 secrets 标记：明文是否已配置）
+		 * @param opts.clearSecret boolean（清除勾选态）
+		 * @param opts.nonDefaultKeys 与 schema 默认值不同的键数组（W6「非默认」徽标；
+		 *        以快照生效值为准而非草稿——徽标描述已保存状态，不是未保存编辑）
+		 * @param opts.draft 表单草稿（snapshotValueToDraft 形态）
+		 * @param opts.groupDesc 组描述文案（批 2 UX §2.2；缺省不渲染描述行）
+		 * @param opts.modeInactiveKeys 当前连接模式下不生效的键（批 2 UX §3.2：命中
+		 *        字段禁用变暗 + hint 追加「当前模式不生效」；值保留不清空）
+		 * @param opts.texts 交互文案（批 2 locale 第二档经面板传入；缺省回退 zh 字面
+		 *        量，模块级可测行为不变）：modeInactive/secretSet/secretUnset/
+		 *        secretClearPending/secretClearHint/secretClear/remoteOverwritten
+		 * @param opts.collapsible 折叠配置（批 2 UX §3.1：仅诊断组传入）——
+		 *        {open, onToggle, summaryMeta, dirtyMark}；缺省保持 section 常开形态
+		 * @param opts.invalidNumbers 数字行内校验标红（批 3 UX §5.6）：map key →
+		 *        已本地化提示文案；命中字段输入框挂 obx-input--invalid（批 1 预铺
+		 *        样式）+ aria-invalid，hint 行内嵌红字（.obx-hint--invalid）
+		 * @param opts.remoteOverwrittenKeys 冲突合并被远端覆盖的键（批 3 UX §5.4）：
+		 *        命中字段 hint 行内嵌橙标「已被其他来源修改，已同步为最新值」
+		 * @param opts.onNumberBlur (field, rawText) => void——number 字段 blur 回调
+		 *        （行内校验入口：面板侧记态标红/清除；stringArray/enum 不加校验）
+		 */
+		function renderGroup(ReactImpl: any, group: any, opts: any) {
+			var options = opts == null ? {} : opts;
+			var draft = options.draft == null ? {} : options.draft;
+			var nonDefaultKeys = Array.isArray(options.nonDefaultKeys) ? options.nonDefaultKeys : [];
+			var modeInactiveKeys = Array.isArray(options.modeInactiveKeys) ? options.modeInactiveKeys : [];
+			var invalidNumbers = options.invalidNumbers != null ? options.invalidNumbers : {};
+			var remoteOverwrittenKeys = Array.isArray(options.remoteOverwrittenKeys) ? options.remoteOverwrittenKeys : [];
+			var groupDesc = options.groupDesc != null ? options.groupDesc : null;
+			var collapsible = options.collapsible != null ? options.collapsible : null;
+			var texts = options.texts != null ? options.texts : {};
+			var modeInactiveText = texts.modeInactive != null ? texts.modeInactive : "当前模式不生效";
+			var secretSetText = texts.secretSet != null ? texts.secretSet : "已配置（脱敏，不回显）";
+			var secretUnsetText = texts.secretUnset != null ? texts.secretUnset : "未配置";
+			var secretClearPendingText = texts.secretClearPending != null ? texts.secretClearPending : "保存后清空";
+			var secretClearHintText = texts.secretClearHint != null ? texts.secretClearHint : "将清除已保存的值";
+			var secretClearLabelText = texts.secretClear != null ? texts.secretClear : "清除已保存的 AccessToken";
+			var remoteOverwrittenText = texts.remoteOverwritten != null ? texts.remoteOverwritten : "已被其他来源修改，已同步为最新值";
+			var onChange = typeof options.onChange === "function" ? options.onChange : function () {};
+			var onSecretChange = typeof options.onSecretChange === "function" ? options.onSecretChange : function () {};
+			var onClearSecretChange = typeof options.onClearSecretChange === "function" ? options.onClearSecretChange : function () {};
+			var onNumberBlur = typeof options.onNumberBlur === "function" ? options.onNumberBlur : function () {};
+			var fieldNodes = group.fields.map(function (field: any) {
+				// 本地加（11.1）：showIf 条件不满足就整行不渲染（索引保持对齐，按 key 取节点仍有效）。
+				if (field.showIf && draft[field.showIf.key] !== field.showIf.value)
+					return null;
+				var value = draft[field.key];
+				// 批 2（UX §3.2）：mode 联动——非当前模式的连接字段禁用变暗（值保留在
+				// 草稿，computePatch 值比较语义不变；hint 行追加「当前模式不生效」）。
+				var fieldInactive = modeInactiveKeys.indexOf(field.key) >= 0;
+				// 批 3（UX §5.4/§5.6）：冲突橙标命中 + 数字行内校验标红命中。
+				var overwritten = remoteOverwrittenKeys.indexOf(field.key) >= 0;
+				var fieldInvalidMessage = field.type === "number" && invalidNumbers[field.key] != null
+					? String(invalidNumbers[field.key])
+					: null;
+				var control;
+				if (field.type === "boolean") {
+					// §3.2 纯 CSS 开关：checkbox 语义保留（视觉隐藏 + 24×24 命中区覆盖轨道），
+					// track 为紧随 input 的兄弟节点（兄弟选择器驱动轨道底色/滑块位移），开/关文本保留。
+					// 本地加（2026-10-31）：用 SVG 画开关——形状写死在图里，不受宿主样式表影响。
+					control = h(ReactImpl, "label", {
+						className: "obx-toggle obx-toggle--svg",
+						role: "switch",
+						"aria-checked": value === true ? "true" : "false",
+						"aria-label": field.label,
+						onClick: function (event: any) {
+							event.preventDefault();
+							if (options.disabled === true || fieldInactive) return;
+							onChange(field, value !== true);
+						},
+					},
+						h(ReactImpl, "svg", { viewBox: "0 0 44 24", width: 44, height: 24, "aria-hidden": "true", focusable: "false", style: { display: "block" } },
+							h(ReactImpl, "rect", {
+								x: 0.5, y: 0.5, width: 43, height: 23, rx: 11.5,
+								fill: value === true ? "var(--obx-accent)" : "var(--obx-switch-off)",
+								style: { transition: "fill .18s ease" },
+							}),
+							h(ReactImpl, "circle", {
+								cx: 12, cy: 12, r: 9.5,
+								fill: "var(--obx-switch-knob)",
+								style: { transition: "transform .18s ease", transform: value === true ? "translateX(20px)" : "translateX(0px)" },
+							})));
+				} else if (field.type === "enum") {
+					control = h(ReactImpl, "select", {
+						className: "obx-select", value: String(value == null ? "" : value), disabled: options.disabled === true || fieldInactive,
+						onChange: function (event: any) { onChange(field, event.target.value); },
+						"aria-label": field.label,
+					}, field.options.map(function (option: any) {
+						return h(ReactImpl, "option", { key: option, value: option }, field.optionLabels[option] != null ? field.optionLabels[option] : option);
+					}));
+				} else if (field.type === "stringArray") {
+					control = h(ReactImpl, "textarea", {
+						className: "obx-textarea", rows: 2, value: String(value == null ? "" : value), disabled: options.disabled === true || fieldInactive,
+						placeholder: field.placeholder != null ? field.placeholder : "分割方式：逗号、顿号、换行",
+						onChange: function (event: any) { onChange(field, event.target.value); },
+						"aria-label": field.label,
+					});
+				} else if (field.type === "secret") {
+					// 密码型输入且不明文回显：value 恒为用户本次输入（初始 ''），占位符提示留空不改；
+					// 已配置状态只展示脱敏徽标，绝不渲染任何明文。
+					// 批 2（UX §6 + integration §2.4）徽标三态：已配置（accent 点）/ 未配置 /
+					// 保存后清空（橙，仅「确有已保存值 + 勾选清除」时——secretSet:false +
+					// 勾清除仍显「未配置」，保持既有渲染契约）；互斥由面板 onSecretChange
+					// 实现（输入新值即取消清除勾选）。勾选清除时输入框描边转 --obx-warning
+					// 并追加行内提示「将清除已保存的值」。
+					var clearActive = options.clearSecret === true;
+					var secretBadgeClassName = "obx-secret-badge";
+					var secretBadgeText;
+					if (clearActive && options.secretSet === true) {
+						secretBadgeClassName += " obx-secret-badge--clear";
+						secretBadgeText = secretClearPendingText;
+					} else if (options.secretSet === true) {
+						secretBadgeClassName += " obx-secret-badge--set";
+						secretBadgeText = secretSetText;
+					} else {
+						secretBadgeText = secretUnsetText;
+					}
+					control = h(ReactImpl, "span", { className: "obx-control" },
+						h(ReactImpl, "input", {
+							type: "password", className: clearActive ? "obx-input obx-input--warn" : "obx-input", value: String(value == null ? "" : value),
+							placeholder: (options.secretSet === true && !clearActive) ? "••••••••••••••••" : "留空 = 不修改",
+							autoComplete: "new-password", disabled: options.disabled === true || fieldInactive,
+							onChange: function (event: any) { onSecretChange(event.target.value); },
+							"aria-label": field.label,
+						}),
+						// §3.4 徽章加 8px 状态点：已配置=accent / 未配置=border-strong /
+						// 保存后清空=warning（纯视觉状态点）
+						h(ReactImpl, "span", { className: secretBadgeClassName }, secretBadgeText),
+						h(ReactImpl, "span", { className: "obx-hint" }, "出于安全实际令牌不回传页面，只显占位圆点，输入新值即替换（令牌：NapCat 的 WebUI → 网络配置→Token）"),
+						h(ReactImpl, "label", { className: "obx-toggle" },
+							h(ReactImpl, "input", {
+								type: "checkbox", checked: clearActive, disabled: options.disabled === true || fieldInactive,
+								onChange: function (event: any) { onClearSecretChange(event.target.checked); },
+							}),
+							secretClearLabelText),
+						clearActive ? h(ReactImpl, "span", { className: "obx-hint obx-hint--warn" }, secretClearHintText) : null);
+				} else {
+					// §3.1 数字输入 160px：number 字段仍以 type=text 渲染（既有渲染形态不变），
+					// 仅按类型加 obx-input--number 收窄 max-width。
+					// 批 3（UX §5.6）：行内校验标红——非法命中挂 obx-input--invalid（批 1
+					// 预铺样式）+ aria-invalid="true"；number 键 blur 触发面板侧校验
+					//（标红不阻断输入，保存按钮禁用由面板层落位）。
+					var isNumberField = field.type === "number";
+					control = h(ReactImpl, "input", {
+						type: "text",
+						className: (isNumberField ? "obx-input obx-input--number" : "obx-input")
+							+ (fieldInvalidMessage != null ? " obx-input--invalid" : ""),
+						value: String(value == null ? "" : value), disabled: options.disabled === true || fieldInactive,
+						placeholder: field.placeholder != null ? field.placeholder : undefined,
+						onChange: function (event: any) { onChange(field, event.target.value); },
+						onBlur: isNumberField ? function (event: any) { onNumberBlur(field, event.target.value); } : undefined,
+						"aria-invalid": fieldInvalidMessage != null ? "true" : undefined,
+						"aria-label": field.label,
+					});
+				}
+				// 批 2（UX §3.2）：mode 不生效 hint 与既有字段 hint 合并为同一 hint 行
+				//（@container grid 布局下 .obx-field>.obx-hint 固定占 row 2，双节点会
+				// 重叠），不生效部分以 warning 色内嵌强调。
+				// W6「非默认」徽标（T8 补回上游缺口①）：快照生效值 ≠ schema 默认值的键
+				// 一律挂标，不按字段类型区分——文本框/数字框同样可能被改成非默认值。
+				var nonDefaultBadge = nonDefaultKeys.indexOf(field.key) >= 0
+					? h(ReactImpl, "span", { className: "obx-badge", title: "与默认值不同" }, "非默认")
+					: null;
+				var hintChildren = [];
+				if (typeof field.hint === "string" && field.hint.trim() !== "") hintChildren.push(field.hint);
+				if (fieldInactive) {
+					if (hintChildren.length > 0) hintChildren.push("；");
+					hintChildren.push(h(ReactImpl, "span", { className: "obx-hint--warn" }, modeInactiveText));
+				}
+				// 批 3（UX §5.4）：冲突合并后本地编辑被远端覆盖的键——行内橙标提示。
+				if (overwritten) {
+					if (hintChildren.length > 0) hintChildren.push("；");
+					hintChildren.push(h(ReactImpl, "span", { className: "obx-hint--warn" }, remoteOverwrittenText));
+				}
+				// 批 3（UX §5.6）：数字行内校验非法——行内红字提示合法范围。
+				if (fieldInvalidMessage != null) {
+					if (hintChildren.length > 0) hintChildren.push("；");
+					hintChildren.push(h(ReactImpl, "span", { className: "obx-hint--invalid" }, fieldInvalidMessage));
+				}
+				// W6 徽标节点挂进 field-head（label 之后；boolean 行与非 boolean 行同款）。
+				var hintNode = hintChildren.length > 0
+					? h.apply(null, [ReactImpl, "span", { className: "obx-hint" }].concat(hintChildren))
+					: null;
+				// 本地加：短提示用半角括号内联在标题右侧，长提示单独一行放下面。
+				var hintIsLong = (typeof field.hint === "string" && field.hint.length > 24)
+					|| fieldInactive || overwritten || fieldInvalidMessage != null;
+				var hintInline = (hintNode === null || hintIsLong)
+					? null
+					: h(ReactImpl, "span", { className: "obx-hint-inline" }, "(", hintNode, ")");
+				var hintBlock = (hintNode !== null && hintIsLong) ? hintNode : null;
+				var nodes;
+				if (field.type === "boolean") {
+					// 本地加（2026-10-31，DSH 设置页同款）：说明在左、开关在右，整行可点。
+					nodes = [
+						h(ReactImpl, "div", { className: "obx-field obx-field--row", key: field.key },
+							h(ReactImpl, "div", {
+								className: "obx-field-text",
+								onClick: function () {
+									if (options.disabled === true || fieldInactive) return;
+									onChange(field, value !== true);
+								},
+							},
+								h(ReactImpl, "span", { className: "obx-field-head" },
+									h(ReactImpl, "span", { className: "obx-label" }, field.label), nonDefaultBadge,
+										hintInline),
+								hintBlock),
+							control),
+					];
+				}
+				else {
+					nodes = [
+						h(ReactImpl, "div", { className: "obx-field", key: field.key },
+							h(ReactImpl, "span", { className: "obx-field-head" },
+								h(ReactImpl, "span", { className: "obx-label" }, field.label), nonDefaultBadge,
+								hintInline),
+							control,
+							hintBlock),
+					];
+				}
+			// W7：可选扩展点——字段行后追加组内附加行（connection 组 workspacePath
+				// 下方的「快速填入 workspace」行由此注入；独立 class 不计入 obx-field 行数）。
+				if (typeof options.renderExtraRow === "function") {
+					var extra = options.renderExtraRow(field);
+					if (extra != null) nodes.push(extra);
+				}
+				return nodes;
+			});
+			// T8：notices 通知开关——每条一行开关 + 一个文案框（开关关着就不显示）。
+			// 文案框默认显示上游原文；改成别的就发改后的那句；改回原文等于跟随默认。
+			var renderNoticeRows = function (group: any) {
+				if (group.id !== "behavior" && group.id !== "session") return [];
+				var rows: any[] = [];
+				// T8：回答回执/超时补发/限流恒显；排队/插话两条按「任务运行中的新消息」
+				// 当前档位只显示对应那一条——选了插话就只留插话提示，排队提示那条
+				// 压根不生效，别摆那儿误导。
+				var policy = draft["newMessagePolicy"];
+				var wanted = NOTICE_KEYS.filter(function (nk) {
+					if (group.id !== "behavior") return false;
+					if (nk.key === "queue") return policy === "queue";
+					if (nk.key === "steerAccepted") return policy !== "queue";
+					return true;
+				});
+				// 用 forEach 而不是 for-of：var 在循环里只有一个变量，回调全指到最后一项，
+				// 点「排队提示」会改成「插话提示」——串味的根儿在这儿。
+				wanted.forEach(function (nk) {
+					var nState = draft["notices." + nk.key] || { on: true, text: nk.def };
+					var nOn = nState.on === true;
+					var notifyKey = "notices." + nk.key;
+					var defText = nk.def;
+					var setNoticeState = function (patchObj: any) {
+						if (typeof options.onNoticeChange !== "function") return;
+						options.onNoticeChange(notifyKey, function (cur: any) {
+							var base = cur != null && typeof cur === "object" ? cur : { on: true, text: defText };
+							return Object.assign({}, base, patchObj);
+						});
+					};
+					var toggleEl = h(ReactImpl, "label", {
+						className: "obx-toggle obx-toggle--svg",
+						role: "switch",
+						"aria-checked": nOn ? "true" : "false",
+						"aria-label": nk.label,
+						onClick: function (event: any) {
+							event.preventDefault();
+							if (options.disabled === true) return;
+							setNoticeState({ on: !nOn });
+						},
+					},
+						h(ReactImpl, "svg", { viewBox: "0 0 44 24", width: 44, height: 24, "aria-hidden": "true", focusable: "false", style: { display: "block" } },
+							h(ReactImpl, "rect", {
+								x: 0.5, y: 0.5, width: 43, height: 23, rx: 11.5,
+								fill: nOn ? "var(--obx-accent)" : "var(--obx-switch-off)",
+								style: { transition: "fill .18s ease" },
+							}),
+							h(ReactImpl, "circle", {
+								cx: 12, cy: 12, r: 9.5,
+								fill: "var(--obx-switch-knob)",
+								style: { transition: "transform .18s ease", transform: nOn ? "translateX(20px)" : "translateX(0px)" },
+							})));
+					var rowNodes = [
+						h(ReactImpl, "div", { className: "obx-field obx-field--row", key: "nt-" + nk.key },
+							h(ReactImpl, "div", {
+								className: "obx-field-text",
+								onClick: function () {
+									if (options.disabled === true) return;
+									setNoticeState({ on: !nOn });
+								},
+							},
+								h(ReactImpl, "span", { className: "obx-field-head" },
+									h(ReactImpl, "span", { className: "obx-label" }, nk.label))),
+							toggleEl),
+					];
+					if (nOn) {
+						rowNodes.push(h(ReactImpl, "div", { className: "obx-field", key: "ntx-" + nk.key },
+							h(ReactImpl, "textarea", {
+								className: "obx-textarea", rows: 2,
+								value: String(nState.text == null ? "" : nState.text),
+								disabled: options.disabled === true,
+								placeholder: nk.def,
+								onChange: function (event: any) { setNoticeState({ text: event.target.value }); },
+								"aria-label": nk.label + "文案",
+							})));
+					}
+					rows = rows.concat(rowNodes);
+				});
+				return rows;
+			};
+			fieldNodes = fieldNodes.concat(renderNoticeRows(group));
+			// 本地加：组内分区（如权限的私聊/群聊）——按 keys 顺序取已渲染的字段节点，
+			// 每块前面插一个黑色小标题。
+			if (Array.isArray(group.sections) && group.sections.length > 0) {
+				var byKey: any = {};
+				group.fields.forEach(function (field: any, index: any) { byKey[field.key] = fieldNodes[index]; });
+				var sectioned = [];
+				for (var section of group.sections) {
+					sectioned.push(h(ReactImpl, "h4", { className: "obx-subgroup-title", key: "sec-" + section.title }, section.title));
+					for (var sectionKey of section.keys) {
+						if (byKey[sectionKey] != null) sectioned.push(byKey[sectionKey]);
+					}
+				}
+				fieldNodes = sectioned;
+			}
+			// 批 2（UX §2.2）：组描述行——标题下的一句人话（integration §2.5 裁定取
+			// UX §2.2 版文案，经 opts.groupDesc 传入；缺省不渲染）。
+			if (collapsible != null) {
+				// 批 2（UX §3.1 + visual §2）：details/summary 原生折叠——键盘可达、零
+				// JS 依赖；summary 行 = 组标题 + 组描述 + meta pill（「N 项 · M 项默认
+				// 开」复用 .obx-meta）+ 脏标记（「● 含未保存修改」）。折叠不隐藏变更：
+				// patch/保存与折叠无关，提交计数仍含诊断字段；aria-expanded/aria-controls 齐备。
+				var summaryChildren = [h(ReactImpl, "h3", { className: "obx-group-title" }, group.title)];
+				if (groupDesc != null) summaryChildren.push(h(ReactImpl, "span", { className: "obx-group-desc" }, groupDesc));
+				if (collapsible.summaryMeta != null) summaryChildren.push(h(ReactImpl, "span", { className: "obx-meta" }, collapsible.summaryMeta));
+				if (collapsible.dirtyMark != null) summaryChildren.push(h(ReactImpl, "span", { className: "obx-group-dirty" }, collapsible.dirtyMark));
+				return h(ReactImpl, "details", {
+					className: "obx-group obx-group--collapsible", "data-group": group.id,
+					open: collapsible.open === true,
+					onToggle: typeof collapsible.onToggle === "function" ? collapsible.onToggle : undefined,
+				},
+					h.apply(null, [ReactImpl, "summary",
+						{ className: "obx-group-summary", "aria-expanded": collapsible.open === true, "aria-controls": "obx-group-body-" + group.id }]
+						.concat(summaryChildren)),
+					h(ReactImpl, "div", { className: "obx-group-body", id: "obx-group-body-" + group.id },
+						fieldNodes));
+			}
+			// 本地加：组标题和括号说明同一行（之前说明被 flex 列布局压到下一行）。
+			var sectionChildren = [h(ReactImpl, "div", { className: "obx-group-head" },
+				h(ReactImpl, "h3", { className: "obx-group-title" }, group.title),
+				groupDesc != null ? h(ReactImpl, "span", { className: "obx-group-desc obx-group-desc--inline" }, "(", groupDesc, ")") : null)];
+			return h.apply(null, [ReactImpl, "section", { className: "obx-group", "data-group": group.id }]
+				.concat(sectionChildren, [fieldNodes]));
+		}
+		//#endregion
+
+		/**
+		 * W7：渲染 workspacePath 字段下方的「快速填入 workspace」行（纯函数）。
+		 * 数据来自面板打开时对 remote.listWorkspaces() 的一次现拉（不缓存陈旧列表）。
+		 * 三态：
+		 *   - loaded !== true（拉取中/未拉取）→ 不渲染；
+		 *   - available !== true 或列表为空 → 隐藏下拉与按钮，仅渲染一行说明
+		 *     （可直接输入路径，不阻塞手输）；
+		 *   - 正常 → select（选项 = path（N 会话），value = id，避免同名 path 冲突）
+		 *     + 「填入」按钮：仅把选中 path 写进输入框当前值（onApply → fillWorkspacePath），
+		 *     不自动保存。
+		 * @param opts.workspaces host listWorkspaces().workspaces
+		 * @param opts.available host listWorkspaces().available
+		 * @param opts.loaded 面板打开后拉取是否已完成
+		 * @param opts.selectedId 当前选中的 workspace id（'' = 未选）
+		 * @param opts.onApply (path: string) => void（填入回调；本函数绝不调用保存）
+		 * @param opts.fetchFailed true = 本次拉取失败（批 2 UX §4：与「宿主未提供注册表」
+		 *        降级态文案区分，并提供重试入口）
+		 * @param opts.retryBlocked true = 失败后 10s 冷却内，重试入口禁用（不重复请求）
+		 * @param opts.onRetry 重试回调（面板侧重跑 listWorkspaces 拉取，不新增请求方法）
+		 * @param opts.fetchFailedText / opts.retryText 文案（locale 第二档；缺省回退 zh）
+		 */
+		function renderWorkspacePicker(ReactImpl: any, opts: any) {
+			var options = opts == null ? {} : opts;
+			if (options.loaded !== true) return null;
+			var workspaces = Array.isArray(options.workspaces) ? options.workspaces : [];
+			if (options.available !== true || workspaces.length === 0) {
+				// 批 2（UX §4）：失败态（fetchFailed=true）与宿主未提供注册表（available=false）
+				// 文案区分；失败态追加重试入口，10s 冷却内禁用。既有降级态结构不变
+				//（无 select/button，可直接输入路径）。
+				if (options.fetchFailed === true) {
+					return h(ReactImpl, "p", { className: "obx-hint obx-workspace-empty" },
+						typeof options.fetchFailedText === "string" ? options.fetchFailedText : "本次拉取 workspace 列表失败，可直接输入路径。",
+						h(ReactImpl, "button", {
+							className: "obx-link-btn", type: "button", disabled: options.retryBlocked === true,
+							onClick: function () {
+								var onRetry = options.onRetry;
+								if (typeof onRetry === "function") onRetry();
+							},
+						}, typeof options.retryText === "string" ? options.retryText : "重试"));
+				}
+				return h(ReactImpl, "p", { className: "obx-hint obx-workspace-empty" },
+					options.available === true
+						? "暂无 workspace 记录，可直接输入路径。"
+						: "无法获取 workspace 列表（宿主未提供 workspace 注册表），可直接输入路径。");
+			}
+			var selectedId = typeof options.selectedId === "string" ? options.selectedId : "";
+			var selected: any = null;
+			for (var workspace of workspaces) {
+				if (workspace != null && String(workspace.id) === selectedId) selected = workspace;
+			}
+			var disabled = options.disabled === true;
+			return h(ReactImpl, "div", { className: "obx-workspace-row", "data-role": "workspace-picker" },
+				h(ReactImpl, "span", { className: "obx-label" }, "快速填入 workspace"),
+				h(ReactImpl, "select", {
+					className: "obx-select", value: selectedId, disabled: disabled,
+					"aria-label": "快速填入 workspace",
+					title: "列出宿主 workspace 注册表中的工作区；选中后点「填入」写入上方路径输入框（只填值，保存仍走「保存设置」按钮）",
+					onChange: function (event: any) {
+						var onSelectedChange = options.onSelectedChange;
+						if (typeof onSelectedChange === "function") onSelectedChange(event.target.value);
+					},
+				},
+					h(ReactImpl, "option", { key: "", value: "" }, "选择 workspace…"),
+					workspaces.map(function (workspace: any) {
+						var label = String(workspace.path == null ? "" : workspace.path) + "（" + String(workspace.sessionCount == null ? 0 : workspace.sessionCount) + " 会话）";
+						return h(ReactImpl, "option", { key: String(workspace.id), value: String(workspace.id) }, label);
+					})),
+				h(ReactImpl, "button", {
+					className: "obx-btn", type: "button", disabled: disabled || selected == null,
+					onClick: function () {
+						var onApply = options.onApply;
+						if (selected != null && typeof onApply === "function") onApply(selected.path);
+					},
+				}, "填入"),
+				h(ReactImpl, "span", { className: "obx-hint" }, "选中后点「填入」仅写入上方输入框；需点「保存设置」才会保存（对新会话生效，已设 /workspace 覆盖的会话不受影响）。"));
+		}
+
+		//#region 面板组件
+		/**
+		 * QQ Bot 设置面板。
+		 * @param props t 为宿主注入的翻译函数（locale: NS，语言切换自动重渲染）；
+		 *        remote 为挂载后的 `remote.onebotSettings` API。
+		 */
+		function OnebotSettingsPanel(props: any) {
+			var t = props.t;
+			var remote = props.remote;
+			var snapshotState = React.useState(null);
+			var snapshot = snapshotState[0];
+			var setSnapshot = snapshotState[1];
+			var draftState = React.useState(null);
+			var draft = draftState[0];
+			var setDraft = draftState[1];
+			var secretState = React.useState("");
+			var secretDraft = secretState[0];
+			var setSecretDraft = secretState[1];
+			var clearSecretState = React.useState(false);
+			var clearSecret = clearSecretState[0];
+			var setClearSecret = clearSecretState[1];
+			var busyState = React.useState(false);
+			var busy = busyState[0];
+			var setBusy = busyState[1];
+			var errorState = React.useState(null);
+			var error = errorState[0];
+			var setError = errorState[1];
+			var noticeState = React.useState("");
+			var notice = noticeState[0];
+			var setNotice = noticeState[1];
+			// 本地加：整页版按「分节」显示，一次只渲染当前节。
+			var activeTabState = React.useState(GROUPS[0].id);
+			var activeTab = activeTabState[0];
+			var setActiveTab = activeTabState[1];
+			// 批 3（UX §5.6）：数字行内校验标红态——map key → 合法范围文案（"1–65535"/
+			// "≥0"）；number 键 blur 记入、输入修正自动消除，accept()/reset 全量重建清空。
+			var invalidNumbersState = React.useState({});
+			var invalidNumbers = invalidNumbersState[0];
+			var setInvalidNumbers = invalidNumbersState[1];
+			// 批 3（UX §5.4）：冲突合并结果态——被远端覆盖的键（行内橙标）+ 显式冲突
+			// 横幅标记（替换批 1 的文案恒等派生；refetchMerged 置位，其余错误路径复位）。
+			var conflictKeysState = React.useState([]);
+			var conflictKeys = conflictKeysState[0];
+			var setConflictKeys = conflictKeysState[1];
+			var conflictActiveState = React.useState(false);
+			var conflictActive = conflictActiveState[0];
+			var setConflictActive = conflictActiveState[1];
+			// W7：「快速填入 workspace」数据态——面板打开时（挂载 effect）对
+			// remote.listWorkspaces() 现拉一次，不缓存跨会话的陈旧列表。
+			var workspaceState = React.useState({ loaded: false, available: false, workspaces: [], selectedId: "" });
+			var workspace = workspaceState[0];
+			var setWorkspace = workspaceState[1];
+			// 批 2（UX §4）：重试冷却计时器 + 卸载哨兵——计时器/在途 Promise 不在卸载
+			// 之后写 state（沿用本面板 alive 守卫纪律）。
+			var workspaceRetryTimerRef = React.useRef(null);
+			var workspaceMountedRef = React.useRef(true);
+			React.useEffect(function () {
+				workspaceMountedRef.current = true;
+				return function () {
+					workspaceMountedRef.current = false;
+					if (workspaceRetryTimerRef.current != null) {
+						clearTimeout(workspaceRetryTimerRef.current);
+						workspaceRetryTimerRef.current = null;
+					}
+				};
+			}, []);
+
+			// 批 2（UX §3.1，T8 补回上游缺口②）：诊断组折叠态——sessionStorage 记忆
+			//（"1" = 展开），details 原生 onToggle 回写；持久化不可用时仅内存态生效。
+			var diagnosticsExpandedState = React.useState(function () {
+				try {
+					return window.sessionStorage.getItem(DIAGNOSTICS_EXPANDED_KEY) === "1";
+				} catch (error) {
+					return false;
+				}
+			});
+			var diagnosticsExpanded = diagnosticsExpandedState[0];
+			var setDiagnosticsExpanded = diagnosticsExpandedState[1];
+			var toggleDiagnostics = function (event: any) {
+				var nextOpen = event != null && event.target != null && event.target.open === true;
+				setDiagnosticsExpanded(nextOpen);
+				try {
+					window.sessionStorage.setItem(DIAGNOSTICS_EXPANDED_KEY, nextOpen ? "1" : "0");
+				} catch (error) { /* 持久化不可用时仅内存态生效 */ }
+			};
+
+			// 本地加：保存/报错提示改成顶部浮窗，5 秒后自动消失。
+			React.useEffect(function () {
+				if (error === null && notice === "") return undefined;
+				var toastTimer = setTimeout(function () {
+					setError(null);
+					setNotice("");
+				}, 5000);
+				return function () { clearTimeout(toastTimer); };
+			}, [error, notice]);
+
+			// T8：notices 通知开关的草稿写在 "notices.<key>" 名下，
+			// 这一层在写回时顺手接住带点的键（值就是整个 {on, text} 对象）。
+			var applyDraftChange = function (field: any, value: any) {
+				var key = field != null && field.key != null ? String(field.key) : "";
+				if (key.indexOf("notices.") === 0) {
+					setDraft(function (prev: any) {
+						var copy = Object.assign({}, prev);
+						copy[key] = value;
+						return copy;
+					});
+					return true;
+				}
+				return false;
+			};
+
+			/** 接受新快照：草稿按快照重置（accessToken 明文绝不进入草稿）。 */
+			var accept = function (next: any) {
+				setSnapshot(next);
+				setDraft(draftFromSnapshot(next));
+				// 批 3（UX §5.6）：全量重建后草稿均为快照展示形态（合法值），清除行内标红；
+				// 冲突横幅/橙标一并复位（本函数即「回到与快照一致」的统一入口）。
+				setInvalidNumbers({});
+				setConflictKeys([]);
+				setConflictActive(false);
+			};
+
+			React.useEffect(function () {
+				var alive = true;
+				void remote.getSettings().then(function (result: any) {
+					if (!alive) return;
+					accept(unwrap(result));
+				}).catch(function (cause: any) {
+					if (alive) setError(messageOf(cause));
+				});
+				// W7：辅助查询独立拉取（挂载与「重试」共用 fetchWorkspaces，见下）——
+				// 失败降级为 fetch-failed 提示行 + 重试入口，绝不阻塞/污染 getSettings
+				// 主链路与错误横幅。
+				fetchWorkspaces();
+				return function () { alive = false; };
+			}, [remote]);
+
+			/** 批 2（UX §4）：workspace 列表现拉（挂载与「重试」唯一入口，不缓存陈旧列表）。 */
+			var fetchWorkspaces = function () {
+				void Promise.resolve().then(function () {
+					return remote.listWorkspaces();
+				}).then(function (result) {
+					if (workspaceMountedRef.current !== true) return;
+					var value = unwrap(result);
+					if (workspaceRetryTimerRef.current != null) {
+						clearTimeout(workspaceRetryTimerRef.current);
+						workspaceRetryTimerRef.current = null;
+					}
+					setWorkspace({
+						loaded: true,
+						available: value != null && value.available === true,
+						workspaces: value != null && Array.isArray(value.workspaces) ? value.workspaces : [],
+						selectedId: "",
+						fetchFailed: false,
+						retryBlocked: false,
+					});
+				}).catch(function () {
+					// 失败态与「宿主未提供注册表」降级态区分（fetchFailed 标记）；重试
+					// 入口在 10s 冷却内禁用（retryBlocked），防止失败风暴下重复请求。
+					if (workspaceMountedRef.current !== true) return;
+					setWorkspace({ loaded: true, available: false, workspaces: [], selectedId: "", fetchFailed: true, retryBlocked: true });
+					if (workspaceRetryTimerRef.current != null) clearTimeout(workspaceRetryTimerRef.current);
+					workspaceRetryTimerRef.current = setTimeout(function () {
+						workspaceRetryTimerRef.current = null;
+						if (workspaceMountedRef.current !== true) return;
+						setWorkspace(function (previous: any) {
+							return Object.assign({}, previous, { retryBlocked: false });
+						});
+					}, WORKSPACE_RETRY_COOLDOWN_MS);
+				});
+			};
+
+			var refetch = function () {
+				void remote.getSettings().then(function (result: any) {
+					accept(unwrap(result));
+					setError(null);
+					setNotice("");
+				}).catch(function (cause: any) {
+					setConflictActive(false);
+					setError(messageOf(cause));
+				});
+			};
+
+			/**
+			 * 批 3（UX §5.4）：冲突合并保留——保存遇 revision 冲突时重拉快照并逐键
+			 * 合并（mergeOnConflict），不再全量重建丢弃未保存编辑：
+			 *   - 远端未变的键保留草稿编辑；keptCount > 0 → 结果条在 conflict.title
+			 *     后追加「已保留 N 项未冲突的修改，请核对后重新保存」；
+			 *   - 远端已变的键跟随新快照，本地同改的键记入 conflictKeys 行内橙标；
+			 *   - 密文例外：secretDraft/clearSecret 一律清空（脱敏值无法比对），
+			 *     确有明文输入时以 notice 提示「accessToken 输入已清空…」。
+			 * revision 取新快照，用户核对后可直接重放保存；行内标红按合并结果修剪
+			 *（跟随远端的键已合法，保留的本地编辑仍非法则继续标红）。
+			 */
+			var refetchMerged = function () {
+				void remote.getSettings().then(function (result: any) {
+					var next = unwrap(result);
+					var merged = mergeOnConflict(draft, snapshot == null ? null : snapshot.config, next.config);
+					setSnapshot(next);
+					setDraft(merged.draft);
+					setConflictKeys(merged.conflictKeys);
+					setConflictActive(true);
+					setInvalidNumbers(function (previous: any) {
+						var pruned: any = {};
+						Object.keys(previous).forEach(function (key) {
+							var field = ALL_FIELDS.find(function (item) { return item.key === key; });
+							if (field != null && numberRangeInvalid(field, merged.draft[key]) != null) pruned[key] = previous[key];
+						});
+						return pruned;
+					});
+					var hadSecretChannel = secretDraft !== "" || clearSecret === true;
+					setSecretDraft("");
+					setClearSecret(false);
+					setError(merged.keptCount > 0
+						? t("conflict.title") + format(t("conflict.kept"), { count: merged.keptCount })
+						: t("conflict.title"));
+					setNotice(hadSecretChannel ? t("conflict.secretCleared") : "");
+				}).catch(function (cause: any) {
+					setConflictActive(false);
+					setError(messageOf(cause));
+				});
+			};
+
+			/** 保存统一通道：updateSettings(patch, expectedRevision)；冲突时合并保留并重拉快照。 */
+			var save = function () {
+				if (busy || snapshot == null || draft == null) return;
+				setError(null);
+				setNotice("");
+				setConflictActive(false); // 批 3：新一轮保存开始即撤销上一轮冲突横幅（若再次冲突由 refetchMerged 重新置位）
+				var computed = computePatch(draft, snapshot.config, { secretDraft: secretDraft, clearSecret: clearSecret });
+				if (computed.invalidKeys.length > 0) {
+					var labels = computed.invalidKeys.map(function (key) {
+						var field = ALL_FIELDS.find(function (item) { return item.key === key; });
+						return field != null ? field.label : key;
+					});
+					setError(format(t("save.badNumber"), { keys: labels.join("、") }));
+					return;
+				}
+				if (Object.keys(computed.patch).length === 0) {
+					setNotice(t("save.noChanges"));
+					return;
+				}
+				setBusy(true);
+				void Promise.resolve().then(function () {
+					return remote.updateSettings(computed.patch, snapshot.revision);
+				}).then(function (result) {
+					accept(unwrap(result));
+					setNotice(t("save.done")); // 生效方式提示（T1 §5）：热生效、插件秒级重启、桥重连
+					setClearSecret(false);
+					setSecretDraft("");
+				}).catch(function (cause) {
+					if (isConflictError(cause)) {
+						// 批 3（UX §5.4）：冲突合并保留——重拉快照后逐键合并，保留未冲突的
+						// 本地编辑（不再全量重建丢弃）；结果条/行内橙标/密文清空见 refetchMerged。
+						refetchMerged();
+					} else {
+						setError(messageOf(cause));
+					}
+				}).finally(function () {
+					setBusy(false);
+				});
+			};
+
+			// 批 2（UX §5.1）：脏状态渲染期派生——无新增 state，与保存流共用同一
+			// computePatch 口径（draft vs 快照生效值 + secretDraft/clearSecret 密文通道）；
+			// 批 3 冲突合并后草稿已随 mergeOnConflict 更新，本派生自动与新草稿一致
+			//（合并保留的本地编辑仍计入 badge，跟随远端的键不再计入）；数字非法键不进
+			// patch 故不入 dirtyKeys（badNumber 反馈仍走 save() 通道）。
+			var dirtyKeys = snapshot === null || draft === null
+				? []
+				: computeDirtyKeys(draft, snapshot.config, { secretDraft: secretDraft, clearSecret: clearSecret });
+			var dirtyCount = dirtyKeys.length;
+
+			// 批 3（UX §5.6）：数字行内校验——blur 记态（非法 → 合法范围文案），修正
+			// 自动消除（onChange 对已标红键即时重校验）。标红不阻断输入；保存按钮禁用
+			// 由渲染层按标红键数落位（§5.6 原文「保存按钮禁用并 title 说明」），
+			// computePatch 的 NaN invalidKeys 拦截保留为 save() 内最后防线。
+			var handleNumberBlur = function (field: any, rawText: any) {
+				var range = numberRangeInvalid(field, rawText); // null = 合法；string = 合法范围文案
+				setInvalidNumbers(function (previous: any) {
+					if (range == null) {
+						if (previous[field.key] == null) return previous;
+						var cleared = Object.assign({}, previous);
+						delete cleared[field.key];
+						return cleared;
+					}
+					if (previous[field.key] === range) return previous;
+					return Object.assign({}, previous, (function () { var marked: any = {}; marked[field.key] = range; return marked; })());
+				});
+			};
+
+			// 批 2（UX §5.7）：有未保存修改时注册 beforeunload 离开防护（浏览器原生
+			// 确认框，文案由浏览器决定、不可定制）。已知限制（UX 方案 A3/§10.3）：
+			// beforeunload 只能拦截页面级离开/刷新；宿主 SPA 内路由切换时面板随路由
+			// 卸载、页面本身不重载，原生不触发该事件，宿主亦未提供未保存更改离开守卫
+			// 扩展点——如实不拦截，不做 history 劫持等过界方案。
+			React.useEffect(function () {
+				if (dirtyCount === 0) return undefined;
+				var handler = function (event: any) {
+					event.preventDefault();
+					event.returnValue = ""; // Chrome/Edge 需显式 returnValue 才弹原生确认
+					return "";
+				};
+				window.addEventListener("beforeunload", handler);
+				return function () { window.removeEventListener("beforeunload", handler); };
+			}, [dirtyCount > 0]);
+
+			if (snapshot === null || draft === null) {
+				// 批 2（UX §7）：加载失败停留当前面板——错误横幅 + 重试按钮走既有
+				// refetch（不新增请求方法）；成功后快照落位回到完整面板。
+				return h(React, "div", { className: "obx-panel" },
+					h(React, "p", { className: "obx-hint" }, t("settings.loading")),
+					error === null ? null : h(React, "div", { className: "obx-error", role: "alert" }, t("status.error") + "：" + error),
+					error === null ? null : h(React, "button", { className: "obx-btn", type: "button", onClick: refetch }, t("common.retry")));
+			}
+
+			var secretSet = false;
+			if (Array.isArray(snapshot.secrets)) {
+				for (var secretEntry of snapshot.secrets) {
+					if (secretEntry != null && Array.isArray(secretEntry.path) && secretEntry.path.indexOf("accessToken") >= 0 && secretEntry.set === true) secretSet = true;
+				}
+			}
+			// 批 2（UX §6）：secretSet 保持「宿主侧确有已保存值」语义不变——勾选清除
+			// 的「保存后清空」三态徽标在 renderGroup 内按 secretSet+clearSecret 派生
+			//（旧版此处把勾选压成「未配置」的行已移除：secretSet:false + 勾清除仍显
+			// 「未配置」，与既有渲染契约一致）。
+
+			// W6「非默认」徽标数据源：快照生效值 vs schema 默认值（DEFAULTS），
+			// 反映已保存状态；草稿未保存的改动不打徽标。
+			var nonDefaultKeys = [];
+			if (snapshot.config != null) {
+				for (var field of ALL_FIELDS) {
+					if (valueEquals(snapshot.config[field.key], DEFAULTS[field.key]) === false) nonDefaultKeys.push(field.key);
+				}
+			}
+
+			// 批 2（UX §3.2）：mode 联动变暗禁用——reverse→url、forward→host/port；
+			// 禁用≠清空（值保留在草稿，computePatch 值比较语义不变）。
+			var modeInactiveKeys = deriveModeInactiveKeys(draft.mode);
+
+			// 批 2（UX §3.1）：诊断组折叠 summary 数据——「N 项 · M 项默认开」按
+			// GROUPS/DEFAULTS 派生（M = 默认 true 的 actionAuditEnabled/inboxRedact/injectEnabled）；
+			// 脏标记只看诊断键是否落入 dirtyKeys——折叠不隐藏变更（patch/保存与折叠
+			// 无关，工具栏 badge 与提交计数仍含诊断字段）。
+			var diagnosticsGroup = GROUPS.find(function (group) { return group.id === "diagnostics"; });
+			var diagnosticsTotal = diagnosticsGroup != null ? diagnosticsGroup.fields.length : 0;
+			var diagnosticsDefaultOnCount = diagnosticsGroup == null
+				? 0
+				: diagnosticsGroup.fields.filter(function (field) { return DEFAULTS[field.key] === true; }).length;
+			var diagnosticsKeys = GROUP_KEYS.diagnostics != null ? GROUP_KEYS.diagnostics : [];
+			var diagnosticsDirty = dirtyKeys.some(function (key) { return diagnosticsKeys.indexOf(key) >= 0; });
+
+			// 批 2（UX §5.7）：危险操作确认——有未保存修改时，「重新加载」「恢复默认值」
+			// 先经浏览器原生 confirm（「将丢弃 N 项未保存修改」）；无脏改动直接执行。
+			var confirmDiscard = function () {
+				if (dirtyCount === 0) return true;
+				return window.confirm(format(t("confirm.discardChanges"), { count: dirtyCount }));
+			};
+			var handleReload = function () {
+				if (confirmDiscard()) refetch();
+			};
+			var handleReset = function () {
+				if (!confirmDiscard()) return;
+				setDraft(draftFromDefaults());
+				setSecretDraft(""); // UX §5.7 补重置项：恢复默认值同时清空密文草稿…
+				setClearSecret(false); // …与「清除已保存」勾选
+				setInvalidNumbers({}); // 批 3（UX §5.6）：默认值均合法，一并清除行内标红
+			};
+
+			// 批 2（integration §2.4/§2.5）：交互文案走 locale 第二档（zh/en 同批），
+			// 经 opts.texts 传入纯渲染函数（渲染函数对缺省回退 zh 字面量，模块级
+			// 可测行为不变）。
+			var texts = {
+				modeInactive: t("field.modeInactive"),
+				secretSet: t("secret.set"),
+				secretUnset: t("secret.unset"),
+				secretClearPending: t("secret.clearPending"),
+				secretClearHint: t("secret.clearHint"),
+				secretClear: t("secret.clear"),
+				remoteOverwritten: t("field.remoteOverwritten"),
+			};
+
+			// 批 3（UX §5.6）：标红键的行内红字文案（范围文案 → 本地化句式）+ 键 label
+			//（保存按钮禁用 title 与字段行内提示共用一份标红数据源）。
+			var invalidNumberMessages: any = {};
+			var invalidNumberLabels: any[] = [];
+			Object.keys(invalidNumbers).forEach(function (key) {
+				var field = ALL_FIELDS.find(function (item) { return item.key === key; });
+				if (field != null) invalidNumberLabels.push(field.label);
+				invalidNumberMessages[key] = format(t("field.numberInvalid"), { range: invalidNumbers[key] });
+			});
+			var invalidNumberCount = Object.keys(invalidNumbers).length;
+
+			var changeHandlers = {
+				disabled: busy,
+				secretSet: secretSet,
+				clearSecret: clearSecret,
+				nonDefaultKeys: nonDefaultKeys,
+				draft: draft,
+				// 批 3（UX §5.6/§5.4）：行内校验标红数据源 + blur 校验入口 + 冲突橙标键
+				invalidNumbers: invalidNumberMessages,
+				onNumberBlur: handleNumberBlur,
+				remoteOverwrittenKeys: conflictKeys,
+				// W7：workspacePath 字段行下方的「快速填入 workspace」行（独立于
+				// obx-field 行；onApply 只写草稿不保存——保存仍走 save() 显式通道）。
+				renderExtraRow: function (field: any) {
+					if (field.key !== "workspacePath" && field.key !== "groupWorkspacePath") return null;
+					return renderWorkspacePicker(React, {
+						loaded: workspace.loaded,
+						available: workspace.available,
+						workspaces: workspace.workspaces,
+						selectedId: workspace.selectedId,
+						disabled: busy,
+						fetchFailed: workspace.fetchFailed === true,
+						retryBlocked: workspace.retryBlocked === true,
+						onRetry: fetchWorkspaces,
+						fetchFailedText: t("workspace.fetchFailed"),
+						retryText: t("common.retry"),
+						onSelectedChange: function (nextId: any) {
+							setWorkspace(Object.assign({}, workspace, { selectedId: nextId }));
+						},
+						onApply: function (path: any) {
+							setDraft(fillWorkspacePath(draft, path, field.key));
+						},
+					});
+				},
+				onChange: function (field: any, nextValue: any) {
+					// T8：notices 通知开关走带点键，值整个替换。
+					if (field != null && String(field.key).indexOf("notices.") === 0) {
+						setDraft(Object.assign({}, draft, (function () { var next: any = {}; next[field.key] = nextValue; return next; })()));
+						return;
+					}
+					setDraft(Object.assign({}, draft, (function () { var next: any = {}; next[field.key] = nextValue; return next; })()));
+					// 批 3（UX §5.6）：已标红的数字键随输入重校验，修正后自动消除标红
+					if (field.type === "number" && invalidNumbers[field.key] != null) handleNumberBlur(field, nextValue);
+					// 批 3（UX §5.4）：冲突键被再次编辑后撤销行内橙标（该提示描述的是被
+					// 覆盖时刻的状态，用户改值后不再成立）
+					if (conflictKeys.indexOf(field.key) >= 0) setConflictKeys(conflictKeys.filter(function (key: any) { return key !== field.key; }));
+				},
+				// T8：notices 通知开关专用写入——函数式 setDraft，
+				// 不依赖渲染时捕获的 draft 快照（否则连点两下会互相覆盖）。
+				onNoticeChange: function (key: any, updater: any) {
+					setDraft(function (prev: any) {
+						var copy = Object.assign({}, prev);
+						copy[key] = typeof updater === "function" ? updater(prev[key]) : updater;
+						return copy;
+					});
+				},
+				onSecretChange: function (nextText: any) {
+					setSecretDraft(nextText);
+					setDraft(Object.assign({}, draft, (function () { var next: any = {}; next.accessToken = nextText; return next; })()));
+					setClearSecret(false); // 批 2（UX §6）互斥：输入新值即取消「清除已保存」勾选
+				},
+				onClearSecretChange: function (nextChecked: any) {
+					setClearSecret(nextChecked);
+				},
+			};
+
+			// 批 3（UX §5.4）：冲突横幅改显式状态——refetchMerged 置位 conflictActive，
+			// save() 开场/失败分支与 refetch()/accept() 复位（替换批 1 的文案恒等派生）。
+
+			return h(React, "div", { className: "obx-panel obx-shell" },
+				h(React, "div", { className: "obx-head" },
+					h(React, "div", { className: "obx-head-row" },
+						h(React, "h2", { className: "obx-title" }, t("settings.title")),
+						h(React, "span", { className: "obx-spacer" }),
+						dirtyCount > 0 ? h(React, "span", { className: "obx-badge obx-warn" }, format(t("save.dirtyBadge"), { count: dirtyCount })) : null,
+						h(React, "span", { className: "obx-meta", title: "面板构建标记" }, "ui-svg"),
+						h(React, "span", { className: "obx-meta" }, t("revision.label") + " " + String(snapshot.revision)),
+						snapshot.entryActive === true ? null : h(React, "span", { className: "obx-meta obx-warn", title: t("effect.entryInactiveTitle") }, t("effect.entryInactive"))),
+					h(React, "div", { className: "obx-actions" },
+						h(React, "span", { className: "obx-actions-side" },
+							h(React, "button", { className: "obx-btn obx-btn--pill", style: { borderRadius: "999px" }, type: "button", disabled: busy, onClick: handleReset }, t("settings.reset"))),
+						h(React, "span", { className: "obx-actions-side obx-actions-side--center" },
+							h(React, "button", { className: "obx-btn obx-btn--pill", style: { borderRadius: "999px" }, type: "button", disabled: busy, onClick: handleReload }, t("settings.reload"))),
+						h(React, "span", { className: "obx-actions-side obx-actions-side--end" },
+							h(React, "button", {
+							className: "obx-btn obx-btn--pill primary", style: { borderRadius: "999px" }, type: "button",
+							disabled: busy || dirtyCount === 0 || invalidNumberCount > 0,
+							title: invalidNumberCount > 0
+								? format(t("save.badNumber"), { keys: invalidNumberLabels.join("、") })
+								: dirtyCount === 0 ? t("save.noChangesTitle") : undefined,
+							onClick: save,
+							}, busy ? t("save.saving") : t("save.submit")))),
+					h(React, "div", { className: "obx-tabs", role: "tablist" },
+						GROUPS.map(function (group) {
+							return h(React, "button", {
+								key: group.id, type: "button", role: "tab",
+								className: "obx-tab",
+								"aria-selected": activeTab === group.id ? "true" : "false",
+								onClick: function () { setActiveTab(group.id); },
+							}, group.title);
+						}))),
+				h(React, "div", { className: "obx-body" },
+					(error !== null || notice !== "") ? h(React, "div", { className: "obx-toast-wrap", "aria-live": "polite" },
+						error !== null ? h(React, "div", { className: "obx-error obx-toast" + (conflictActive ? " obx-error--conflict" : ""), role: "alert" }, t("status.error") + "：" + error) : null,
+						notice !== "" ? h(React, "p", { className: "obx-notice obx-toast" }, notice) : null) : null,
+					h(React, "div", { className: "obx-effect" }, t("effect.hint")),
+					GROUPS.filter(function (group) { return group.id === activeTab; }).map(function (group) {
+						return renderGroup(React, group, Object.assign({}, changeHandlers, {
+							texts: texts,
+							groupDesc: t("group." + group.id + ".desc"),
+							modeInactiveKeys: modeInactiveKeys,
+							// 批 2（UX §3.1，T8 补回上游缺口②）：诊断组折叠 + sessionStorage 记忆；
+							// summary meta =「N 项 · M 项默认开」，脏时挂「● 含未保存修改」。
+							collapsible: group.id === "diagnostics"
+								? {
+									open: diagnosticsExpanded === true,
+									onToggle: toggleDiagnostics,
+									summaryMeta: format(t("diagnostics.summary"), { total: diagnosticsTotal, enabled: diagnosticsDefaultOnCount }),
+									dirtyMark: diagnosticsDirty === true ? t("diagnostics.dirtyMark") : null,
+								}
+								: undefined,
+						}));
+					})));
+		}
+		//#endregion
+
+		//#region 客户端入口
+		var inject = ["slots", "locale", "remote"];
+		/**
+		 * 客户端入口：注入样式与词条、挂载 Typert Remote、注册设置面板。
+		 * @returns {() => void} 卸载函数（对照先例：只回收 Remote 挂载；
+		 *          样式/词条/slot 注册由宿主 ctx.effect 与 slot 生命周期回收）。
+		 */
+		async function apply(ctx: any) {
+			ctx.effect(function () {
+				var tag = document.createElement("style");
+				tag.dataset.plugin = PLUGIN_ID;
+				tag.textContent = CSS;
+				document.head.appendChild(tag);
+				return function () { tag.remove(); };
+			}, "onebot-settings: style");
+
+			ctx.effect(function () { return ctx.locale.register(NS, { zh: zh, en: en }); }, "onebot-settings: dictionaries");
+			var t = ctx.locale.bind(NS);
+
+			// namespace 是独立 Cordis 服务：必须挂载后 ctx.get() 获取，
+			// 直接读 ctx.remote.onebotSettings 会要求预先注入并死锁（先例同款注释）。
+			var disposeRemote = await ctx.remote.$mount(ONEBOT_SETTINGS_REMOTE);
+			var remote = ctx.get("remote." + REMOTE_NS);
+			if (remote === undefined) throw new Error("onebot-settings Remote 挂载后不可用");
+
+			ctx.slots.inject("plugins.bundle.config", function () { return ctx.slots.register(
+				{ name: "plugins.bundle.config", key: "dsh-onebot-qq", locale: NS },
+				function (props: any) { if (props && props.view === "summary") return t("settings.desc"); return React.createElement(OnebotSettingsPanel, Object.assign({}, props, { remote: remote })); },
+			); });
+
+			// 侧边栏入口留给 T11，本批不做。
+
+			return function () { void disposeRemote(); };
+		}
+		//#endregion
+
+		exports.inject = inject;
+		exports.apply = apply;
+		exports.ONEBOT_SETTINGS_REMOTE = ONEBOT_SETTINGS_REMOTE;
+		exports.ONEBOT_SETTINGS_DESCRIPTORS = ONEBOT_SETTINGS_DESCRIPTORS;
+		exports.GROUPS = GROUPS;
+		exports.ALL_FIELDS = ALL_FIELDS;
+		exports.DEFAULTS = DEFAULTS;
+		exports.GROUP_KEYS = GROUP_KEYS;
+		exports.computePatch = computePatch;
+		exports.computeDirtyKeys = computeDirtyKeys;
+		exports.deriveModeInactiveKeys = deriveModeInactiveKeys;
+		exports.coerceValue = coerceValue;
+		exports.snapshotValueToDraft = snapshotValueToDraft;
+		exports.draftFromSnapshot = draftFromSnapshot;
+		exports.fillWorkspacePath = fillWorkspacePath;
+		exports.renderWorkspacePicker = renderWorkspacePicker;
+		exports.isConflictError = isConflictError;
+		exports.unwrap = unwrap;
+		exports.renderGroup = renderGroup;
+		exports.OnebotSettingsPanel = OnebotSettingsPanel;
+		// 批 3（UX §5.4/§5.6）：冲突合并保留 + 数字行内校验（纯函数，单测护航）
+		exports.NUMBER_RANGE = NUMBER_RANGE;
+		exports.numberRangeInvalid = numberRangeInvalid;
+		exports.mergeOnConflict = mergeOnConflict;
+
+		return module.exports;
+	}
+});
