@@ -20,6 +20,7 @@ import type { Transcriber } from './stt.js'
 import { transcriptLabel } from './stt.js'
 import type { OneBotSegment, MediaRef } from './cq.js'
 import { cqUnescape, detectExplicitMention, detectMention, detectWakeName, parseMessage, segmentText, stripLeadingBotMention } from './cq.js'
+import { gifFramesNote } from './gif-sheet.js'
 import type { AccessPolicyConfig, ChatId, UserRole } from './chat.js'
 import {
   buildChatId, buildDirectMessagePrefix, buildGroupMessagePrefix, classifyUserRole, dmAllowed, groupAllowed,
@@ -218,6 +219,9 @@ export interface InboundContext {
     /** T1 (PR port): 管理员/成员唤醒词（消息开头命中即视为 @机器人）。 */
     wakeNamesAdmin: string[]
     wakeNamesMember: string[]
+    /** T6 (PR port GIF 分帧)：开关默认 false——关闭时gifFramesNote 不触碰
+     *  文件系统，行为与上游逐字节等价。 */
+    gifFramesEnabled: boolean
   }>
 }
 
@@ -609,7 +613,11 @@ export class InboundPipeline {
         const settings = this.ctx.getSettings(chatId)
         settings.lastImagePath = resolved.path
         settings.pendingImageRef = undefined
+        // T6 (PR port GIF 分帧)：开关开启且确为 gif 时，旁边拼一张四格分帧长图
+        // 附在消息里；关闭/失败一律静默为空串（不装依赖也不开开关时行为与上游
+        // 逐字节等价）。
         return (ref.stickerLabel !== undefined ? '[表情包:' : '[图片:') + resolved.path + ']'
+          + await gifFramesNote(resolved.path, this.ctx.config.gifFramesEnabled === true)
       case 'voice': {
         // M3-D4c: dispatch must not wait on STT — the [语音] placeholder ships
         // now and the transcript steers into the turn when it completes. A
@@ -679,7 +687,9 @@ export class InboundPipeline {
             return { url: got.url, file: got.file }
           })
           if (resolved !== undefined && typeof resolved.path === 'string' && resolved.path !== '') {
-            imageNotes.push('[引用里的图片:' + resolved.path + ']')
+            // T6 (PR port GIF 分帧)：同正文图片——开启才附分帧，失败静默。
+            imageNotes.push('[引用里的图片:' + resolved.path + ']'
+              + await gifFramesNote(resolved.path, this.ctx.config.gifFramesEnabled === true))
           }
         } catch {
           // 单图失败静默跳过：引用展开的主路径（文字）不受影响。

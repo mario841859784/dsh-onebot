@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { OneBotSegment } from '../src/cq.js'
-import { cqUnescape, parseMessage, detectExplicitMention, detectMention, detectWakeName, parseCqString, faceToEmoji, stripLeadingBotMention } from '../src/cq.js'
+import { cqUnescape, parseMessage, detectExplicitMention, detectMention, detectWakeName, parseCqString, faceToEmoji, stripLeadingBotMention, setFaceStyle } from '../src/cq.js'
 
 describe('cqUnescape', () => {
   it('reverses CQ attribute escaping', () => {
@@ -28,7 +28,8 @@ describe('parseMessage', () => {
   it('falls back to CQ string parsing', () => {
     const parsed = parseMessage(undefined, 'hi [CQ:face,id=0] [CQ:image,url=https://x/y.png]')
     expect(parsed.text).toContain('hi')
-    expect(parsed.text).toContain('😀')
+    // T6：faceStyle 默认 'name'，id=0 呈现官方名「[惊讶]」（qq-faces 名表）。
+    expect(parsed.text).toContain('[惊讶]')
     expect(parsed.media).toHaveLength(1)
   })
 
@@ -428,8 +429,10 @@ describe('stripLeadingBotMention', () => {
 })
 
 describe('faceToEmoji', () => {
-  it('maps known and unknown ids', () => {
+  it('maps known and unknown ids (faceStyle=emoji, T6 前语义)', () => {
+    setFaceStyle('emoji')
     expect(faceToEmoji('0')).toBe('😀')
     expect(faceToEmoji('999999')).toBe('😀')
+    setFaceStyle('name')
   })
 })

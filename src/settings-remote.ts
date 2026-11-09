@@ -59,19 +59,20 @@ export const NAMESPACE = 'onebotSettings'
 /** 快照固定值：全部键均为插件级热重启生效（T1 §5；T5 扩到 66 键同粒度）。 */
 export const REMOTE_EFFECT = 'restart'
 
-/** 设置页 UI 六组 66 键（T5：键表对齐贡献者 0.9.19 版——connection 13 /
- *  permissions 15 / behavior 9 / session 5 / media 15 / diagnostics 7；与
- *  src/index.ts Config schema 一一对应，未入库功能的键先行进表、schema 定义
- *  随后批接上，见 PENDING_SCHEMA_KEYS）。T1 四组 29 键仍为前四组前缀，旧面板
- *  （lib/client.js 手写真相源，T8 重写）继续可渲染。
+/** 设置页 UI 六组 67 键（T5：键表对齐贡献者 0.9.19 版——connection 13 /
+ *  permissions 15 / behavior 9 / session 5 / media 15+T6 新增 1=16 /
+ *  diagnostics 7；与 src/index.ts Config schema 一一对应，未入库功能的键
+ *  先行进表、schema 定义随后批接上，见 PENDING_SCHEMA_KEYS）。T1 四组 29 键
+ *  仍为前四组前缀，旧面板（lib/client.js 手写真相源，T8 重写）继续可渲染。
  *  分组沿用 W6 取舍：diagnostics 组 = 观测/调试面开关；session/media 两组来自
- *  贡献者键表（T4 提示词/记忆文件、T5 媒体限额键的 UI 归属）。 */
+ *  贡献者键表（T4 提示词/记忆文件、T5 媒体限额键的 UI 归属）。gifFramesEnabled
+ *  为本仓 T6 批次自有开关（贡献者无对应键），归入 media 组。 */
 export const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>> = {
   connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath', 'groupWorkspacePath', 'forceSessionId', 'dmPromptFile', 'groupPromptFile', 'allowPrivateHosts', 'ignoreSelf'],
   permissions: ['requireMention', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'replyCountsAsMention', 'atAllCountsAsMention', 'faceStyle', 'pokeEnabled', 'restrictedMemberPrefix', 'sensitivePatterns'],
   behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs'],
   session: ['newSessionGreeting', 'firstMessageAsUser', 'memoryFilesEnabled', 'memoryFiles', 'agentPreset'],
-  media: ['sttEnabled', 'sttEngine', 'sttCommand', 'sttArgs', 'sttModel', 'textImageEnabled', 'textImageThreshold', 'cardFooter', 'fontFiles', 'fontFamilies', 'outboundImageMaxBytes', 'maxVoiceBytes', 'maxFileBytes', 'inboundImageMaxPx', 'inboundFileMaxBytes'],
+  media: ['sttEnabled', 'sttEngine', 'sttCommand', 'sttArgs', 'sttModel', 'textImageEnabled', 'textImageThreshold', 'cardFooter', 'fontFiles', 'fontFamilies', 'outboundImageMaxBytes', 'maxVoiceBytes', 'maxFileBytes', 'inboundImageMaxPx', 'inboundFileMaxBytes', 'gifFramesEnabled'],
   diagnostics: ['actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun', 'logLevel'],
 }
 
@@ -111,8 +112,10 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   wakeNamesMember: [],
   replyCountsAsMention: false,
   atAllCountsAsMention: false,
-  // PENDING：@ 消息样式（name=显示名字，emoji=仅表情）。
+  // T6 转正：@ 消息样式（name=显示名字，emoji=仅表情）。
   faceStyle: 'name',
+  // T6 (PR port GIF 分帧)：开关默认 false，关闭时不装依赖也不触碰 FS（上游等价）。
+  gifFramesEnabled: false,
   pokeEnabled: true,
   restrictedMemberPrefix: true,
   sensitivePatterns: [],
@@ -170,8 +173,9 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
 /** notices 对象的合法子键（我们 schema 无贡献者的 newSession，故 5 键）。 */
 export const NOTICE_KEYS: readonly string[] = ['steerAccepted', 'queue', 'answerAccepted', 'deferredTimeout', 'rateLimited']
 
-/** T5 键表先行、schema 定义后批接上的键（T6/T7 功能落地前，完整性测试豁免）。 */
-export const PENDING_SCHEMA_KEYS: readonly string[] = ['forceSessionId', 'newSessionGreeting', 'firstMessageAsUser', 'textImageEnabled', 'faceStyle']
+/** T7 键表先行、schema 定义后批接上的键（T7 落地前，完整性测试豁免）。
+ *  faceStyle 已随 T6 官方表情名表批次转正（src/index.ts schema 已定义）。 */
+export const PENDING_SCHEMA_KEYS: readonly string[] = ['forceSessionId', 'newSessionGreeting', 'firstMessageAsUser', 'textImageEnabled']
 
 /** 快照返回侧脱敏的键（T1 §3 敏感字段行；写入侧明文落盘属宿主既有行为）。 */
 export const SECRET_KEYS: readonly string[] = ['accessToken']
@@ -205,18 +209,18 @@ const NUMBER_RANGE: Readonly<Record<string, readonly [number, number | undefined
   inboundImageMaxPx: [0, undefined],
   inboundFileMaxBytes: [0, undefined],
 }
-/** 布尔键白名单（T1 §4 + W6 + T5 键表：22 键，对齐贡献者 0.9.19）。 */
+/** 布尔键白名单（T1 §4 + W6 + T5 键表 22 键 + T6 gifFramesEnabled：23 键）。 */
 const BOOLEAN_KEYS: readonly string[] = [
   'requireMention', 'allowAllUsers', 'interimMessages', 'interimRecall', 'sendErrorNotice',
   'newSessionGreeting', 'replyCountsAsMention', 'atAllCountsAsMention',
   'actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun',
   'textImageEnabled', 'pokeEnabled', 'firstMessageAsUser', 'memoryFilesEnabled', 'ignoreSelf',
-  'sttEnabled', 'restrictedMemberPrefix', 'allowPrivateHosts',
+  'sttEnabled', 'restrictedMemberPrefix', 'allowPrivateHosts', 'gifFramesEnabled',
 ]
 const STRING_KEYS: readonly string[] = ['host', 'url', 'accessToken', 'botQQ', 'workspacePath', 'groupWorkspacePath', 'forceSessionId', 'dmPromptFile', 'groupPromptFile', 'cardFooter', 'agentPreset', 'sttCommand', 'sttModel']
 const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'memoryFiles', 'sensitivePatterns', 'sttArgs', 'fontFiles', 'fontFamilies']
-/** 全部 66 键（校验与快照的唯一键集；9 枚举 + 11 数字 + 22 布尔 + 13 字符串 +
- *  10 字符串数组 + notices 单独通道）。 */
+/** 全部 67 键（校验与快照的唯一键集；9 枚举 + 11 数字 + 23 布尔 + 13 字符串 +
+ *  10 字符串数组 + notices 单独通道；T6 新增 gifFramesEnabled）。 */
 export const ALL_KEYS: readonly string[] = [
   ...Object.keys(ENUM_KEYS), ...NUMBER_KEYS, ...BOOLEAN_KEYS, ...STRING_KEYS, ...STRING_ARRAY_KEYS, 'notices',
 ]
@@ -227,7 +231,7 @@ export interface OnebotSettingsSnapshot {
   revision: number
   /** dsh-onebot 条目 fiber 是否 active（fiber.state === 2，同 configEditor.edit 的活性判据）。 */
   entryActive: boolean
-  /** 66 键生效值；accessToken 脱敏为 ''。 */
+  /** 67 键生效值；accessToken 脱敏为 ''。 */
   config: Record<string, unknown>
   /** 脱敏键标记：明文是否已配置。 */
   secrets: Array<{ path: string[]; set: boolean }>

@@ -18,6 +18,7 @@ import type { ModelSelection } from '@deepseek-ai/dsh-agent'
 import type Z from '@deepseek-ai/schemastery'
 import type { OneBotEvent } from './connection.js'
 import { createPokeHandler } from './poke.js'
+import { setFaceStyle } from './cq.js'
 import type { BridgeDeps, WorkspaceRegistryLike } from './bridge.js'
 import type { AccessPolicyConfig } from './chat.js'
 import { homedir } from 'node:os'
@@ -127,6 +128,12 @@ export interface Config {
   wakeNamesAdmin: string[]
   /** T1 (PR port): 成员唤醒词；群聊消息以任一词开头即视为 @机器人。 */
   wakeNamesMember: string[]
+  /** T6 (PR port GIF 分帧)：开启后入站 .gif 附件旁附一张四格分帧长图；默认关闭，
+   *  关闭时不装依赖也不触碰文件系统（行为与上游逐字节等价）。 */
+  gifFramesEnabled: boolean
+  /** T6 (PR port 官方表情名表)：[CQ:face] 的呈现风格：name=官方名（默认，
+   *  如「[微笑]」）；emoji=旧 emoji 对照表。 */
+  faceStyle: 'name' | 'emoji'
   /** Unknown slash-command handling: intercept（默认）=拦截并给建议；passthrough=透传给模型。 */
   unknownCommand: 'intercept' | 'passthrough'
   /** T2 (P1): 任务运行中的新消息处理策略：queue=排队（默认）；steer=插话进当前任务。 */
@@ -289,6 +296,10 @@ export const Config: Z<Config> = z.object({
     .description('管理员唤醒词（T1 PR port）：群聊消息以任一唤醒词开头即视为 @机器人（仅对管理员生效）；留空=不启用'),
   wakeNamesMember: z.array(z.string()).default([])
     .description('成员唤醒词（T1 PR port）：群聊消息以任一唤醒词开头即视为 @机器人（仅对成员生效）；留空=不启用'),
+  gifFramesEnabled: z.boolean().default(false)
+    .description('GIF 分帧（T6 PR port，可选模块）：开启后入站 .gif 附件旁边附一张四格分帧长图（连拍那样），让只看得到静帧的模型看明白动图发生了什么；依赖 gifuct-js（optionalDependencies，未安装时静默降级不报错）；默认关闭=行为与上游逐字节等价'),
+  faceStyle: z.union([z.const('name'), z.const('emoji')]).default('name')
+    .description('@ 消息样式（T6 PR port 官方表情名表）：name（默认）=[CQ:face] 按官方名呈现（如「[微笑]」，表外 id 降级「[表情id]」）；emoji=仅 emoji 对照（表外 id 塌成 😀）'),
   unknownCommand: z.union([z.const('intercept'), z.const('passthrough')]).default('intercept')
     .description('未知斜杠命令处理：intercept（默认）=拦截并提示相近命令或 /help；passthrough=透传给模型（旧行为）'),
   newMessagePolicy: z.union([z.const('queue'), z.const('steer')]).default('steer')
@@ -508,6 +519,9 @@ export function logMetaEvent(selfId: string, event: OneBotEvent, minLevel: Confi
 export function apply(ctx: Context, config: Config): void {
   // D4a: honor the deprecated config names before any consumer reads them.
   config = resolveDeprecatedConfig(config)
+  // T6 (PR port faceStyle)：[CQ:face] 呈现风格是模块级解析行为（cq.ts
+  // faceToEmoji），apply 时接线一次；非法值由 setFaceStyle 回落 'name'。
+  setFaceStyle(config.faceStyle)
   // T14: qq_send_segments 插件页开关与发送间隔——必须在任何 agent scope 注册
   // 工具（bridge.installChannelScope → registerTools）之前生效。
   configureSendSegments(config.segments)
@@ -603,6 +617,9 @@ export function apply(ctx: Context, config: Config): void {
     atAllCountsAsMention: config.atAllCountsAsMention,
     wakeNamesAdmin: config.wakeNamesAdmin,
     wakeNamesMember: config.wakeNamesMember,
+    // T6 (PR port GIF 分帧)：入站管线经可选交叉成员读取（见
+    // InboundContext.config），同上走 spread 接线。
+    gifFramesEnabled: config.gifFramesEnabled,
     // T2 (PR port): 出站防御与旁白静默——出站管线经可选交叉成员读取
     //（见 OutboundContext.config），同上走 spread 接线。
     outboundDefenseEnabled: config.outboundDefenseEnabled,

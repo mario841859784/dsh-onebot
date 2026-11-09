@@ -289,7 +289,7 @@ describe('onebotSettings remote — W6 白名单扩展（W1/W2 观测/调试 6 �
   it('6 个新键入快照：默认值正确、落在 diagnostics 组、计入 ALL_KEYS', () => {
     const editor = new FakeConfigEditor()
     const snapshot = getSettings(editor, createRevisionState())
-    expect(ALL_KEYS).toHaveLength(66) // W6 19→25、W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）
+    expect(ALL_KEYS).toHaveLength(67) // W6 19→25、W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）、T6 66→67（gifFramesEnabled）
     expect(snapshot.groups.diagnostics).toEqual([...NEW_BOOLEAN_KEYS, 'logLevel']) // T5：diagnostics 组 6→7 键（+logLevel）
     for (const key of NEW_BOOLEAN_KEYS) {
       expect(snapshot.config[key]).toBe(NEW_DEFAULTS[key])
@@ -383,7 +383,7 @@ describe('onebotSettings remote — W6 失败守卫（configEditor 失败场景�
 describe('onebotSettings remote — W7 workspacePath 白名单扩展（connection 组 26 键）', () => {
   it('workspacePath 入快照：默认值 \'\'、connection 组键序追加、ALL_KEYS 25→26', () => {
     const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
-    expect(ALL_KEYS).toHaveLength(66) // T5：键表对齐贡献者 0.9.19（W7 25→26（workspacePath）、T2 26→27（newMessagePolicy 入 behavior 组）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs））
+    expect(ALL_KEYS).toHaveLength(67) // T5：键表对齐贡献者 0.9.19（W7 25→26（workspacePath）、T2 26→27（newMessagePolicy 入 behavior 组）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs））、T6 66→67（gifFramesEnabled）
     expect(SCHEMA_DEFAULTS.workspacePath).toBe('')
     expect(SETTINGS_GROUPS.connection).toEqual(['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath', 'groupWorkspacePath', 'forceSessionId', 'dmPromptFile', 'groupPromptFile', 'allowPrivateHosts', 'ignoreSelf'])
     expect(snapshot.groups.connection).toEqual(SETTINGS_GROUPS.connection)
@@ -489,7 +489,7 @@ describe('onebotSettings remote — W7 listWorkspaces（workspace 注册表只�
 describe('onebotSettings remote — P1/T2 newMessagePolicy 白名单扩展（behavior 组 28 键）', () => {
   it('newMessagePolicy 入快照：T5 翻转后默认 \'steer\'、behavior 组尾追加、ALL_KEYS 29→66', () => {
     const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
-    expect(ALL_KEYS).toHaveLength(66) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）
+    expect(ALL_KEYS).toHaveLength(67) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）、T6 66→67（gifFramesEnabled）
     expect(SCHEMA_DEFAULTS.newMessagePolicy).toBe('steer')
     expect(SETTINGS_GROUPS.behavior).toEqual([
       'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs',
@@ -532,7 +532,7 @@ describe('onebotSettings remote — P1/T2 newMessagePolicy 白名单扩展（beh
 describe('onebotSettings remote — T9 autoSteerPolicy 白名单扩展（behavior 组 27→28 键，用户裁决 2026-10-12）', () => {
   it('autoSteerPolicy 入快照：默认 \'admin\'、behavior 组尾追加（newMessagePolicy 之后）、ALL_KEYS 27→28', () => {
     const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
-    expect(ALL_KEYS).toHaveLength(66) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）
+    expect(ALL_KEYS).toHaveLength(67) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）、T6 66→67（gifFramesEnabled）
     expect(SCHEMA_DEFAULTS.autoSteerPolicy).toBe('admin')
     expect(SETTINGS_GROUPS.behavior).toEqual([
       'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs',
@@ -575,7 +575,7 @@ describe('onebotSettings remote — T9 autoSteerPolicy 白名单扩展（behavio
 describe('onebotSettings remote — T3 deferredTimeoutMs 白名单扩展（behavior 组 28→29 键）', () => {
   it('deferredTimeoutMs 入快照：默认 600000、behavior 组尾追加（autoSteerPolicy 之后）、ALL_KEYS 28→29', () => {
     const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
-    expect(ALL_KEYS).toHaveLength(66) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）
+    expect(ALL_KEYS).toHaveLength(67) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）、T6 66→67（gifFramesEnabled）
     expect(SCHEMA_DEFAULTS.deferredTimeoutMs).toBe(600_000)
     expect(SETTINGS_GROUPS.behavior).toEqual([
       'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs',

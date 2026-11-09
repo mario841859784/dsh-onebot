@@ -5,6 +5,8 @@
  * @module dsh-onebot/cq
  */
 
+import { QQ_FACES } from './qq-faces.js'
+
 /** One OneBot 11 message segment. */
 export interface OneBotSegment {
   type: string
@@ -102,8 +104,32 @@ const FACE_EMOJI: Record<string, string> = {
   '364': '🦦', '365': '🦥', '366': '🐁', '367': '🐉', '368': '🐲', '369': '🐢',
 }
 
-/** Map a QQ face id to an emoji, with a fallback for unknown ids. */
+// T6（PR port 官方表情名表）：上面那张 emoji 对照是硬凑的，遇到表外的 id
+// 全塌成一个😀，对话里看不出对方发了什么。QQ 官方名表（NapCat 自带名，源自
+// 贡献者 qq-faces.json）随包内置为 src/qq-faces.ts，按 id 查名字，形如「[微笑]」。
+
+/** 表情呈现风格：'name' 用官方名（默认），'emoji' 用上面那张 emoji 对照表。 */
+let faceStyle: 'name' | 'emoji' = 'name'
+
+/** Set the face presentation style (T6 PR port faceStyle 配置；非法值回落 'name'). */
+export function setFaceStyle(style: string | undefined | null): void {
+  faceStyle = style === 'emoji' ? 'emoji' : 'name'
+}
+
+/** The built-in official QQ face name table (T6 PR port；测试/工具面). */
+export function faceNames(): Readonly<Record<string, string>> {
+  return QQ_FACES
+}
+
+/** Map a QQ face id to its presentation text, with a fallback for unknown ids.
+ * faceStyle='name'（默认）：官方名「[微笑]」，表外 id 降级「[表情id]」；
+ * faceStyle='emoji'：旧 emoji 对照表，表外 id 降级 😀。 */
 export function faceToEmoji(id: string): string {
+  if (faceStyle === 'name') {
+    const name = QQ_FACES[String(id)]
+    if (typeof name === 'string' && name !== '') return '[' + name + ']'
+    return '[表情' + id + ']'
+  }
   return FACE_EMOJI[id] ?? '😀'
 }
 

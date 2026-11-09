@@ -38,13 +38,14 @@ describe('T5 键表完整性（SCHEMA_DEFAULTS 与 schema 无孤儿键）', () =
   const resolved = Config({}) as Record<string, unknown>
   const groupKeys = Object.values(SETTINGS_GROUPS).flat()
 
-  it('六组结构对齐贡献者 0.9.19：connection 13 / permissions 15 / behavior 9 / session 5 / media 15 / diagnostics 7', () => {
+  it('六组结构对齐贡献者 0.9.19 + T6 增键：connection 13 / permissions 15 / behavior 9 / session 5 / media 15+1 / diagnostics 7', () => {
     expect(Object.keys(SETTINGS_GROUPS)).toEqual(['connection', 'permissions', 'behavior', 'session', 'media', 'diagnostics'])
     expect(SETTINGS_GROUPS.connection).toHaveLength(13)
     expect(SETTINGS_GROUPS.permissions).toHaveLength(15)
     expect(SETTINGS_GROUPS.behavior).toHaveLength(9)
     expect(SETTINGS_GROUPS.session).toHaveLength(5)
-    expect(SETTINGS_GROUPS.media).toHaveLength(15)
+    expect(SETTINGS_GROUPS.media).toHaveLength(16)
+    expect(SETTINGS_GROUPS.media).toContain('gifFramesEnabled')
     expect(SETTINGS_GROUPS.diagnostics).toHaveLength(7)
   })
 
@@ -64,8 +65,8 @@ describe('T5 键表完整性（SCHEMA_DEFAULTS 与 schema 无孤儿键）', () =
     }
   })
 
-  it('PENDING 键已进表但 schema 尚未定义（T6/T7 功能落地后豁免名单应清空）', () => {
-    expect(PENDING_SCHEMA_KEYS.sort()).toEqual(['faceStyle', 'firstMessageAsUser', 'forceSessionId', 'newSessionGreeting', 'textImageEnabled'])
+  it('PENDING 键已进表但 schema 尚未定义（T7 落地后豁免名单应清空；faceStyle 已随 T6 转正）', () => {
+    expect(PENDING_SCHEMA_KEYS.sort()).toEqual(['firstMessageAsUser', 'forceSessionId', 'newSessionGreeting', 'textImageEnabled'])
     for (const key of PENDING_SCHEMA_KEYS) {
       expect(ALL_KEYS).toContain(key)
       expect(Object.hasOwn(resolved, key)).toBe(false)
