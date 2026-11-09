@@ -765,7 +765,9 @@ window.__ModuleLoader__.load({
 			".obx-group-title{font-size:var(--obx-fs-md);font-weight:600;margin:0}",
 			// §6 旧内核兜底：字段行保留现状 flex-wrap；容器查询三档见末尾 @container 块
 			".obx-field{display:flex;flex-direction:column;gap:6px;align-items:stretch}",
-			".obx-field-head{display:flex;align-items:flex-start;gap:8px;flex-wrap:nowrap;width:100%}",
+			// T23：field-head 允许换行——label/badge/行内 hint 在窄容器下 hint 折到
+			// 下一整行，而不是被 nowrap+flex 压缩成一字一列竖排（无容器查询回落路径）。
+			".obx-field-head{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;width:100%}",
 			".obx-field-head .obx-label{flex:none;min-width:0;white-space:nowrap}",
 			".obx-field-head .obx-badge{flex:none;font-size:9.4px;padding:0 7px;line-height:1.6}",
 			// §3.1/§5.1：字段 label 13px/400 + fg-muted（原 opacity 灰度不达 AA）
@@ -799,8 +801,13 @@ window.__ModuleLoader__.load({
 			// §3.6 workspace 选择器：卡片内嵌次级行
 			".obx-workspace-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--obx-card-bg);border-radius:var(--obx-radius-md);padding:8px 12px}",
 			// §6 容器查询三档（面板自身为查询源；旧内核不识别 @container → 回落上方 flex-wrap 兜底）
-			"@container obx (min-width:720px){.obx-field{display:grid;grid-template-columns:176px minmax(240px,1fr) auto;column-gap:12px;row-gap:4px;align-items:center}.obx-field>.obx-label{grid-column:1;grid-row:1}.obx-field>.obx-input,.obx-field>.obx-select,.obx-field>.obx-textarea,.obx-field>.obx-control,.obx-field>.obx-toggle{grid-column:2;grid-row:1}.obx-field>.obx-badge{grid-column:3;grid-row:1}.obx-field>.obx-hint{grid-column:2/-1;grid-row:2}}",
-			"@container obx (max-width:719px){.obx-field{display:grid;grid-template-columns:1fr;row-gap:4px}.obx-field>.obx-label{grid-column:1}.obx-field>.obx-badge{grid-column:1;justify-self:start}}",
+			// T23：容器查询网格修正——label/badge/行内 hint 现包在 .obx-field-head 内
+			//（旧规则 .obx-field>.obx-label/.obx-badge 不再命中，head 被自动塞进 176px
+			// 标签列，hint 被压竖排、label 溢出叠上输入框）。改为：head 整行占 row1，
+			// 控件 row2 col2，长 hint row3；布尔/notice 行（--row）在网格断点内恢复
+			// flex 左右布局（specificity 双类压过单类 .obx-field 的 display:grid）。
+			"@container obx (min-width:720px){.obx-field{display:grid;grid-template-columns:176px minmax(240px,1fr) auto;column-gap:12px;row-gap:4px;align-items:center}.obx-field>.obx-field-head{grid-column:1/-1;grid-row:1}.obx-field>.obx-input,.obx-field>.obx-select,.obx-field>.obx-textarea,.obx-field>.obx-control{grid-column:2;grid-row:2}.obx-field>.obx-hint{grid-column:2/-1;grid-row:3}.obx-field.obx-field--row{display:flex}}",
+			"@container obx (max-width:719px){.obx-field{display:grid;grid-template-columns:1fr;row-gap:4px}.obx-field.obx-field--row{display:flex}}",
 			"@container obx (max-width:479px){.obx-toolbar .obx-btn{flex:1 1 auto}.obx-toolbar .obx-btn.primary{order:-1}.obx-input,.obx-select,.obx-textarea{max-width:none}.obx-group{padding:12px}.obx-secret-badge{flex-basis:100%}}",
 			// 批 2 交互逻辑（UX §3.1/§3.2/§5.1/§6/§7 + integration §2.4）：
 			// 诊断组 details/summary 折叠——summary 行 = 组标题 + 组描述 + meta pill
@@ -859,7 +866,9 @@ window.__ModuleLoader__.load({
 			".obx-toast-wrap{position:sticky;top:0;z-index:20;display:flex;flex-direction:column;gap:8px;margin:0 0 4px}",
 			".obx-toast{pointer-events:auto;box-shadow:0 10px 28px rgba(0,0,0,.18);margin:0}",
 			".obx-input::placeholder{color:var(--obx-fg-muted);opacity:.8;letter-spacing:.08em}",
-						".obx-hint-inline{flex:0 1 auto;color:var(--obx-fg-muted);font-size:var(--obx-fs-xs);font-weight:400;line-height:1.45;min-width:0;padding-top:1px}",
+			// T23：hint-inline 不可压成竖排——nowrap+ellipsis 兜底（flex 收缩极限为单行
+			// 截断，而非 CJK 逐字换行）；配合 field-head 的 flex-wrap:wrap 先整行换行。
+			".obx-hint-inline{flex:0 1 auto;color:var(--obx-fg-muted);font-size:var(--obx-fs-xs);font-weight:400;line-height:1.45;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-top:1px}",
 			".obx-hint-inline .obx-hint{display:inline;margin:0}",
 			".obx-group-desc--inline{color:var(--obx-fg-muted);font-size:var(--obx-fs-xs);font-weight:400;margin-left:2px}",
 			".obx-group-head{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}",

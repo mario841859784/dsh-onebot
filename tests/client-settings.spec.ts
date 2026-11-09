@@ -795,3 +795,38 @@ describe('T8 失败守卫 — host edit-failed 中文错误可渲染且不误判
     expect(CLIENT_SOURCE).toContain('"conflict.kept": "Kept {count} non-conflicting change(s) — review and save again."')
   })
 })
+
+describe('T23 设置页布局 — 行内 hint 回落与容器查询网格修正', () => {
+  it('hint-inline 不可压缩成竖排：nowrap + overflow ellipsis 兜底（flex 收缩极限为单行截断）', () => {
+    const rule = CLIENT_SOURCE.match(/\.obx-hint-inline\{[^}]*\}/)
+    expect(rule).not.toBeNull()
+    expect(rule![0]).toContain('white-space:nowrap')
+    expect(rule![0]).toContain('overflow:hidden')
+    expect(rule![0]).toContain('text-overflow:ellipsis')
+    expect(rule![0]).toContain('min-width:0')
+  })
+
+  it('回落布局存在：field-head 允许换行（flex-wrap:wrap），hint 窄容器下折到整行而非逐字竖排', () => {
+    const rule = CLIENT_SOURCE.match(/\.obx-field-head\{[^}]*\}/)
+    expect(rule).not.toBeNull()
+    expect(rule![0]).toContain('flex-wrap:wrap')
+    expect(rule![0]).not.toContain('flex-wrap:nowrap')
+  })
+
+  it('容器查询网格：field-head 整行占 row1，控件落 col2 row2，长 hint row3——不再落 176px 标签列', () => {
+    const wide = CLIENT_SOURCE.match(/@container obx \(min-width:720px\)\{[^}]*\{[^}]*\}[\s\S]*?\}",/)
+    expect(wide).not.toBeNull()
+    const block = CLIENT_SOURCE.match(/"@container obx \(min-width:720px\)\{(.*)\}",/)![1]
+    expect(block).toContain('.obx-field>.obx-field-head{grid-column:1/-1;grid-row:1}')
+    expect(block).toContain('.obx-field>.obx-input,.obx-field>.obx-select,.obx-field>.obx-textarea,.obx-field>.obx-control{grid-column:2;grid-row:2}')
+    expect(block).toContain('.obx-field>.obx-hint{grid-column:2/-1;grid-row:3}')
+    // 旧死规则（label/badge 已移入 field-head，直接子选择器永不命中）不得残留
+    expect(block).not.toContain('.obx-field>.obx-label')
+    expect(block).not.toContain('.obx-field>.obx-badge')
+  })
+
+  it('布尔/notice 行（--row）在两档容器查询断点内恢复 flex 左右布局，不被 display:grid 覆盖', () => {
+    const flexOverrides = CLIENT_SOURCE.match(/\.obx-field\.obx-field--row\{display:flex\}/g) ?? []
+    expect(flexOverrides.length).toBe(2) // min-width:720px 与 max-width:719px 两档各一处
+  })
+})
