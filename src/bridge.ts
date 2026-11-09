@@ -27,6 +27,8 @@ import type { AccessPolicyConfig } from './chat.js'
 import { buildPlatformPrompt } from './prompt.js'
 import { PromptLoader } from './prompt-setup.js'
 import { ChatTails, buildGreetingPrompt } from './chat-tails.js'
+// T7 (PR port 入站连发合并)：排队+合并独立模块（开关关闭时不实例化）。
+import { InboundScheduler } from './inbound-queue.js'
 import { isSilenceText } from './interim.js'
 import { registerTools } from './tools.js'
 import { tryHandleCommand as routeCommand, STEER_ACCEPTED_NOTICE, type CommandContext } from './commands.js'
@@ -164,6 +166,15 @@ export interface BridgeConfig {
   /** T4 (PR port 上下文尾巴)：/new 把上一会话最后几句带进新会话（默认关，
    * 裁定口径；落盘 mediaDir/chat-tails.json）。 */
   chatTailsEnabled?: boolean
+  /** T7 (PR port 入站连发合并)：入站排队+连发合并开关（默认关，裁定口径）；
+   * absent/false = 不排队不合并，handleInbound 走既有路径，与上游逐字节
+   * 等价。开启后每会话一条串行链，同会话紧挨的消息并成一条投递（斜杠命令
+   * 不合并、注入消息不排队不合并直接串行），全局积压 50 条超限丢弃并 warn。 */
+  inboxQueueEnabled?: boolean
+  /** T7 (PR port 入站连发合并)：合并窗口毫秒数——最后一条进来后等这么久再
+   * 投递，从首条算起最多 3000ms 封顶；absent → 600。仅在 inboxQueueEnabled
+   * 开启时生效（开关与延迟设置项同一配置组）。 */
+  inboxQueueDelayMs?: number
 }
 
 /** W1 trace/config extensions: the observability knobs ride as optional
@@ -334,6 +345,9 @@ export class ChatBridge {
   /** T4 (PR port 上下文尾巴)：/new 前的上一会话尾巴（防抖落盘 mediaDir/
    * chat-tails.json；默认关）。 */
   private readonly tails: ChatTails
+  /** T7 (PR port 入站连发合并)：入站排队+合并调度器；开关关闭（默认）时为
+   * undefined，handleInbound 保持既有路径（上游逐字节等价）。 */
+  private readonly inboundQueue: InboundScheduler | undefined
   /** T4 (P3): the bounded registry of recent fault references — every minted
    * QQ-CONN-/MF- number is recorded here for the /healthcheck report and the
    * diagnostics archive file name. */
@@ -395,6 +409,18 @@ export class ChatBridge {
     // T4 (PR port 提示词文件/上下文尾巴)：两个新域对象（都不碰网络行为）。
     this.prompts = new PromptLoader({ log: (level, message) => deps.log(level, message) })
     this.tails = new ChatTails({ mediaDir: deps.config.mediaDir, log: (level, message) => deps.log(level, message) })
+    // T7 (PR port 入站连发合并)：开关开启才构造调度器（deliver 复用既有
+    // handleInboundOnce；injectDeliver 与既有 handleInbound 的注入分支同一
+    // 形态——注入回合 ALS 包裹后直通本会话串行链，不排队不合并）。
+    this.inboundQueue = deps.config.inboxQueueEnabled === true
+      ? new InboundScheduler({
+          log: (level, message) => deps.log(level, message),
+          deliver: event => this.handleInboundOnce(event, false),
+          injectDeliver: event =>
+            runInjectRound({ traceId: newTraceId(), intercepted: 0 }, () => this.handleInboundOnce(event, true)),
+          ...(deps.config.inboxQueueDelayMs !== undefined ? { mergeWindowMs: deps.config.inboxQueueDelayMs } : {}),
+        })
+      : undefined
     this.registry = new ChatRegistry({
       agents: deps.agents,
       sessions: deps.sessions,
@@ -553,6 +579,9 @@ export class ChatBridge {
       this.sessionFlushOff()
       this.sessionFlushOff = undefined
     }
+    // T7 (PR port 入站连发合并)：连着发合并的定时器一并清掉，别在关闭途中
+    // 再投递（开关关闭时本句为 no-op）。
+    this.inboundQueue?.stop()
     await this.registry.stop()
     // T3 (P2): disarm the deferred silent-wait timers（pending 条目已落盘，
     // 重启后 loadPersisted 恢复跟踪续投）。
@@ -673,6 +702,9 @@ export class ChatBridge {
    * events are never recorded — no inject→record→replay feedback loop).
    */
   async handleInbound(event: OneBotEvent, opts: { injected?: boolean } = {}): Promise<void> {
+    // T7 (PR port): 连发合并开关开启时入站走排队+合并（注入直通不合并）；
+    // 开关关闭（默认）走既有路径——不构造调度器，行为与上游逐字节等价。
+    if (this.inboundQueue !== undefined) return this.inboundQueue.push(event, opts)
     const run = (): Promise<void> => this.handleInboundOnce(event, opts.injected === true)
     return opts.injected === true
       ? runInjectRound({ traceId: newTraceId(), intercepted: 0 }, run)

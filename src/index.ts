@@ -142,6 +142,12 @@ export interface Config {
   autoSteerPolicy: 'admin' | 'all'
   /** T3 (P2): 等待模型回复超时阈值（毫秒）——超时后登记补发跟踪、回合完成后向原聊天补发最终文字；0=关闭。 */
   deferredTimeoutMs: number
+  /** T7 (PR port 入站连发合并)：入站排队+连发合并开关；默认关（关侧与上游
+   *  逐字节等价）。开启后每会话一条串行链，同会话紧挨的消息并成一条投递。 */
+  inboxQueueEnabled: boolean
+  /** T7 (PR port 入站连发合并)：合并窗口毫秒数（最后一条进来后等这么久，
+   *  首条起最多 3000ms 封顶）；默认 600。仅在 inboxQueueEnabled 开启时生效。 */
+  inboxQueueDelayMs: number
   dmPolicy: 'open' | 'allowlist' | 'disabled'
   groupPolicy: 'open' | 'allowlist' | 'disabled'
   allowFrom: string[]
@@ -308,6 +314,10 @@ export const Config: Z<Config> = z.object({
     .description('steer 模式下自动插话的发送者资格（T9-B 用户裁决 2026-10-12）：admin（默认）=仅管理员可自动插话；all=所有非受限发送者均可。不具备资格的消息按排队处理；/steer 命令始终仅管理员、不受本项影响；queue 模式行为不变'),
   deferredTimeoutMs: z.number().default(600_000)
     .description('等待模型回复超时阈值（毫秒，T3/P2 超时补发）：回合超过该时长没有任何模型输出时提示超时并登记补发跟踪，任务完成后向原聊天自动补发最终文字（走既有出站管线）；发送明确失败最多尝试 3 次（退避），结果不确定时保留记录停止自动重试；/stop 终止该聊天的补发跟踪；0=关闭超时补发'),
+  inboxQueueEnabled: z.boolean().default(false)
+    .description('入站连发合并（T7 PR 移植）：开启后每个会话一条串行链（先到先答，带图慢消息不再插队），同会话紧挨的几条消息并成一条投递（斜杠命令不合并、注入消息不合并直接串行）；全局积压超过 50 条丢弃一条并记警告；已知代价：每条消息延迟约一个合并窗口（默认 600ms）才投递；默认关闭——关闭时不排队不合并，与上游行为逐字节等价'),
+  inboxQueueDelayMs: z.number().default(600)
+    .description('连发合并窗口（毫秒，T7 PR 移植）：同会话最后一条消息进来后等这么久再合并投递，从首条算起最多 3000ms 封顶；仅在 inboxQueueEnabled 开启时生效；0=立即投递（等同关闭合并，串行链仍生效）'),
   dmPolicy: z.union([z.const('open'), z.const('allowlist'), z.const('disabled')]).default('open')
     .description('私聊策略：open=仅管理员；allowlist=仅 allowFrom；disabled=拒绝所有私聊'),
   groupPolicy: z.union([z.const('open'), z.const('allowlist'), z.const('disabled')]).default('open')
@@ -674,6 +684,10 @@ export function apply(ctx: Context, config: Config): void {
       newMessagePolicy: config.newMessagePolicy,
       autoSteerPolicy: config.autoSteerPolicy,
       deferredTimeoutMs: config.deferredTimeoutMs,
+      // T7 (PR port 入站连发合并)：开关+延迟设置项透传（absent 语义由 bridge
+      // 侧缺省兜底：开关默认关、窗口默认 600ms）。
+      inboxQueueEnabled: config.inboxQueueEnabled,
+      inboxQueueDelayMs: config.inboxQueueDelayMs,
       interimMessages: config.interimMessages,
       interimRecallMs: config.interimRecallMs,
       interimRecall: config.interimRecall,

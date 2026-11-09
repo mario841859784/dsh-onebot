@@ -56,12 +56,13 @@ import type { WorkspaceRegistryLike } from './bridge.js'
 export const ENTRY_ID = 'dsh-onebot'
 /** Typert Remote 命名空间 = cordis 服务键（T1 §4）。 */
 export const NAMESPACE = 'onebotSettings'
-/** 快照固定值：全部键均为插件级热重启生效（T1 §5；T5 扩到 66 键同粒度）。 */
+/** 快照固定值：全部键均为插件级热重启生效（T1 §5；T5 扩到 66 键、T7 扩到 69 键同粒度）。 */
 export const REMOTE_EFFECT = 'restart'
 
-/** 设置页 UI 六组 67 键（T5：键表对齐贡献者 0.9.19 版——connection 13 /
- *  permissions 15 / behavior 9 / session 5 / media 15+T6 新增 1=16 /
- *  diagnostics 7；与 src/index.ts Config schema 一一对应，未入库功能的键
+/** 设置页 UI 六组 69 键（T5：键表对齐贡献者 0.9.19 版——connection 13 /
+ *  permissions 15 / behavior 9 / session 5 / media 15 / diagnostics 7；T6 media
+ *  组尾增 gifFramesEnabled=16、T7 behavior 组尾增 inboxQueueEnabled/
+ *  inboxQueueDelayMs=11；与 src/index.ts Config schema 一一对应，未入库功能的键
  *  先行进表、schema 定义随后批接上，见 PENDING_SCHEMA_KEYS）。T1 四组 29 键
  *  仍为前四组前缀，旧面板（lib/client.js 手写真相源，T8 重写）继续可渲染。
  *  分组沿用 W6 取舍：diagnostics 组 = 观测/调试面开关；session/media 两组来自
@@ -70,7 +71,7 @@ export const REMOTE_EFFECT = 'restart'
 export const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>> = {
   connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath', 'groupWorkspacePath', 'forceSessionId', 'dmPromptFile', 'groupPromptFile', 'allowPrivateHosts', 'ignoreSelf'],
   permissions: ['requireMention', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'replyCountsAsMention', 'atAllCountsAsMention', 'faceStyle', 'pokeEnabled', 'restrictedMemberPrefix', 'sensitivePatterns'],
-  behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs'],
+  behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs'],
   session: ['newSessionGreeting', 'firstMessageAsUser', 'memoryFilesEnabled', 'memoryFiles', 'agentPreset'],
   media: ['sttEnabled', 'sttEngine', 'sttCommand', 'sttArgs', 'sttModel', 'textImageEnabled', 'textImageThreshold', 'cardFooter', 'fontFiles', 'fontFamilies', 'outboundImageMaxBytes', 'maxVoiceBytes', 'maxFileBytes', 'inboundImageMaxPx', 'inboundFileMaxBytes', 'gifFramesEnabled'],
   diagnostics: ['actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun', 'logLevel'],
@@ -131,6 +132,10 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   autoSteerPolicy: 'admin',
   // T3 (P2)：等待模型回复超时阈值（毫秒；0=关闭超时补发）。
   deferredTimeoutMs: 600_000,
+  // T7 (PR port 入站连发合并)：开关默认关（关侧与上游逐字节等价）；合并窗口
+  // 600ms（首条起最多 3000ms 封顶，常量在 src/inbound-queue.ts）。
+  inboxQueueEnabled: false,
+  inboxQueueDelayMs: 600,
   // PENDING：新会话欢迎语/首条消息按用户身份发送。
   newSessionGreeting: true,
   firstMessageAsUser: true,
@@ -194,7 +199,7 @@ const ENUM_KEYS: Readonly<Record<string, readonly string[]>> = {
   logLevel: ['debug', 'info', 'warn', 'error'],
   sttEngine: ['auto', 'openai', 'whisper-cpp', 'custom'],
 }
-const NUMBER_KEYS: readonly string[] = ['port', 'interimRecallMs', 'rateLimitPerMinute', 'deferredTimeoutMs', 'textImageThreshold', 'chatIdleEvictDays', 'outboundImageMaxBytes', 'maxVoiceBytes', 'maxFileBytes', 'inboundImageMaxPx', 'inboundFileMaxBytes']
+const NUMBER_KEYS: readonly string[] = ['port', 'interimRecallMs', 'rateLimitPerMinute', 'deferredTimeoutMs', 'textImageThreshold', 'chatIdleEvictDays', 'outboundImageMaxBytes', 'maxVoiceBytes', 'maxFileBytes', 'inboundImageMaxPx', 'inboundFileMaxBytes', 'inboxQueueDelayMs']
 /** 数字键取值范围（评审 B4：port 1–65535、时长/频控 ≥0；越界在 Remote 层拒绝，不再只依赖宿主回滚兜底）。 */
 const NUMBER_RANGE: Readonly<Record<string, readonly [number, number | undefined]>> = {
   port: [1, 65535],
@@ -208,19 +213,23 @@ const NUMBER_RANGE: Readonly<Record<string, readonly [number, number | undefined
   maxFileBytes: [1, 4294967296],
   inboundImageMaxPx: [0, undefined],
   inboundFileMaxBytes: [0, undefined],
+  // T7：合并窗口毫秒数（≥0；0=立即投递，等同关闭合并但串行链仍生效）。
+  inboxQueueDelayMs: [0, undefined],
 }
-/** 布尔键白名单（T1 §4 + W6 + T5 键表 22 键 + T6 gifFramesEnabled：23 键）。 */
+/** 布尔键白名单（T1 §4 + W6 + T5 键表 22 键 + T6 gifFramesEnabled + T7
+ *  inboxQueueEnabled：24 键）。 */
 const BOOLEAN_KEYS: readonly string[] = [
   'requireMention', 'allowAllUsers', 'interimMessages', 'interimRecall', 'sendErrorNotice',
   'newSessionGreeting', 'replyCountsAsMention', 'atAllCountsAsMention',
   'actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun',
   'textImageEnabled', 'pokeEnabled', 'firstMessageAsUser', 'memoryFilesEnabled', 'ignoreSelf',
-  'sttEnabled', 'restrictedMemberPrefix', 'allowPrivateHosts', 'gifFramesEnabled',
+  'sttEnabled', 'restrictedMemberPrefix', 'allowPrivateHosts', 'gifFramesEnabled', 'inboxQueueEnabled',
 ]
 const STRING_KEYS: readonly string[] = ['host', 'url', 'accessToken', 'botQQ', 'workspacePath', 'groupWorkspacePath', 'forceSessionId', 'dmPromptFile', 'groupPromptFile', 'cardFooter', 'agentPreset', 'sttCommand', 'sttModel']
 const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'memoryFiles', 'sensitivePatterns', 'sttArgs', 'fontFiles', 'fontFamilies']
-/** 全部 67 键（校验与快照的唯一键集；9 枚举 + 11 数字 + 23 布尔 + 13 字符串 +
- *  10 字符串数组 + notices 单独通道；T6 新增 gifFramesEnabled）。 */
+/** 全部 69 键（校验与快照的唯一键集；9 枚举 + 12 数字 + 24 布尔 + 13 字符串 +
+ *  10 字符串数组 + notices 单独通道；T6 新增 gifFramesEnabled、T7 新增
+ *  inboxQueueEnabled/inboxQueueDelayMs）。 */
 export const ALL_KEYS: readonly string[] = [
   ...Object.keys(ENUM_KEYS), ...NUMBER_KEYS, ...BOOLEAN_KEYS, ...STRING_KEYS, ...STRING_ARRAY_KEYS, 'notices',
 ]
