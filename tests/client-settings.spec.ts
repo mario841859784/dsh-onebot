@@ -1,22 +1,25 @@
 /**
- * 客户端设置页 UI bundle 测试（T8 · 贡献者 0.9.19 版重写）。
+ * 客户端设置页 UI bundle 测试（T8 · 贡献者 0.9.19 版重写；0.10.0 视觉对齐更新）。
  *
  * 验证 src/client.ts（构建产物 lib/client.js，CJS 包裹挂 window.__ModuleLoader__）
  * 的模块级契约：
- *   ① 语法可解析（new Function）+ CJS banner/footer 形态 + externals 仅 react；
+ *   ① 语法可解析（new Function）+ CJS banner/footer 形态 + externals = react 与
+ *      宿主 UI 原语 seed 模块（@deepseek-ai/dsh-client-ui-primitives，缺失回落 shim）；
  *   ② 入口导出 inject + apply；T11 侧边栏入口成对注册（main + sidebar.panellist 同 id）；
- *   ③ 六组 68 键：分组/键序/默认值与宿主侧 src/settings-remote.ts 导出常量逐字
+ *   ③ 六组 69 键：分组/键序/默认值与宿主侧 src/settings-remote.ts 导出常量逐字
  *      一致（descriptor 契约核对，防两侧漂移）；notices 为 5 真键（无贡献者 newSession）；
  *   ④ Typert descriptor 与宿主服务方法面逐字对齐：getSettings() /
  *      updateSettings(patch, expectedRevision) / listWorkspaces()，全 positional，
  *      patch/config codec 覆盖全部 71 键（防客户端网关按 schema 剥键丢编辑）；
- *   ⑤ 渲染函数模块级可测：renderGroup 纯函数产出 68 键控件行；showIf 条件显隐；
- *      accessToken 密码型输入且不明文回显；boolean 行 role=switch 左右布局；
+ *   ⑤ 渲染函数模块级可测：renderGroup 纯函数产出 69 键控件行，控件经 opts.ui 依赖
+ *      注入（测试用桩，宿主 primitives / 回落 shim 同契约）；showIf 条件显隐；
+ *      accessToken 密码型输入且不明文回显；布尔行 Switch 左右布局；
  *      notices 行为组按 newMessagePolicy 档位显隐；
- *   ⑥ T8 补回上游缺口①：W6「非默认」徽标对所有类型键挂标（title=与默认值不同）；
- *   ⑦ T8 补回上游缺口②：诊断组折叠记忆（sessionStorage + details/summary）；
+ *   ⑥ W6「非默认」徽标对所有类型键挂标（title=与默认值不同，经 ui.Tag）；
+ *   ⑦ 0.10.0：诊断组折叠随页签式导航移除（无 details/summary、无 sessionStorage）；
  *   ⑧ 保存语义：computePatch 产出差异子集 patch；stringArray 宽分隔符；数字非法键
- *      不进 patch；mergeOnConflict 冲突合并；数字行内校验（NUMBER_RANGE 对齐 host）。
+ *      不进 patch；mergeOnConflict 冲突合并；数字行内校验（NUMBER_RANGE 对齐 host，
+ *      校验时机 = onChange 即时）。
  *
  * @module dsh-onebot/tests/client-settings
  */
@@ -68,7 +71,22 @@ function topFieldRows(section: StubElement): StubElement[] {
   return out
 }
 
-/** CJS 包裹装载：模拟 window.__ModuleLoader__.load + require('react') 外部表。 */
+/** ui 组件桩：与宿主 primitives / 回落 shim 同 props 契约（见 src/client.ts fallbackUi 注释）。 */
+const stubUiComponent = (name: string) => {
+  const component = (props: Record<string, unknown>) => stubReact.createElement(`ui-${name}`, props)
+  return component
+}
+const stubUi = {
+  Switch: stubUiComponent('switch'),
+  Checkbox: stubUiComponent('checkbox'),
+  Tag: stubUiComponent('tag'),
+  Button: stubUiComponent('button'),
+  SegmentedControl: stubUiComponent('segmented'),
+  SegmentedTabs: stubUiComponent('tabs'),
+  Input: stubUiComponent('input'),
+}
+
+/** CJS 包裹装载：模拟 window.__ModuleLoader__.load + require 外部表（react + 宿主原语 seed）。 */
 function loadClientModule(): Record<string, unknown> {
   const factories: Record<string, (request: (spec: string) => unknown) => unknown> = {}
   const globalWithWindow = globalThis as unknown as { window?: { __ModuleLoader__: unknown } }
@@ -78,8 +96,10 @@ function loadClientModule(): Record<string, unknown> {
   const factory = factories['dsh-onebot-qq']
   if (factory === undefined) throw new Error('lib/client.js 未注册 dsh-onebot-qq 模块')
   return factory((spec: string) => {
-    if (spec !== 'react') throw new Error(`unexpected external require: ${spec}`)
-    return stubReact
+    if (spec === 'react') return stubReact
+    // 宿主原语 seed 模块在测试环境缺席：bundle 侧 try/catch 回落 shim（同旧宿主路径）
+    if (spec === '@deepseek-ai/dsh-client-ui-primitives') throw new Error('seed 表缺席（测试环境）')
+    throw new Error(`unexpected external require: ${spec}`)
   }) as Record<string, unknown>
 }
 
@@ -96,6 +116,7 @@ const baseDraft = () => draft({ config: SNAPSHOT_CONFIG })
 const renderGroup = (groupId: string, opts: Record<string, unknown>) =>
   (client.renderGroup as Function)(stubReact, groups.find((entry) => entry.id === groupId), {
     draft: baseDraft(),
+    ui: stubUi,
     onChange: () => {},
     onSecretChange: () => {},
     onClearSecretChange: () => {},
@@ -116,10 +137,13 @@ describe('T8 客户端 bundle — 装载契约（CJS 包裹 / externals / 入口
     expect(CLIENT_SOURCE.trimEnd().endsWith('return module.exports;\n    }\n});')).toBe(true)
   })
 
-  it('externals 仅 react：文件内全部 require 调用都指向 react', () => {
+  it('externals = react + 宿主 UI 原语 seed 模块（缺失时 try/catch 回落 shim）', () => {
     const requireCalls = CLIENT_SOURCE.match(/require\s*\(/g) ?? []
     const reactCalls = CLIENT_SOURCE.match(/require\s*\(\s*["']react["']\s*\)/g) ?? []
-    expect(reactCalls.length).toBe(requireCalls.length)
+    expect(reactCalls.length).toBe(1)
+    expect(CLIENT_SOURCE).toContain('require(HOST_PRIMITIVES_ID)')
+    expect(CLIENT_SOURCE).toContain('@deepseek-ai/dsh-client-ui-primitives')
+    expect(requireCalls.length).toBe(reactCalls.length + 1) // 恰一处宿主原语 require（try/catch 包裹）
     expect(requireCalls.length).toBeGreaterThan(0)
   })
 
@@ -129,18 +153,19 @@ describe('T8 客户端 bundle — 装载契约（CJS 包裹 / externals / 入口
     expect(typeof client.OnebotSettingsPanel).toBe('function')
   })
 
-  it('除 react 外无运行时依赖：源码不引用 node: / @deepseek-ai 模块', () => {
-    expect(CLIENT_SOURCE).not.toMatch(/require\s*\(\s*["'](node:|@deepseek-ai\/|schemastery)/)
+  it('无 node:/npm 运行时依赖；@deepseek-ai 仅允许宿主原语 seed 模块', () => {
+    expect(CLIENT_SOURCE).not.toMatch(/require\s*\(\s*["'](node:|schemastery)/)
+    expect(CLIENT_SOURCE).not.toMatch(/require\s*\(\s*["']@deepseek-ai\/(?!dsh-client-ui-primitives")/)
     expect(CLIENT_SOURCE).not.toMatch(/\bimport\s/)
   })
 
-  it('T11 边界：侧边栏入口图标为自绘 SVG（externals 冻结仅 react，不引宿主 primitives 图标表）', () => {
+  it('T11 边界：侧边栏入口图标为自绘 SVG（QQ 专属图形，非宿主图标表）', () => {
     expect(CLIENT_SOURCE).toContain('sidebar.panellist') // T11：侧边栏列表槽注入
     expect(CLIENT_SOURCE).toContain('OnebotSidebarIcon')
     expect(CLIENT_SOURCE).toContain('SIDEBAR_PANEL_ID')
     expect(client.OnebotSidebarIcon).toBeTypeOf('function')
     expect(client.SIDEBAR_PANEL_ID).toBe('qq-bot')
-    expect(CLIENT_SOURCE).toContain('ui-svg') // 面板构建标记保留
+    expect(CLIENT_SOURCE).toContain('ui-native') // 面板构建标记（0.10.0 原生 UI 重写）
   })
 })
 
@@ -306,9 +331,9 @@ describe('T8 notices 面板 — 5 真键（本仓 schema 无贡献者 newSession
     expect(rendered).not.toContain('插话提示')
   })
 
-  it('通知行 = role=switch 开关 + 开启时文案 textarea（aria-label=「XX提示文案」）', () => {
+  it('通知行 = Switch 桩开关 + 开启时文案 textarea（aria-label=「XX提示文案」）', () => {
     const elements = walk(renderGroup('behavior', { onNoticeChange: () => {} }))
-    const switches = elements.filter((element) => element.props.role === 'switch' && String(element.props['aria-label'] ?? '').includes('提示'))
+    const switches = elements.filter((element) => element.type === stubUi.Switch && String(element.props.label ?? '').includes('提示'))
     expect(switches.length).toBeGreaterThanOrEqual(3)
     const textareas = elements.filter((element) => element.type === 'textarea' && String(element.props['aria-label'] ?? '').endsWith('文案'))
     expect(textareas).toHaveLength(4)
@@ -339,7 +364,12 @@ describe('T8 showIf 条件显隐 — 贡献者面板交互契约', () => {
   const connection = groups.find((group) => group.id === 'connection')!
   const visibleLabels = (groupId: string, draftOverrides: Record<string, unknown>) => {
     const section = renderGroup(groupId, { draft: { ...baseDraft(), ...draftOverrides } })
-    return walk(section).filter((element) => element.props.className === 'obx-label').map((element) => element.children[0])
+    return walk(section).flatMap((element) => {
+      if (element.props.className === 'obx-label') return [element.children[0]]
+      // 文本/分段控件的 label 在 ui 桩 props 上（原生组件自渲染 label）
+      if (element.type === stubUi.Input || element.type === stubUi.SegmentedControl) return [element.props.label]
+      return []
+    })
   }
 
   it('mode 联动：forward 显 url 隐 host/port；reverse 显 host/port 隐 url', () => {
@@ -395,44 +425,50 @@ describe('T8 showIf 条件显隐 — 贡献者面板交互契约', () => {
   })
 })
 
-describe('T8 客户端 bundle — 渲染函数模块级可测（renderGroup 纯函数）', () => {
-  it('六组各产出标题与逐字段控件行；控件类型齐备（9 下拉 + 12 多行文本 + 30 开关 + 17 文本框 + 1 密码框）', () => {
+describe('T8 客户端 bundle — 渲染函数模块级可测（renderGroup 纯函数，ui 桩注入）', () => {
+  it('六组各产出标题与逐字段控件行；控件类型齐备（9 分段 + 12 多行文本 + 30 开关 + 17 文本输入 + 1 密码框 + 1 清除勾选）', () => {
     const sections = groups.map((group) => renderGroup(group.id, {}))
     expect(sections.map((section) => section.props['data-group'])).toEqual(['connection', 'permissions', 'behavior', 'session', 'media', 'diagnostics'])
     const elements = sections.flatMap((section) => walk(section))
-    const inputs = elements.filter((element) => element.type === 'input') as Array<StubElement & { props: Record<string, unknown> }>
-    expect(elements.filter((element) => element.type === 'select')).toHaveLength(9) // 9 枚举全显
+    expect(elements.filter((element) => element.type === stubUi.SegmentedControl)).toHaveLength(9) // 9 枚举全显（原生分段控件）
     expect(elements.filter((element) => element.type === 'textarea')).toHaveLength(12) // 8 可见 stringArray + 4 通知文案
-    expect(inputs.filter((input) => input.props.type === 'checkbox')).toHaveLength(1) // 仅 secret 清除勾选（布尔改用开关）
+    const inputs = elements.filter((element) => element.type === stubUi.Input)
     expect(inputs.filter((input) => input.props.type === 'text')).toHaveLength(17) // 8 可见 number + 9 可见 string
     expect(inputs.filter((input) => input.props.type === 'password')).toHaveLength(1)
-    expect(elements.filter((element) => element.props.role === 'switch')).toHaveLength(30) // 26 布尔 + 4 通知开关
+    expect(elements.filter((element) => element.type === stubUi.Switch)).toHaveLength(30) // 26 布尔 + 4 通知开关
+    expect(elements.filter((element) => element.type === stubUi.Checkbox)).toHaveLength(1) // 仅 secret 清除勾选
+    expect(elements.filter((element) => element.type === 'input')).toHaveLength(0) // 控件全走 ui 桩；原始 input 不再出现
   })
 
-  it('布尔行左右布局：整行 role=switch，aria-checked 跟随草稿值（贡献者 SVG 开关语义）', () => {
+  it('布尔行左右布局：Switch 桩收 checked/label/disabled（aria 语义由宿主组件承担）', () => {
     const diagnostics = groups.find((group) => group.id === 'diagnostics')!
     const section = renderGroup('diagnostics', { draft: { ...baseDraft(), traceEnabled: true } })
-    const switches = walk(section).filter((element) => element.props.role === 'switch' && String(element.props['aria-label'] ?? '').includes('决策追踪'))
+    const switches = walk(section).filter((element) => element.type === stubUi.Switch && String(element.props.label ?? '').includes('决策追踪'))
     expect(switches).toHaveLength(1)
-    expect(switches[0].props['aria-checked']).toBe('true')
+    expect(switches[0].props.checked).toBe(true)
     expect(diagnostics.fields.find((field) => field.key === 'traceEnabled')).toBeDefined()
   })
 
-  it('accessToken 密码型输入且不明文回显：value 恒空、树内不含明文；已配置走脱敏徽标', () => {
+  it('accessToken 密码型输入且不明文回显：value 恒空、树内不含明文；状态徽标 + 清除勾选三态齐备', () => {
     const snapshot = { config: { ...SNAPSHOT_CONFIG, accessToken: 'super-secret-token' } }
     const redactedDraft = draft(snapshot)
     expect(redactedDraft.accessToken).toBe('') // draftFromSnapshot 脱敏：明文绝不进入草稿
     const section = renderGroup('connection', { draft: redactedDraft, secretSet: true })
     const elements = walk(section)
-    const passwordInputs = elements.filter((element) => element.type === 'input' && (element.props as Record<string, unknown>).type === 'password') as Array<StubElement & { props: Record<string, unknown> }>
+    const passwordInputs = elements.filter((element) => element.type === stubUi.Input && element.props.type === 'password')
     expect(passwordInputs).toHaveLength(1)
     expect(passwordInputs[0].props.value).toBe('')
     expect(passwordInputs[0].props.placeholder).toBe('••••••••••••••••')
     expect(JSON.stringify(elements)).not.toContain('super-secret-token')
     expect(JSON.stringify(elements)).toContain('已配置（脱敏，不回显）')
     const section2 = renderGroup('connection', { secretSet: false, clearSecret: true })
-    expect(JSON.stringify(walk(section2))).toContain('未配置')
-    expect(JSON.stringify(walk(section2))).toContain('清除已保存的 AccessToken')
+    const elements2 = walk(section2)
+    expect(JSON.stringify(elements2)).toContain('未配置') // secretSet:false + 勾清除仍显「未配置」（既有契约）
+    expect(JSON.stringify(elements2)).not.toContain('保存后清空')
+    const checkboxes = elements2.filter((element) => element.type === stubUi.Checkbox)
+    expect(checkboxes).toHaveLength(1)
+    expect(checkboxes[0].props.label).toBe('清除已保存的 AccessToken')
+    expect(checkboxes[0].props.checked).toBe(true)
   })
 })
 
@@ -441,6 +477,7 @@ describe('T8 补回上游缺口① — W6「非默认」徽标（所有类型键
     return groups
       .flatMap((group) => (client.renderGroup as Function)(stubReact, group, {
         draft: draftValues,
+        ui: stubUi,
         nonDefaultKeys,
         secretSet: false,
         clearSecret: false,
@@ -450,7 +487,8 @@ describe('T8 补回上游缺口① — W6「非默认」徽标（所有类型键
         onNoticeChange: () => {},
       }))
       .flatMap((section) => walk(section))
-      .filter((element) => element.type === 'span' && (element.props as Record<string, unknown>).className === 'obx-badge')
+      // W6 徽标 = children 带「与默认值不同」title 的 Tag；密文状态徽标（未配置等）不计
+      .filter((element) => element.type === stubUi.Tag && JSON.stringify(element).includes('与默认值不同'))
   }
 
   it('nonDefaultKeys 命中的键打「非默认」徽标且带 title，未命中不打', () => {
@@ -459,7 +497,8 @@ describe('T8 补回上游缺口① — W6「非默认」徽标（所有类型键
     const traceBadges = badges(draftValues, ['traceEnabled'])
     expect(traceBadges).toHaveLength(1)
     expect(JSON.stringify(traceBadges[0])).toContain('非默认')
-    expect((traceBadges[0].props as Record<string, unknown>).title).toBe('与默认值不同')
+    // title 挂在 children span 上（宿主 Tag 不透传多余 props）
+    expect(JSON.stringify(traceBadges[0])).toContain('与默认值不同')
   })
 
   it('T8 语义恢复：不限字段类型——string/number/stringArray/enum 键命中同样挂标（贡献者只给 boolean/enum 挂，上游 W6 全键）', () => {
@@ -467,7 +506,7 @@ describe('T8 补回上游缺口① — W6「非默认」徽标（所有类型键
     const hits = ['botQQ', 'rateLimitPerMinute', 'allowFrom', 'faceStyle', 'traceEnabled'] // string/number/stringArray/enum/boolean
     const found = badges(draftValues, hits)
     expect(found).toHaveLength(5)
-    for (const badge of found) expect((badge.props as Record<string, unknown>).title).toBe('与默认值不同')
+    for (const badge of found) expect(JSON.stringify(badge)).toContain('与默认值不同')
   })
 
   it('徽标数据源是快照生效值 vs DEFAULTS（纯客户端计算）：默认快照无任何徽标，改值后对应键出现徽标', () => {
@@ -483,40 +522,19 @@ describe('T8 补回上游缺口① — W6「非默认」徽标（所有类型键
   })
 })
 
-describe('T8 补回上游缺口② — 诊断组折叠记忆（sessionStorage + details/summary）', () => {
-  it('渲染契约：collapsible 时 details>summary（aria-expanded/controls、open 受控）+ summary meta + 脏标记，7 字段行不减少', () => {
-    const collapsed = renderGroup('diagnostics', { collapsible: { open: false, summaryMeta: '7 项 · 2 项默认开' } })
-    expect(collapsed.type).toBe('details')
-    expect(collapsed.props['data-group']).toBe('diagnostics')
-    expect(collapsed.props.open).toBe(false)
-    expect(collapsed.props.className).toBe('obx-group obx-group--collapsible')
-    const summary = collapsed.children[0] as StubElement
-    expect(summary.type).toBe('summary')
-    expect(summary.props['aria-expanded']).toBe(false)
-    expect(String(summary.props['aria-controls'])).toContain('diagnostics')
-    expect(JSON.stringify(summary)).toContain('诊断')
-    expect(JSON.stringify(summary)).toContain('7 项 · 2 项默认开')
-    expect(JSON.stringify(summary)).not.toContain('含未保存修改')
-    expect(topFieldRows(collapsed)).toHaveLength(7)
-    const expanded = renderGroup('diagnostics', { collapsible: { open: true, summaryMeta: '7 项 · 2 项默认开', dirtyMark: '● 含未保存修改' } })
-    const summary2 = expanded.children[0] as StubElement
-    expect(summary2.props['aria-expanded']).toBe(true)
-    expect(JSON.stringify(summary2)).toContain('● 含未保存修改')
-  })
-
-  it('缺省（无 collapsible）保持 section 形态；诊断组仍 7 行', () => {
+describe('0.10.0 页签式导航 — 诊断组折叠随折叠交互移除', () => {
+  it('诊断组常规 section 形态（无 details/summary 折叠），7 字段行', () => {
     const section = renderGroup('diagnostics', {})
     expect(section.type).toBe('section')
+    expect(section.props['data-group']).toBe('diagnostics')
     expect(topFieldRows(section)).toHaveLength(7)
   })
 
-  it('折叠记忆落位（源码断言）：sessionStorage 键定义 + 读写 + 面板只对 diagnostics 组传 collapsible', () => {
-    expect(CLIENT_SOURCE).toContain('var DIAGNOSTICS_EXPANDED_KEY = PLUGIN_ID + ".diagnosticsExpanded";')
-    expect(CLIENT_SOURCE).toContain('return window.sessionStorage.getItem(DIAGNOSTICS_EXPANDED_KEY) === "1";')
-    expect(CLIENT_SOURCE).toContain('window.sessionStorage.setItem(DIAGNOSTICS_EXPANDED_KEY, nextOpen ? "1" : "0");')
-    expect(CLIENT_SOURCE).toContain('collapsible: group.id === "diagnostics"')
-    expect(CLIENT_SOURCE).toContain('summaryMeta: format(t("diagnostics.summary")')
-    expect(CLIENT_SOURCE).toContain('dirtyMark: diagnosticsDirty === true ? t("diagnostics.dirtyMark") : null')
+  it('折叠记忆源码已移除（持久化 API/diagnosticsExpanded/summary 词条不再出现）', () => {
+    expect(CLIENT_SOURCE).not.toContain('DIAGNOSTICS_EXPANDED_KEY =')
+    expect(CLIENT_SOURCE).not.toContain('window.sessionStorage')
+    expect(CLIENT_SOURCE).not.toContain('diagnostics.summary')
+    expect(CLIENT_SOURCE).not.toContain('collapsible')
   })
 })
 
@@ -629,30 +647,24 @@ describe('T8 数字行内校验 — NUMBER_RANGE 对齐 host + numberRangeInvali
     expect(numberRangeInvalid({ key: 'botQQ', type: 'string' }, 'x')).toBeNull()
   })
 
-  it('越界标红：number 输入挂 obx-input--invalid + aria-invalid + 红字提示；blur 触发 onNumberBlur', () => {
+  it('越界标红：number 控件 aria-invalid 透传 + hint 行内嵌红字；校验时机 = onChange 即时', () => {
     const connection = groups.find((group) => group.id === 'connection')!
     const section = (client.renderGroup as Function)(stubReact, connection, {
       draft: { ...baseDraft(), mode: 'reverse' }, // reverse 档位 port 才可见（showIf）
+      ui: stubUi,
       invalidNumbers: { port: '必须是 1–65535 的有限数字' },
       onChange: () => {},
       onSecretChange: () => {},
       onClearSecretChange: () => {},
     }) as StubElement
-    const input = walk(section).find((element) => String(element.props.className).includes('obx-input--number'))!
-    expect(String(input.props.className)).toContain('obx-input--invalid')
-    expect(input.props['aria-invalid']).toBe('true')
-    const blurred: Array<[string, string]> = []
-    const section2 = (client.renderGroup as Function)(stubReact, connection, {
-      draft: { ...baseDraft(), mode: 'reverse' },
-      onNumberBlur: (field: { key: string }, raw: string) => { blurred.push([field.key, raw]) },
-      onChange: () => {},
-      onSecretChange: () => {},
-      onClearSecretChange: () => {},
-    }) as StubElement
-    const portInput = walk(section2).find((element) => String(element.props.className).includes('obx-input--number'))!
-    ;(portInput.props.onBlur as (event: { target: { value: string } }) => void)({ target: { value: '70000' } })
-    expect(blurred).toEqual([['port', '70000']])
-    expect(CLIENT_SOURCE).toContain('onNumberBlur: handleNumberBlur')
+    const rendered = JSON.stringify(walk(section))
+    expect(rendered).toContain('obx-hint--invalid') // 红字范围提示内嵌 hint 行
+    expect(rendered).toContain('必须是 1–65535 的有限数字')
+    const narrowControl = walk(section).find((element) => element.props.className === 'obx-control--narrow')!
+    const portInput = walk(narrowControl).find((element) => element.type === stubUi.Input)!
+    expect(portInput.props['aria-invalid']).toBe(true)
+    // tsc 会把单行 if 块展开为多行，这里用正则匹配调用接线（0.10.0 起 onChange 即时校验）
+    expect(CLIENT_SOURCE).toMatch(/if \(field\.type === "number"\)\s*\{\s*validateNumberField\(field, nextValue\);/)
     expect(CLIENT_SOURCE).toContain('disabled: busy || dirtyCount === 0 || invalidNumberCount > 0')
   })
 })
@@ -739,9 +751,10 @@ describe('T8 workspace 快速填入 — fillWorkspacePath 双键（workspacePath
     expect(compute(fillWorkspacePath(baseDraft(), ''), SNAPSHOT_CONFIG).patch).toEqual({})
   })
 
-  it('picker 正常态：select（value=id，label=path（N 会话））+「填入」按钮；降级态说明行', () => {
+  it('picker 正常态：select（value=id，label=path（N 会话））+「填入」按钮（ui 桩）；降级态说明行', () => {
     const renderPicker = client.renderWorkspacePicker as (react: unknown, opts: Record<string, unknown>) => StubElement | null
     const pickerOpts = (overrides: Record<string, unknown> = {}) => ({
+      ui: stubUi,
       loaded: true,
       available: true,
       workspaces: [
@@ -762,10 +775,10 @@ describe('T8 workspace 快速填入 — fillWorkspacePath 双键（workspacePath
     const options = select.children as StubElement[]
     expect(options.map((option) => option.props.value)).toEqual(['', 'ws-1', 'ws-2'])
     expect(options.map((option) => option.children[0])).toEqual(['选择 workspace…', '/vol2/ws/alpha（3 会话）', '/vol2/ws/beta（0 会话）'])
-    expect(elements.find((element) => element.type === 'button')!.props.disabled).toBe(true)
+    expect(elements.find((element) => element.type === stubUi.Button)!.props.disabled).toBe(true)
     const applied: unknown[] = []
     const selected = renderPicker(stubReact, pickerOpts({ selectedId: 'ws-2', onApply: (path: string) => { applied.push(path) } }))!
-    const button = walk(selected).find((element) => element.type === 'button')!
+    const button = walk(selected).find((element) => element.type === stubUi.Button)!
     expect(button.props.disabled).toBe(false)
     button.props.onClick()
     expect(applied).toEqual(['/vol2/ws/beta']) // 填的是 path，不是 id
@@ -803,37 +816,35 @@ describe('T8 失败守卫 — host edit-failed 中文错误可渲染且不误判
   })
 })
 
-describe('T23 设置页布局 — 行内 hint 回落与容器查询网格修正', () => {
-  it('hint-inline 不可压缩成竖排：nowrap + overflow ellipsis 兜底（flex 收缩极限为单行截断）', () => {
-    const rule = CLIENT_SOURCE.match(/\.obx-hint-inline\{[^}]*\}/)
+describe('0.10.0 设置页样式 — dsw token 对齐（页骨架/发丝分隔/布局分支收敛）', () => {
+  it('面板容器：960px 居中内容列（宿主原生页口径），token 引用宿主 --dsw-*', () => {
+    const rule = CLIENT_SOURCE.match(/\.obx-panel\{[^}]*\}/)
     expect(rule).not.toBeNull()
-    expect(rule![0]).toContain('white-space:nowrap')
-    expect(rule![0]).toContain('overflow:hidden')
-    expect(rule![0]).toContain('text-overflow:ellipsis')
-    expect(rule![0]).toContain('min-width:0')
+    expect(rule![0]).toContain('max-width:960px')
+    expect(rule![0]).toContain('margin-inline:auto')
+    expect(rule![0]).toContain('var(--dsw-alias-label-primary')
+    expect(rule![0]).toContain('var(--dsw-radius-md,12px)')
   })
 
-  it('回落布局存在：field-head 允许换行（flex-wrap:wrap），hint 窄容器下折到整行而非逐字竖排', () => {
-    const rule = CLIENT_SOURCE.match(/\.obx-field-head\{[^}]*\}/)
-    expect(rule).not.toBeNull()
-    expect(rule![0]).toContain('flex-wrap:wrap')
-    expect(rule![0]).not.toContain('flex-wrap:nowrap')
+  it('字段行发丝分隔：0.5px + 宿主 border-l2 别名（原生表单形态）；组头/子标题后首行无线', () => {
+    const field = CLIENT_SOURCE.match(/\.obx-field\{[^}]*\}/)
+    expect(field).not.toBeNull()
+    expect(field![0]).toContain('border-top:.5px solid var(--obx-hairline)')
+    expect(CLIENT_SOURCE).toContain('.obx-group-head+.obx-field,.obx-subgroup-title+.obx-field{border-top:none}')
   })
 
-  it('容器查询网格：field-head 整行占 row1，控件落 col2 row2，长 hint row3——不再落 176px 标签列', () => {
-    const wide = CLIENT_SOURCE.match(/@container obx \(min-width:720px\)\{[^}]*\{[^}]*\}[\s\S]*?\}",/)
-    expect(wide).not.toBeNull()
-    const block = CLIENT_SOURCE.match(/"@container obx \(min-width:720px\)\{(.*)\}",/)![1]
-    expect(block).toContain('.obx-field>.obx-field-head{grid-column:1/-1;grid-row:1}')
-    expect(block).toContain('.obx-field>.obx-input,.obx-field>.obx-select,.obx-field>.obx-textarea,.obx-field>.obx-control{grid-column:2;grid-row:2}')
-    expect(block).toContain('.obx-field>.obx-hint{grid-column:2/-1;grid-row:3}')
-    // 旧死规则（label/badge 已移入 field-head，直接子选择器永不命中）不得残留
-    expect(block).not.toContain('.obx-field>.obx-label')
-    expect(block).not.toContain('.obx-field>.obx-badge')
+  it('布局分支收敛：容器查询网格/行内 hint/自造紫色 accent 已移除（label 上、hint 下统一纵向）', () => {
+    expect(CLIENT_SOURCE).not.toContain('@container')
+    expect(CLIENT_SOURCE).not.toContain('obx-hint-inline')
+    expect(CLIENT_SOURCE).not.toContain('obx-input--invalid')
+    expect(CLIENT_SOURCE).not.toContain('--obx-accent')
+    expect(CLIENT_SOURCE).not.toContain('#6e57af')
   })
 
-  it('布尔/notice 行（--row）在两档容器查询断点内恢复 flex 左右布局，不被 display:grid 覆盖', () => {
-    const flexOverrides = CLIENT_SOURCE.match(/\.obx-field\.obx-field--row\{display:flex\}/g) ?? []
-    expect(flexOverrides.length).toBe(2) // min-width:720px 与 max-width:719px 两档各一处
+  it('自造视觉体系退出：SVG 开关/胶囊页签/密文自绘徽标不再出现（控件交宿主 primitives）', () => {
+    expect(CLIENT_SOURCE).not.toContain('obx-toggle--svg')
+    expect(CLIENT_SOURCE).not.toContain('obx-btn--pill')
+    expect(CLIENT_SOURCE).not.toContain('obx-secret-badge')
+    expect(CLIENT_SOURCE).not.toContain('obx-tab{')
   })
 })

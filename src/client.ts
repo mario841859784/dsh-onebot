@@ -37,6 +37,7 @@ declare const document: any;
  * T8 相对贡献者版的差异（编排者评审硬要求 + 本仓裁决）：
  *   1. 补回上游缺口①：W6「非默认」徽标（值≠默认值的键一律挂标，title=与默认值不同）；
  *   2. 补回上游缺口②：诊断组折叠记忆（sessionStorage，details/summary 原生折叠）；
+ *      （0.10.0 起诊断组改独立页签，组内折叠取消，sessionStorage 记忆随之移除）
  *   3. 键表对齐 src/settings-remote.ts：+forceSessionId/gifFramesEnabled/
  *      inboxQueueEnabled/inboxQueueDelayMs，DEFAULTS 取本仓拍板值
  *      （dmPromptFile/groupPromptFile/memoryFilesEnabled 关）；
@@ -45,6 +46,17 @@ declare const document: any;
  *   6. T11：首页左侧边栏「QQ 机器人」入口（sidebarEntryEnabled 开关，main 与
  *      sidebar.panellist 同 id "qq-bot" 成对注册；false 时两者均不注册）。
  * 任一侧变更 descriptor/分组/键集/默认值时，必须同步本文件并在 DEVLOG 记录。
+ *
+ * 0.10.0 视觉对齐（宿主原生风格重写）：
+ *   - 控件层改用宿主前端静态 seed 模块 @deepseek-ai/dsh-client-ui-primitives
+ *     （Switch/SegmentedControl/SegmentedTabs/Tag/Checkbox/SettingsValueField/
+ *     SettingsSecretField 等；require 走宿主 seed 表，非 npm 依赖，manifest 零改动），
+ *     组件 CSS 随宿主全局样式表加载，主题/明暗跟随宿主，不再自造视觉体系；
+ *   - 宿主 seed 表缺席（旧宿主）时回落到本文件极简 shim（同 props 契约，视觉
+ *     经本文件 CSS 以 --dsw-* token + 字面回落值渲染）；
+ *   - renderGroup/renderWorkspacePicker 经 opts.ui 依赖注入取组件（模块级纯函数
+ *     与单测桩注入契约不变）；页面骨架对齐宿主原生页：居中 960px 内容列、
+ *     20px/500 标题、SegmentedTabs 页签、SettingsForm 式底部保存条。
  *
  * 生效语义（T1 §5）：19 键统一「保存即热生效」——插件 fiber 秒级原地重启，
  * QQ 桥（NapCat ws-reverse/forward）自动重连；在途回合中断、频控窗口与中间
@@ -58,13 +70,32 @@ window.__ModuleLoader__.load({
 		var module: any = { exports: {} };
 		var exports = module.exports;
 
-		//#region 外部模块（平台冻结表内：react）
+		//#region 外部模块（平台冻结表内：react + 宿主 UI 原语 seed 模块）
 		var reactModule = require("react");
 		var React = reactModule != null && typeof reactModule.createElement === "function"
 			? reactModule
 			: reactModule.default;
 		if (React == null || typeof React.createElement !== "function") {
 			throw new Error("dsh-onebot client: react 不可用");
+		}
+		/**
+		 * 宿主 UI 原语（0.10.0 视觉对齐）。@deepseek-ai/dsh-client-ui-primitives 是
+		 * 宿主前端启动时注入的静态 seed 模块（dsh-web-app staticModules 表，与 react
+		 * 同级），require 即得；其组件 CSS 已随宿主全局样式表加载，无需本插件注入。
+		 * seed 表缺席（引擎下限的旧宿主）时 require 抛错 → 回落 fallbackUi shim：
+		 * 同 props 契约的极简实现，视觉经本文件 CSS（--dsw-* token + 字面回落值）。
+		 */
+		var HOST_PRIMITIVES_ID = "@deepseek-ai/dsh-client-ui-primitives";
+		var hostPrimitives = null;
+		try {
+			var primitiveModule = require(HOST_PRIMITIVES_ID);
+			hostPrimitives = primitiveModule != null && typeof primitiveModule.Switch === "function"
+				? primitiveModule
+				: primitiveModule != null && primitiveModule.default != null && typeof primitiveModule.default.Switch === "function"
+					? primitiveModule.default
+					: null;
+		} catch (error) {
+			hostPrimitives = null; // 旧宿主无 seed 表：走回落 shim
 		}
 		//#endregion
 
@@ -672,8 +703,6 @@ window.__ModuleLoader__.load({
 			"secret.clearHint": "将清除已保存的值",
 			"field.modeInactive": "当前模式不生效",
 			"workspace.fetchFailed": "本次拉取 workspace 列表失败，可直接输入路径。",
-			"diagnostics.summary": "{total} 项 · {enabled} 项默认开",
-			"diagnostics.dirtyMark": "● 含未保存修改",
 			"group.connection.desc": "连 NapCat 的通道",
 			"group.permissions.desc": "谁能触发与使用",
 			"group.behavior.desc": "回复与限流",
@@ -716,8 +745,6 @@ window.__ModuleLoader__.load({
 			"secret.clearHint": "The saved value will be cleared",
 			"field.modeInactive": "Not active in the current mode",
 			"workspace.fetchFailed": "Couldn't fetch the workspace list this time — you can type a path directly.",
-			"diagnostics.summary": "{total} items · {enabled} on by default",
-			"diagnostics.dirtyMark": "● Unsaved changes",
 			"group.connection.desc": "How it links to NapCat",
 			"group.permissions.desc": "Who can trigger it",
 			"group.behavior.desc": "Replies and limits",
@@ -741,147 +768,89 @@ window.__ModuleLoader__.load({
 		//#endregion
 
 		//#region 面板样式（一次注入，随插件卸载移除；类名前缀 obx-）
-		// 批 1 视觉基线（docs/design/settings-page-visual-proposal.md §1–§6）：
-		// §5.1 token 表色值逐字采用（WCAG AA 实测校准），不自创/不改值；
-		// 附加的 -bg / --obx-card-border / --obx-error-ring 为方案正文（§2/§3.1/§4.2）
-		// 点名引用而 §5.1 未列值的衍生位——卡片描边延续现状组分隔发丝线色值，
-		// 横幅浅底取同 hue alpha 淡化（延续原 error 浅底 .08 同族）。
+		// 0.10.0 视觉对齐：token 全部引用宿主 --dsw-*（明暗/主题跟随宿主，不自造色值）；
+		// 每个引用带字面回落值——仅在宿主 token 缺席的极端环境兜底。控件本体（开关/
+		// 分段/按钮/徽标/输入框）在宿主 primitives 在位时由宿主 CSS 渲染，下列控件
+		// 规格仅为回落 shim 与 textarea/select（宿主无表单级 textarea/select 原语）服务，
+		// 度量对齐宿主原生控件（Input 32px/.5px l4 边/radius-md、开关 36×20、分段 26px）。
 		var CSS = [
-			".obx-panel{--obx-fg:inherit;--obx-fg-muted:#6b7280;--obx-border:rgba(128,128,128,.75);--obx-border-strong:rgba(128,128,128,1);--obx-card-bg:rgba(128,128,128,.06);--obx-card-border:rgba(128,128,128,.2);--obx-input-bg:transparent;--obx-accent:var(--dsh-accent,#6e57af);--obx-focus-ring:rgba(110,87,175,.45);--obx-error:#e5484d;--obx-error-text:#d93036;--obx-error-bg:rgba(229,72,77,.10);--obx-error-ring:rgba(229,72,77,.45);--obx-warning:#d97706;--obx-warning-text:#92400e;--obx-warning-bg:rgba(217,119,6,.12);--obx-success:#2f9e63;--obx-success-text:#1a7f4b;--obx-success-bg:rgba(47,158,99,.10);--obx-switch-off:rgba(128,128,128,.45);--obx-switch-knob:#ffffff;--obx-radius-sm:6px;--obx-radius-md:8px;--obx-radius-lg:10px;--obx-fs-xs:11px;--obx-fs-sm:12px;--obx-fs-base:13px;--obx-fs-md:14px;--obx-fs-lg:16px;--obx-space-1:4px;--obx-space-2:8px;--obx-space-3:12px;--obx-space-4:16px;--obx-space-5:20px;--obx-space-6:24px;--obx-dur-fast:150ms ease;display:flex;flex-direction:column;gap:16px;font-size:var(--obx-fs-md);line-height:1.5;max-width:720px;container-type:inline-size;container-name:obx}",
-			"@media (prefers-color-scheme: dark){.obx-panel{--obx-fg-muted:#9ca3af;--obx-border:rgba(255,255,255,.35);--obx-border-strong:rgba(255,255,255,.5);--obx-card-bg:rgba(128,128,128,.10);--obx-card-border:rgba(128,128,128,.2);--obx-accent:var(--dsh-accent,#8f79d6);--obx-focus-ring:rgba(143,121,214,.55);--obx-error-text:#ff8a8a;--obx-warning-text:#fbbf24;--obx-success-text:#4ade80;--obx-switch-off:rgba(128,128,128,.55);--obx-switch-knob:#e8e8e8}}",
-			// §1 结构：720px 内容上限（左对齐不居中，由块级布局天然实现）
-			".obx-title{font-size:var(--obx-fs-lg);font-weight:600;margin:0}",
-			".obx-desc{color:var(--obx-fg-muted);font-size:var(--obx-fs-sm);margin:4px 0 0}",
-			".obx-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}",
-			".obx-spacer{flex:1}",
-			// §4.2：revision 徽章 / entryInactive 升级 pill（badge 族 11px）
-			".obx-meta{color:var(--obx-fg-muted);font-size:var(--obx-fs-xs);border:1px solid var(--obx-border);border-radius:999px;padding:1px 8px}",
-			".obx-warn{color:var(--obx-warning-text);background:var(--obx-warning-bg);border-color:var(--obx-warning)}",
-			// §4.2 反馈三态：左 3px 实色条 + 浅底 + 前置图标（CSS ::before 字形，DOM 零增节点；
-			// 冲突态 obx-error--conflict 批 3 起由面板显式冲突状态挂载，见 OnebotSettingsPanel）
-			".obx-error{border:1px solid var(--obx-error);border-left-width:3px;background:var(--obx-error-bg);color:var(--obx-error-text);border-radius:var(--obx-radius-md);padding:10px 12px;white-space:pre-wrap}",
-			".obx-alert[role=alert]{white-space:pre-wrap}",
-			".obx-error::before{content:'!';font-weight:700;margin-right:6px}",
-			".obx-error--conflict::before{content:'↻'}",
-			".obx-notice{border:1px solid var(--obx-success);border-left-width:3px;background:var(--obx-success-bg);color:var(--obx-success-text);border-radius:var(--obx-radius-md);padding:10px 12px;white-space:pre-wrap}",
-			".obx-notice::before{content:'✓';font-weight:700;margin-right:6px}",
-			// §4.1 热生效提示条：保留虚线框语义，升级为提示条样式（ⓘ 前缀同为 ::before 字形）
-			".obx-effect{border:1px dashed var(--obx-border);border-radius:var(--obx-radius-md);padding:8px 12px;color:var(--obx-fg-muted);background:var(--obx-card-bg);font-size:var(--obx-fs-sm)}",
-			".obx-effect::before{content:'ⓘ';margin-right:6px}",
-			// §2 组卡片：r10、卡间距 16（.obx-panel gap）、组内字段行间 12
-			".obx-group{display:flex;flex-direction:column;gap:12px;background:var(--obx-card-bg);border:1px solid var(--obx-card-border);border-radius:var(--obx-radius-lg);padding:14px 16px 16px}",
-			".obx-group-title{font-size:var(--obx-fs-md);font-weight:600;margin:0}",
-			// §6 旧内核兜底：字段行保留现状 flex-wrap；容器查询三档见末尾 @container 块
-			".obx-field{display:flex;flex-direction:column;gap:6px;align-items:stretch}",
-			// T23：field-head 允许换行——label/badge/行内 hint 在窄容器下 hint 折到
-			// 下一整行，而不是被 nowrap+flex 压缩成一字一列竖排（无容器查询回落路径）。
-			".obx-field-head{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;width:100%}",
-			".obx-field-head .obx-label{flex:none;min-width:0;white-space:nowrap}",
-			".obx-field-head .obx-badge{flex:none;font-size:9.4px;padding:0 7px;line-height:1.6}",
-			// §3.1/§5.1：字段 label 13px/400 + fg-muted（原 opacity 灰度不达 AA）
-			".obx-label{font-size:var(--obx-fs-base);color:var(--obx-fg-muted);min-width:180px}",
-			".obx-control{display:flex;flex-wrap:wrap;gap:8px;align-items:center;flex:1;min-width:240px}",
-			".obx-input,.obx-select,.obx-textarea{flex:1;min-width:160px;max-width:420px;box-sizing:border-box;border:1px solid var(--obx-border);border-radius:var(--obx-radius-md);background:var(--obx-input-bg);color:inherit;padding:5px 10px;font-family:inherit;font-size:var(--obx-fs-base)}",
-			".obx-input,.obx-select{height:32px}",
-			".obx-textarea{max-width:520px;min-height:44px;height:44px;resize:vertical}",
-			".obx-input:hover:not(:disabled),.obx-select:hover:not(:disabled),.obx-textarea:hover:not(:disabled){border-color:var(--obx-border-strong)}",
-			".obx-input:focus-visible,.obx-select:focus-visible,.obx-textarea:focus-visible,.obx-btn:focus-visible{outline:none;box-shadow:0 0 0 2px var(--obx-focus-ring);border-color:var(--obx-accent)}",
-			".obx-input:disabled,.obx-select:disabled,.obx-textarea:disabled{opacity:.45;cursor:not-allowed;background:var(--obx-card-bg)}",
-			// §3.1 数字输入收窄至 160px（渲染层经 obx-input--number 挂载）
-			".obx-input--number{max-width:160px}",
-			// §3.1 invalid 描红——批 2 预铺样式，批 3（UX §5.6 数字行内校验）挂载
-			".obx-input--invalid{border-color:var(--obx-error);box-shadow:0 0 0 2px var(--obx-error-ring)}",
-			// §3.2 纯 CSS 开关：36×20 轨道 + 16 滑块，checkbox 语义保留（视觉隐藏 +
-			// 24×24 命中区覆盖轨道；track 为紧随 input 的兄弟节点，由兄弟选择器驱动）
-			".obx-toggle{position:relative;display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:var(--obx-fs-base)}",
-			".obx-hint{color:var(--obx-fg-muted);font-size:var(--obx-fs-sm);flex-basis:100%}",
-			// §3.4 密文徽章 + 8px 状态点（已配置=accent / 未配置=border-strong）
-			".obx-secret-badge{font-size:var(--obx-fs-xs);border:1px solid var(--obx-border);border-radius:999px;padding:0 8px;color:var(--obx-fg-muted)}",
-			".obx-secret-badge::before{content:'';display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--obx-border-strong);margin-right:6px;vertical-align:middle}",
-			".obx-secret-badge--set::before{background:var(--obx-accent)}",
-			".obx-badge{font-size:var(--obx-fs-xs);border:1px solid var(--obx-border);border-radius:999px;padding:0 8px;color:var(--obx-fg-muted)}",
-			// §3.5 按钮规格：primary 实底 accent / 次级描边（底色 card-bg，hover 描边 currentColor 保留）
-			".obx-btn{cursor:pointer;border:1px solid var(--obx-border);border-radius:var(--obx-radius-md);background:var(--obx-card-bg);color:inherit;padding:6px 12px;height:32px;box-sizing:border-box;font-family:inherit;font-size:var(--obx-fs-base)}",
-			".obx-btn:hover:not(:disabled){border-color:currentColor}",
-			".obx-btn:disabled{opacity:.45;cursor:not-allowed}",
-			".obx-btn.primary{background:var(--obx-accent);color:#fff;border:none;font-weight:600}",
-			".obx-btn.primary:hover:not(:disabled){filter:brightness(1.06)}",
-			// §3.6 workspace 选择器：卡片内嵌次级行
-			".obx-workspace-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--obx-card-bg);border-radius:var(--obx-radius-md);padding:8px 12px}",
-			// §6 容器查询三档（面板自身为查询源；旧内核不识别 @container → 回落上方 flex-wrap 兜底）
-			// T23：容器查询网格修正——label/badge/行内 hint 现包在 .obx-field-head 内
-			//（旧规则 .obx-field>.obx-label/.obx-badge 不再命中，head 被自动塞进 176px
-			// 标签列，hint 被压竖排、label 溢出叠上输入框）。改为：head 整行占 row1，
-			// 控件 row2 col2，长 hint row3；布尔/notice 行（--row）在网格断点内恢复
-			// flex 左右布局（specificity 双类压过单类 .obx-field 的 display:grid）。
-			"@container obx (min-width:720px){.obx-field{display:grid;grid-template-columns:176px minmax(240px,1fr) auto;column-gap:12px;row-gap:4px;align-items:center}.obx-field>.obx-field-head{grid-column:1/-1;grid-row:1}.obx-field>.obx-input,.obx-field>.obx-select,.obx-field>.obx-textarea,.obx-field>.obx-control{grid-column:2;grid-row:2}.obx-field>.obx-hint{grid-column:2/-1;grid-row:3}.obx-field.obx-field--row{display:flex}}",
-			"@container obx (max-width:719px){.obx-field{display:grid;grid-template-columns:1fr;row-gap:4px}.obx-field.obx-field--row{display:flex}}",
-			"@container obx (max-width:479px){.obx-toolbar .obx-btn{flex:1 1 auto}.obx-toolbar .obx-btn.primary{order:-1}.obx-input,.obx-select,.obx-textarea{max-width:none}.obx-group{padding:12px}.obx-secret-badge{flex-basis:100%}}",
-			// 批 2 交互逻辑（UX §3.1/§3.2/§5.1/§6/§7 + integration §2.4）：
-			// 诊断组 details/summary 折叠——summary 行 = 组标题 + 组描述 + meta pill
-			//（「N 项 · M 项默认开」复用 .obx-meta）+ 脏标记；details 即组卡片本体。
-			".obx-group-desc{color:var(--obx-fg-muted);font-size:var(--obx-fs-sm);margin:0}",
-			".obx-group>.obx-group-desc{margin-top:-8px}",
-			".obx-group-summary{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;cursor:pointer;list-style:none}",
-			".obx-group-summary::-webkit-details-marker{display:none}",
-			".obx-group-summary::before{content:'▸';flex:none;color:var(--obx-fg-muted);transition:transform var(--obx-dur-fast)}",
-			".obx-group--collapsible[open]>.obx-group-summary::before{transform:rotate(90deg)}",
-			"@media (prefers-reduced-motion: reduce){.obx-group-summary::before{transition:none}}",
-			// 折叠 summary 脏标记 / mode 联动与密文清除的行内强调 hint（warning 文本色）
-			".obx-group-dirty{color:var(--obx-warning-text);font-size:var(--obx-fs-xs);font-weight:600}",
-			".obx-hint--warn{color:var(--obx-warning-text)}",
-			// 批 3（UX §5.6）：数字行内校验红字 hint（错误文本色，与冲突横幅同族 token）
-			".obx-hint--invalid{color:var(--obx-error-text)}",
-			// UX §6 勾选清除：输入框描边 + 徽标转 warning（token 复用批 1 §5.1 色值）
-			".obx-input--warn{border-color:var(--obx-warning)}",
-			".obx-secret-badge--clear{color:var(--obx-warning-text);background:var(--obx-warning-bg);border-color:var(--obx-warning)}",
-			".obx-secret-badge--clear::before{background:var(--obx-warning)}",
-			// UX §4 workspace 拉取失败重试入口（行内链接式按钮）
-			".obx-link-btn{cursor:pointer;border:none;background:none;color:var(--obx-accent);padding:0 0 0 4px;font:inherit;font-size:var(--obx-fs-sm);text-decoration:underline}",
-			".obx-link-btn:disabled{opacity:.45;cursor:not-allowed;text-decoration:none}",
-			// 本地加（2026-10-31）：整页版布局——头部（标题/状态/页签）+ 滚动主体 + 底部保存条。
-			".obx-shell{max-width:880px;width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:0;padding:0}",
-			".obx-head{display:flex;flex-direction:column;gap:10px;padding:14px 16px 10px;border-bottom:1px solid var(--obx-card-border)}",
-			".obx-head-row{display:flex;flex-wrap:nowrap;gap:8px;align-items:center;min-width:0}",
-			".obx-head-row .obx-title{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
-			".obx-head-row .obx-meta,.obx-head-row .obx-badge{flex:none;white-space:nowrap}",
-			".obx-tabs{display:flex;gap:6px;flex-wrap:wrap;width:100%}",
-			".obx-tab{flex:1 1 0;text-align:center;justify-content:center;border:1px solid var(--obx-card-border);background:transparent;color:var(--obx-fg-muted);border-radius:999px;padding:4px 7px;font:inherit;font-size:var(--obx-fs-sm);cursor:pointer}",
-			".obx-tab[aria-selected=true]{background:var(--obx-accent);border-color:var(--obx-accent);color:#fff}",
-			".obx-body{flex:1;min-height:0;overflow-y:auto;padding:14px 16px 18px;display:flex;flex-direction:column;gap:12px;-webkit-overflow-scrolling:touch}",
-			".obx-body .obx-group{background:var(--obx-card-bg);border:1px solid var(--obx-card-border);border-radius:var(--obx-radius-lg);padding:12px 14px}",
-			// 本地加（2026-10-31）：布尔开关行——左说明右开关，行间发丝分隔（DSH 设置页同款）。
-			".obx-field--row{display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;justify-content:space-between;gap:14px;padding:11px 2px;border-top:1px solid var(--obx-card-border)}",
-			".obx-field--row:first-child{border-top:0;padding-top:4px}",
-			".obx-field--row:last-child{padding-bottom:2px}",
-			".obx-field-text{display:flex;flex:1;min-width:0;flex-direction:column;gap:3px;cursor:pointer}",
-			".obx-field-text .obx-badge{align-self:flex-start}",
-			".obx-field--row .obx-toggle{flex:none}",
-			".obx-field--row .obx-hint{margin:0}",
-			".obx-toggle--svg{cursor:pointer;line-height:0}",
-			".obx-toggle--svg:focus-visible svg{outline:2px solid var(--obx-focus-ring);outline-offset:2px;border-radius:12px}",
-			// 本地加：动作行与长椭圆按钮（和开关同一形状语言）；按下变黑底白字做点击反馈。
-			".obx-actions{display:flex;align-items:center;gap:8px}",
-			".obx-actions-side{flex:1 1 0;display:flex;justify-content:flex-start;min-width:0}",
-			".obx-actions-side--center{justify-content:center}",
-			".obx-actions-side--end{justify-content:flex-end}",
-			".obx-actions-end{display:flex;gap:8px;align-items:center}",
-			".obx-btn--pill{border-radius:999px;padding:3px 13px;line-height:1.3;font-size:12px}",
-			".obx-btn--pill:active:not(:disabled){background:#111;border-color:#111;color:#fff}",
-			".obx-btn--pill.primary:active:not(:disabled){background:#111;border-color:#111;color:#fff}",
-			"@media (prefers-color-scheme: dark){.obx-btn--pill:active:not(:disabled),.obx-btn--pill.primary:active:not(:disabled){background:#fff;border-color:#fff;color:#111}}",
-			// 本地加：顶部居中浮窗（固定定位，滚动不影响可见）。
-			".obx-toast-wrap{position:sticky;top:0;z-index:20;display:flex;flex-direction:column;gap:8px;margin:0 0 4px}",
-			".obx-toast{pointer-events:auto;box-shadow:0 10px 28px rgba(0,0,0,.18);margin:0}",
-			".obx-input::placeholder{color:var(--obx-fg-muted);opacity:.8;letter-spacing:.08em}",
-			// T23：hint-inline 不可压成竖排——nowrap+ellipsis 兜底（flex 收缩极限为单行
-			// 截断，而非 CJK 逐字换行）；配合 field-head 的 flex-wrap:wrap 先整行换行。
-			".obx-hint-inline{flex:0 1 auto;color:var(--obx-fg-muted);font-size:var(--obx-fs-xs);font-weight:400;line-height:1.45;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-top:1px}",
-			".obx-hint-inline .obx-hint{display:inline;margin:0}",
-			".obx-group-desc--inline{color:var(--obx-fg-muted);font-size:var(--obx-fs-xs);font-weight:400;margin-left:2px}",
-			".obx-group-head{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}",
-			".obx-subgroup-title{margin:8px 0 2px;font-size:13px;font-weight:600;color:inherit}",
+			// token 映射（别名层：--dsw-alias-* / --dsw-radius-*）
+			".obx-panel{--obx-fg:var(--dsw-alias-label-primary,#17181a);--obx-fg-secondary:var(--dsw-alias-label-secondary,#4b4f58);--obx-fg-tertiary:var(--dsw-alias-label-tertiary,#7f8287);--obx-hairline:var(--dsw-alias-border-l2,rgba(0,0,0,.1));--obx-input-border:var(--dsw-alias-border-l4,rgba(0,0,0,.16));--obx-input-bg:var(--dsw-alias-bg-layer-1,#fff);--obx-well-bg:var(--dsw-alias-bg-module-platform,#f5f6f7);--obx-focus:var(--dsw-alias-state-business-primary,#4176e6);--obx-error:var(--dsw-alias-state-error-primary,#ec1313);--obx-warn:var(--dsw-alias-state-warn-label,#dd8629);--obx-radius-md:var(--dsw-radius-md,12px);--obx-radius-sm:var(--dsw-radius-sm,8px);box-sizing:border-box;width:100%;max-width:960px;margin-inline:auto;height:100%;min-height:0;display:flex;flex-direction:column;color:var(--obx-fg);font-size:13px;line-height:1.5}",
+			// 回落值明暗切换（宿主 token 在位时此块不产生任何效果）
+			"@media (prefers-color-scheme: dark){.obx-panel{--obx-fg:#eceef2;--obx-fg-secondary:#b6bac4;--obx-fg-tertiary:#81858c;--obx-hairline:rgba(255,255,255,.12);--obx-input-border:rgba(255,255,255,.2);--obx-input-bg:#232324;--obx-well-bg:#2c2c2e;--obx-focus:#7aaaff;--obx-error:#f25a5a;--obx-warn:#f59e0b}}",
+			// 页骨架（对齐宿主原生页：居中 960 内容列、20px/500 标题、页签行、滚动主体）
+			".obx-head{flex:none;display:flex;flex-direction:column;gap:12px;padding:28px 24px 0}",
+			".obx-head-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}",
+			".obx-title{margin:0;font-size:20px;font-weight:500;line-height:28px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+			".obx-head-spacer{flex:1 1 auto}",
+			".obx-status-warn{color:var(--obx-warn);font-size:12px;line-height:18px;white-space:nowrap}",
+			".obx-meta{color:var(--obx-fg-tertiary);font-size:11px;line-height:16px;white-space:nowrap}",
+			".obx-tabs{display:flex;min-width:0;max-width:100%}",
+			".obx-body{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:16px;padding:20px 24px 32px;-webkit-overflow-scrolling:touch}",
+			// 反馈行（原生表单语义：错误/成功为彩色文本行，不再是描边横幅）
+			".obx-effect{margin:0;color:var(--obx-fg-tertiary);font-size:12px;line-height:18px}",
+			".obx-error{margin:0;color:var(--obx-error);font-size:12px;line-height:18px;white-space:pre-wrap}",
+			".obx-notice{margin:0;color:var(--obx-fg-secondary);font-size:12px;line-height:18px;white-space:pre-wrap}",
+			".obx-toast-wrap{position:sticky;top:0;z-index:20;display:flex;flex-direction:column;gap:4px}",
+			// 分组（平铺文档流；字段行间发丝分隔 = 原生表单形态）
+			".obx-group{display:flex;flex-direction:column}",
+			".obx-group-head{display:flex;align-items:baseline;gap:8px;padding-bottom:4px;flex-wrap:wrap}",
+			".obx-group-title{margin:0;font-size:14px;font-weight:500;line-height:20px}",
+			".obx-group-desc{margin:0;color:var(--obx-fg-tertiary);font-size:12px;line-height:18px}",
+			".obx-subgroup-title{margin:14px 0 2px;font-size:13px;font-weight:600;line-height:20px}",
 			".obx-subgroup-title:first-child{margin-top:0}",
+			// 字段行：值/枚举/多行为纵向（label 上、控件下、hint 再下），布尔/通知为左右行
+			".obx-field{display:flex;flex-direction:column;gap:6px;padding:12px 0;border-top:.5px solid var(--obx-hairline)}",
+			".obx-group-head+.obx-field,.obx-subgroup-title+.obx-field{border-top:none}",
+			".obx-field--row{flex-direction:row;align-items:center;justify-content:space-between;gap:16px}",
+			".obx-field-text{display:flex;flex:1;min-width:0;flex-direction:column;gap:3px}",
+			".obx-field-head{display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap}",
+			".obx-label{font-size:13px;font-weight:500;line-height:1.5;color:var(--obx-fg)}",
+			".obx-hint{margin:0;color:var(--obx-fg-tertiary);font-size:12px;line-height:1.5;min-width:0}",
+			".obx-hint--warn{color:var(--obx-warn)}",
+			".obx-hint--invalid{color:var(--obx-error)}",
+			// 控件容器（原生 Input 为 inline-flex 包裹，经容器限宽；数字收窄=原生无此概念，沿用旧口径）
+			".obx-control{display:flex;max-width:520px}",
+			".obx-control--narrow{display:flex;max-width:160px}",
+			".obx-control>*{flex:1;min-width:0}",
+			// 控件规格（回落 shim 与 textarea/select 用；宿主 primitives 在位时由宿主 CSS 渲染）
+			".obx-input{box-sizing:border-box;height:32px;padding:0 8px;border:.5px solid var(--obx-input-border);border-radius:var(--obx-radius-md);background:var(--obx-input-bg);color:var(--obx-fg);font:inherit;font-size:13px;line-height:1.5}",
+			".obx-input:focus-visible{outline:none;border-color:var(--obx-focus)}",
+			".obx-input:disabled{color:var(--obx-fg-tertiary);cursor:default}",
+			".obx-textarea{box-sizing:border-box;min-height:60px;resize:vertical;padding:7px 8px;border:.5px solid var(--obx-input-border);border-radius:var(--obx-radius-md);background:var(--obx-input-bg);color:var(--obx-fg);font:inherit;font-size:13px;line-height:1.5}",
+			".obx-textarea:focus-visible{outline:none;border-color:var(--obx-focus)}",
+			".obx-textarea:disabled{color:var(--obx-fg-tertiary)}",
+			".obx-select{box-sizing:border-box;height:32px;max-width:420px;padding:0 8px;border:.5px solid var(--obx-input-border);border-radius:var(--obx-radius-md);background:var(--obx-input-bg);color:var(--obx-fg);font:inherit;font-size:13px}",
+			".obx-switch{box-sizing:border-box;position:relative;flex:0 0 auto;width:36px;height:20px;padding:2px;border:0;border-radius:999px;background:var(--dsw-alias-border-l3,rgba(128,128,128,.4));cursor:pointer}",
+			".obx-switch:disabled{cursor:default;opacity:.5}",
+			".obx-switch[aria-checked=true]{background:var(--dsw-alias-label-secondary,#65676b)}",
+			".obx-switch-thumb{display:block;width:16px;height:16px;border-radius:50%;background:var(--dsw-alias-label-primary-foreground,#fff);transition:transform .12s ease}",
+			".obx-switch[aria-checked=true] .obx-switch-thumb{transform:translate(16px)}",
+			"@media (prefers-color-scheme: dark){.obx-switch[aria-checked=true] .obx-switch-thumb{background:#17181a}}",
+			".obx-checkbox{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--obx-fg);cursor:pointer}",
+			".obx-checkbox input:disabled{cursor:default}",
+			".obx-secret-row{display:flex;align-items:center;min-height:32px;margin-top:-6px}",
+			".obx-badge{display:inline-flex;align-items:center;border:.5px solid var(--dsw-alias-border-l3,rgba(128,128,128,.4));border-radius:999px;padding:0 8px;font-size:11px;line-height:18px;color:var(--obx-fg-secondary);white-space:nowrap}",
+			".obx-badge--strong{background:var(--obx-well-bg);border-color:transparent;color:var(--obx-fg)}",
+			".obx-btn{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;height:32px;padding:0 12px;border:0;border-radius:var(--obx-radius-md);background:transparent;color:var(--obx-fg);font:inherit;font-size:13px;line-height:20px;cursor:pointer;white-space:nowrap}",
+			".obx-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.12))}",
+			".obx-btn:disabled{cursor:not-allowed;opacity:.4}",
+			".obx-btn--primary{background:var(--dsw-alias-label-primary,#17181a);color:var(--dsw-alias-label-primary-foreground,#fff);font-weight:500}",
+			".obx-btn--primary:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover,#3c3c3d)}",
+			"@media (prefers-color-scheme: dark){.obx-btn--primary{background:var(--dsw-alias-label-primary,#eceef2);color:var(--dsw-alias-label-primary-foreground,#17181a)}}",
+			".obx-segmented{display:inline-flex;gap:2px;padding:3px;border-radius:var(--obx-radius-md);background:var(--obx-well-bg);max-width:100%}",
+			".obx-segmented-tab{box-sizing:border-box;height:26px;padding:0 12px;border:0;border-radius:var(--obx-radius-sm);background:transparent;color:var(--obx-fg-secondary);font:inherit;font-size:13px;font-weight:500;line-height:20px;cursor:pointer;white-space:nowrap}",
+			".obx-segmented-tab[aria-selected=true]{background:var(--obx-input-bg);color:var(--obx-fg);box-shadow:0 1px 2px rgba(0,0,0,.08)}",
+			".obx-segmented-tab:disabled{cursor:default;opacity:.4}",
+			// workspace 快速填入行（卡内嵌次级行；说明独占一行）
+			".obx-workspace-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 12px;border-radius:var(--obx-radius-md);background:var(--obx-well-bg)}",
+			".obx-workspace-row .obx-hint{flex-basis:100%}",
+			".obx-link-btn{cursor:pointer;border:none;background:none;color:var(--obx-focus);padding:0 0 0 4px;font:inherit;font-size:12px;text-decoration:underline}",
+			".obx-link-btn:disabled{opacity:.45;cursor:not-allowed;text-decoration:none}",
+			// 底部保存条（原生 SettingsForm 式：发丝线上方 + 右侧实心保存钮）
+			".obx-foot{display:flex;align-items:center;gap:12px;margin-top:8px;padding-top:16px;border-top:.5px solid var(--obx-hairline)}",
+			// 窄容器：内边距收窄，页签可横向滚动
+			"@media (max-width: 560px){.obx-head{padding:20px 16px 0}.obx-body{padding:16px 16px 24px}.obx-tabs{overflow-x:auto}}",
 		].join("\n");
 		//#endregion
 
@@ -1112,9 +1081,9 @@ window.__ModuleLoader__.load({
 			return [];
 		}
 
-		/** 批 2（UX §3.1）：诊断组折叠态 sessionStorage 键（"1" = 展开；缺省 = 默认折叠）。
-		 *  T8 补回上游缺口②：贡献者版删了折叠记忆（常量/状态/传参），这里恢复。 */
-		var DIAGNOSTICS_EXPANDED_KEY = PLUGIN_ID + ".diagnosticsExpanded";
+		// 0.10.0：诊断组折叠记忆（展开态持久化读写）随折叠交互一并移除——诊断组
+		// 自本版起为独立页签，组内折叠失去意义。
+
 		/** 批 2（UX §4）：workspace 拉取失败后的重试冷却（10s 内不重复请求）。 */
 		var WORKSPACE_RETRY_COOLDOWN_MS = 10000;
 		//#endregion
@@ -1124,9 +1093,94 @@ window.__ModuleLoader__.load({
 			var children = Array.prototype.slice.call(arguments, 3);
 			return ReactImpl.createElement.apply(ReactImpl, [tag, props].concat(children));
 		}
+		//#region 宿主 UI 原语回落 shim（旧宿主 seed 表缺席时使用；同 props 契约）
+		// ui 组件契约（宿主 primitives 与本 shim、测试桩三方一致）：
+		//   Switch({checked, onChange(next:boolean), label, disabled, title?})
+		//   Checkbox({checked, onChange(next:boolean), label, disabled})
+		//   Tag({tone:'neutral'|'quiet', children})            —— 徽标 pill
+		//   Button({variant?:'ghost'|'primary', disabled?, onClick, title?, children})
+		//   SegmentedControl({value, options:[{value,label}], onChange(value), label, disabled?})
+		//   SegmentedTabs({items:[{value,label}], value, onChange(value), label})
+		//   Input({type?, value, onChange(event), placeholder?, disabled?, 'aria-label'?, autoComplete?})
+		function fallbackUi(ReactImpl: any) {
+			var tag = function (props: any) {
+				return h(ReactImpl, "span", {
+					className: "obx-badge" + (props.tone === "neutral" ? " obx-badge--strong" : ""),
+				}, props.children);
+			};
+			var button = function (props: any) {
+				return h(ReactImpl, "button", {
+					type: "button",
+					className: "obx-btn" + (props.variant === "primary" ? " obx-btn--primary" : ""),
+					disabled: props.disabled === true, title: props.title, onClick: props.onClick,
+				}, props.children);
+			};
+			var switchControl = function (props: any) {
+				var checked = props.checked === true;
+				return h(ReactImpl, "button", {
+					type: "button", role: "switch", "aria-checked": checked, "aria-label": props.label,
+					title: props.title, disabled: props.disabled === true, className: "obx-switch",
+					onClick: function () { props.onChange(!checked); },
+				}, h(ReactImpl, "span", { className: "obx-switch-thumb" }));
+			};
+			var checkbox = function (props: any) {
+				return h(ReactImpl, "label", { className: "obx-checkbox" },
+					h(ReactImpl, "input", {
+						type: "checkbox", checked: props.checked === true, disabled: props.disabled === true,
+						onChange: function (event: any) { props.onChange(event.target.checked); },
+					}), props.label);
+			};
+			var segmentedItem = function (props: any, role: any, option: any) {
+				var active = option.value === props.value;
+				return h(ReactImpl, "button", {
+					key: option.value, type: "button", role: role, "aria-selected": active,
+					className: "obx-segmented-tab" + (active ? " obx-segmented-tab--active" : ""),
+					disabled: props.disabled === true,
+					onClick: function () { if (!active) props.onChange(option.value); },
+				}, option.label);
+			};
+			var segmentedControl = function (props: any) {
+				return h(ReactImpl, "div", { className: "obx-segmented", role: "tablist", "aria-label": props.label },
+					props.options.map(function (option: any) { return segmentedItem(props, "tab", option); }));
+			};
+			var segmentedTabs = function (props: any) {
+				return h(ReactImpl, "div", { className: "obx-segmented obx-tabs", role: "tablist", "aria-label": props.label },
+					props.items.map(function (item: any) { return segmentedItem(props, "tab", item); }));
+			};
+			var input = function (props: any) {
+				var rest: any = Object.assign({}, props);
+				delete rest.onChange;
+				return h(ReactImpl, "input", Object.assign({}, rest, {
+					className: "obx-input",
+					onChange: function (event: any) { props.onChange(event); },
+				}));
+			};
+			return { Switch: switchControl, Checkbox: checkbox, Tag: tag, Button: button, SegmentedControl: segmentedControl, SegmentedTabs: segmentedTabs, Input: input };
+		}
+		/**
+		 * 面板统一 UI 组件表：宿主 primitives 在位时直用（组件 CSS 随宿主全局样式表
+		 * 加载，明暗/主题跟随宿主）；seed 表缺席时用回落 shim（视觉走本文件 CSS）。
+		 */
+		var UI: any = hostPrimitives != null
+			? {
+				Switch: hostPrimitives.Switch,
+				Checkbox: hostPrimitives.Checkbox,
+				Tag: hostPrimitives.Tag,
+				Button: hostPrimitives.Button,
+				SegmentedControl: hostPrimitives.SegmentedControl,
+				SegmentedTabs: hostPrimitives.SegmentedTabs,
+				Input: hostPrimitives.Input,
+			}
+			: fallbackUi(React);
+		//#endregion
 		/**
 		 * 渲染一个设置分组（纯函数；值全部经 snapshotValueToDraft 脱敏形态传入，
 		 * accessToken 明文按契约绝不进入本函数——host 快照侧已脱敏为 ''）。
+		 * 0.10.0：控件经 opts.ui 依赖注入（宿主 primitives / 回落 shim / 测试桩，
+		 * 契约见 fallbackUi 上方注释）；字段行 = 平铺文档流 + 发丝分隔（原生表单形态）：
+		 * 值/枚举/多行为纵向行（label 上、控件下、hint 下），布尔/通知为左右行
+		 * （label 左、Switch 右）。
+		 * @param opts.ui 组件表（必传；面板注入 UI，测试注入桩）
 		 * @param opts.onChange (field, nextDisplayValue) => void
 		 * @param opts.onSecretChange (nextText) => void
 		 * @param opts.onClearSecretChange (nextBoolean) => void
@@ -1135,31 +1189,30 @@ window.__ModuleLoader__.load({
 		 * @param opts.nonDefaultKeys 与 schema 默认值不同的键数组（W6「非默认」徽标；
 		 *        以快照生效值为准而非草稿——徽标描述已保存状态，不是未保存编辑）
 		 * @param opts.draft 表单草稿（snapshotValueToDraft 形态）
-		 * @param opts.groupDesc 组描述文案（批 2 UX §2.2；缺省不渲染描述行）
-		 * @param opts.modeInactiveKeys 当前连接模式下不生效的键（批 2 UX §3.2：命中
-		 *        字段禁用变暗 + hint 追加「当前模式不生效」；值保留不清空）
-		 * @param opts.texts 交互文案（批 2 locale 第二档经面板传入；缺省回退 zh 字面
-		 *        量，模块级可测行为不变）：modeInactive/secretSet/secretUnset/
+		 * @param opts.groupDesc 组描述文案（缺省不渲染描述行）
+		 * @param opts.modeInactiveKeys 当前连接模式下不生效的键（命中字段禁用变暗 +
+		 *        hint 追加「当前模式不生效」；值保留不清空）
+		 * @param opts.texts 交互文案（locale 第二档经面板传入；缺省回退 zh 字面量，
+		 *        模块级可测行为不变）：modeInactive/secretSet/secretUnset/
 		 *        secretClearPending/secretClearHint/secretClear/remoteOverwritten
-		 * @param opts.collapsible 折叠配置（批 2 UX §3.1：仅诊断组传入）——
-		 *        {open, onToggle, summaryMeta, dirtyMark}；缺省保持 section 常开形态
-		 * @param opts.invalidNumbers 数字行内校验标红（批 3 UX §5.6）：map key →
-		 *        已本地化提示文案；命中字段输入框挂 obx-input--invalid（批 1 预铺
-		 *        样式）+ aria-invalid，hint 行内嵌红字（.obx-hint--invalid）
-		 * @param opts.remoteOverwrittenKeys 冲突合并被远端覆盖的键（批 3 UX §5.4）：
-		 *        命中字段 hint 行内嵌橙标「已被其他来源修改，已同步为最新值」
-		 * @param opts.onNumberBlur (field, rawText) => void——number 字段 blur 回调
-		 *        （行内校验入口：面板侧记态标红/清除；stringArray/enum 不加校验）
+		 * @param opts.invalidNumbers 数字行内校验标红：map key → 已本地化提示文案；
+		 *        命中字段控件容器挂 obx-control--narrow（number）并经 hint 行内嵌红字
+		 *        （.obx-hint--invalid）；校验时机 = 面板 onChange 每次数字编辑（原 blur
+		 *        校验随旧布局移除，改即时校验）
+		 * @param opts.remoteOverwrittenKeys 冲突合并被远端覆盖的键：命中字段 hint 行内
+		 *        嵌橙标「已被其他来源修改，已同步为最新值」
+		 * @param opts.renderExtraRow (field) => 节点|null——字段行后追加组内附加行
+		 *        （connection 组 workspacePath 下方的「快速填入 workspace」行由此注入）
 		 */
 		function renderGroup(ReactImpl: any, group: any, opts: any) {
 			var options = opts == null ? {} : opts;
+			var ui = options.ui;
 			var draft = options.draft == null ? {} : options.draft;
 			var nonDefaultKeys = Array.isArray(options.nonDefaultKeys) ? options.nonDefaultKeys : [];
 			var modeInactiveKeys = Array.isArray(options.modeInactiveKeys) ? options.modeInactiveKeys : [];
 			var invalidNumbers = options.invalidNumbers != null ? options.invalidNumbers : {};
 			var remoteOverwrittenKeys = Array.isArray(options.remoteOverwrittenKeys) ? options.remoteOverwrittenKeys : [];
 			var groupDesc = options.groupDesc != null ? options.groupDesc : null;
-			var collapsible = options.collapsible != null ? options.collapsible : null;
 			var texts = options.texts != null ? options.texts : {};
 			var modeInactiveText = texts.modeInactive != null ? texts.modeInactive : "当前模式不生效";
 			var secretSetText = texts.secretSet != null ? texts.secretSet : "已配置（脱敏，不回显）";
@@ -1171,7 +1224,21 @@ window.__ModuleLoader__.load({
 			var onChange = typeof options.onChange === "function" ? options.onChange : function () {};
 			var onSecretChange = typeof options.onSecretChange === "function" ? options.onSecretChange : function () {};
 			var onClearSecretChange = typeof options.onClearSecretChange === "function" ? options.onClearSecretChange : function () {};
-			var onNumberBlur = typeof options.onNumberBlur === "function" ? options.onNumberBlur : function () {};
+			// hint 行组装：字段 hint（12px tertiary）+ mode 联动/冲突覆盖（warn 色）+
+			// 数字校验（error 色）内嵌彩色片段——同一行文案，不再有「短提示内联标题右侧」
+			// 与容器查询网格的布局分支（0.10.0 统一为 label 上/hint 下的纵向结构）。
+			var warnSpan = function (text: any) {
+				return h(ReactImpl, "span", { className: "obx-hint--warn" }, text);
+			};
+			var invalidSpan = function (text: any) {
+				return h(ReactImpl, "span", { className: "obx-hint--invalid" }, text);
+			};
+			// W6「非默认」徽标：快照生效值 ≠ schema 默认值的键一律挂标（title=与默认值
+			// 不同；title 挂在 children span 上——宿主 Tag 不透传多余 props）。
+			var nonDefaultBadge = function (fieldKey: any) {
+				if (nonDefaultKeys.indexOf(fieldKey) < 0) return null;
+				return h(ReactImpl, ui.Tag, { tone: "neutral", children: h(ReactImpl, "span", { title: "与默认值不同" }, "非默认") });
+			};
 			var fieldNodes = group.fields.map(function (field: any) {
 				// 本地加（11.1）：showIf 条件不满足就整行不渲染（索引保持对齐，按 key 取节点仍有效）。
 				if (field.showIf && draft[field.showIf.key] !== field.showIf.value)
@@ -1185,171 +1252,108 @@ window.__ModuleLoader__.load({
 				var fieldInvalidMessage = field.type === "number" && invalidNumbers[field.key] != null
 					? String(invalidNumbers[field.key])
 					: null;
-				var control;
-				if (field.type === "boolean") {
-					// §3.2 纯 CSS 开关：checkbox 语义保留（视觉隐藏 + 24×24 命中区覆盖轨道），
-					// track 为紧随 input 的兄弟节点（兄弟选择器驱动轨道底色/滑块位移），开/关文本保留。
-					// 本地加（2026-10-31）：用 SVG 画开关——形状写死在图里，不受宿主样式表影响。
-					control = h(ReactImpl, "label", {
-						className: "obx-toggle obx-toggle--svg",
-						role: "switch",
-						"aria-checked": value === true ? "true" : "false",
-						"aria-label": field.label,
-						onClick: function (event: any) {
-							event.preventDefault();
-							if (options.disabled === true || fieldInactive) return;
-							onChange(field, value !== true);
-						},
-					},
-						h(ReactImpl, "svg", { viewBox: "0 0 44 24", width: 44, height: 24, "aria-hidden": "true", focusable: "false", style: { display: "block" } },
-							h(ReactImpl, "rect", {
-								x: 0.5, y: 0.5, width: 43, height: 23, rx: 11.5,
-								fill: value === true ? "var(--obx-accent)" : "var(--obx-switch-off)",
-								style: { transition: "fill .18s ease" },
-							}),
-							h(ReactImpl, "circle", {
-								cx: 12, cy: 12, r: 9.5,
-								fill: "var(--obx-switch-knob)",
-								style: { transition: "transform .18s ease", transform: value === true ? "translateX(20px)" : "translateX(0px)" },
-							})));
-				} else if (field.type === "enum") {
-					control = h(ReactImpl, "select", {
-						className: "obx-select", value: String(value == null ? "" : value), disabled: options.disabled === true || fieldInactive,
-						onChange: function (event: any) { onChange(field, event.target.value); },
-						"aria-label": field.label,
-					}, field.options.map(function (option: any) {
-						return h(ReactImpl, "option", { key: option, value: option }, field.optionLabels[option] != null ? field.optionLabels[option] : option);
-					}));
-				} else if (field.type === "stringArray") {
-					control = h(ReactImpl, "textarea", {
-						className: "obx-textarea", rows: 2, value: String(value == null ? "" : value), disabled: options.disabled === true || fieldInactive,
-						placeholder: field.placeholder != null ? field.placeholder : "分割方式：逗号、顿号、换行",
-						onChange: function (event: any) { onChange(field, event.target.value); },
-						"aria-label": field.label,
-					});
-				} else if (field.type === "secret") {
-					// 密码型输入且不明文回显：value 恒为用户本次输入（初始 ''），占位符提示留空不改；
-					// 已配置状态只展示脱敏徽标，绝不渲染任何明文。
-					// 批 2（UX §6 + integration §2.4）徽标三态：已配置（accent 点）/ 未配置 /
-					// 保存后清空（橙，仅「确有已保存值 + 勾选清除」时——secretSet:false +
-					// 勾清除仍显「未配置」，保持既有渲染契约）；互斥由面板 onSecretChange
-					// 实现（输入新值即取消清除勾选）。勾选清除时输入框描边转 --obx-warning
-					// 并追加行内提示「将清除已保存的值」。
-					var clearActive = options.clearSecret === true;
-					var secretBadgeClassName = "obx-secret-badge";
-					var secretBadgeText;
-					if (clearActive && options.secretSet === true) {
-						secretBadgeClassName += " obx-secret-badge--clear";
-						secretBadgeText = secretClearPendingText;
-					} else if (options.secretSet === true) {
-						secretBadgeClassName += " obx-secret-badge--set";
-						secretBadgeText = secretSetText;
-					} else {
-						secretBadgeText = secretUnsetText;
-					}
-					control = h(ReactImpl, "span", { className: "obx-control" },
-						h(ReactImpl, "input", {
-							type: "password", className: clearActive ? "obx-input obx-input--warn" : "obx-input", value: String(value == null ? "" : value),
-							placeholder: (options.secretSet === true && !clearActive) ? "••••••••••••••••" : "留空 = 不修改",
-							autoComplete: "new-password", disabled: options.disabled === true || fieldInactive,
-							onChange: function (event: any) { onSecretChange(event.target.value); },
-							"aria-label": field.label,
-						}),
-						// §3.4 徽章加 8px 状态点：已配置=accent / 未配置=border-strong /
-						// 保存后清空=warning（纯视觉状态点）
-						h(ReactImpl, "span", { className: secretBadgeClassName }, secretBadgeText),
-						h(ReactImpl, "span", { className: "obx-hint" }, "出于安全实际令牌不回传页面，只显占位圆点，输入新值即替换（令牌：NapCat 的 WebUI → 网络配置→Token）"),
-						h(ReactImpl, "label", { className: "obx-toggle" },
-							h(ReactImpl, "input", {
-								type: "checkbox", checked: clearActive, disabled: options.disabled === true || fieldInactive,
-								onChange: function (event: any) { onClearSecretChange(event.target.checked); },
-							}),
-							secretClearLabelText),
-						clearActive ? h(ReactImpl, "span", { className: "obx-hint obx-hint--warn" }, secretClearHintText) : null);
-				} else {
-					// §3.1 数字输入 160px：number 字段仍以 type=text 渲染（既有渲染形态不变），
-					// 仅按类型加 obx-input--number 收窄 max-width。
-					// 批 3（UX §5.6）：行内校验标红——非法命中挂 obx-input--invalid（批 1
-					// 预铺样式）+ aria-invalid="true"；number 键 blur 触发面板侧校验
-					//（标红不阻断输入，保存按钮禁用由面板层落位）。
-					var isNumberField = field.type === "number";
-					control = h(ReactImpl, "input", {
-						type: "text",
-						className: (isNumberField ? "obx-input obx-input--number" : "obx-input")
-							+ (fieldInvalidMessage != null ? " obx-input--invalid" : ""),
-						value: String(value == null ? "" : value), disabled: options.disabled === true || fieldInactive,
-						placeholder: field.placeholder != null ? field.placeholder : undefined,
-						onChange: function (event: any) { onChange(field, event.target.value); },
-						onBlur: isNumberField ? function (event: any) { onNumberBlur(field, event.target.value); } : undefined,
-						"aria-invalid": fieldInvalidMessage != null ? "true" : undefined,
-						"aria-label": field.label,
-					});
-				}
-				// 批 2（UX §3.2）：mode 不生效 hint 与既有字段 hint 合并为同一 hint 行
-				//（@container grid 布局下 .obx-field>.obx-hint 固定占 row 2，双节点会
-				// 重叠），不生效部分以 warning 色内嵌强调。
-				// W6「非默认」徽标（T8 补回上游缺口①）：快照生效值 ≠ schema 默认值的键
-				// 一律挂标，不按字段类型区分——文本框/数字框同样可能被改成非默认值。
-				var nonDefaultBadge = nonDefaultKeys.indexOf(field.key) >= 0
-					? h(ReactImpl, "span", { className: "obx-badge", title: "与默认值不同" }, "非默认")
-					: null;
+				var disabled = options.disabled === true || fieldInactive;
 				var hintChildren = [];
 				if (typeof field.hint === "string" && field.hint.trim() !== "") hintChildren.push(field.hint);
 				if (fieldInactive) {
 					if (hintChildren.length > 0) hintChildren.push("；");
-					hintChildren.push(h(ReactImpl, "span", { className: "obx-hint--warn" }, modeInactiveText));
+					hintChildren.push(warnSpan(modeInactiveText));
 				}
-				// 批 3（UX §5.4）：冲突合并后本地编辑被远端覆盖的键——行内橙标提示。
 				if (overwritten) {
 					if (hintChildren.length > 0) hintChildren.push("；");
-					hintChildren.push(h(ReactImpl, "span", { className: "obx-hint--warn" }, remoteOverwrittenText));
+					hintChildren.push(warnSpan(remoteOverwrittenText));
 				}
-				// 批 3（UX §5.6）：数字行内校验非法——行内红字提示合法范围。
 				if (fieldInvalidMessage != null) {
 					if (hintChildren.length > 0) hintChildren.push("；");
-					hintChildren.push(h(ReactImpl, "span", { className: "obx-hint--invalid" }, fieldInvalidMessage));
+					hintChildren.push(invalidSpan(fieldInvalidMessage));
 				}
-				// W6 徽标节点挂进 field-head（label 之后；boolean 行与非 boolean 行同款）。
 				var hintNode = hintChildren.length > 0
-					? h.apply(null, [ReactImpl, "span", { className: "obx-hint" }].concat(hintChildren))
+					? h.apply(null, [ReactImpl, "p", { className: "obx-hint" }].concat(hintChildren))
 					: null;
-				// 本地加：短提示用半角括号内联在标题右侧，长提示单独一行放下面。
-				var hintIsLong = (typeof field.hint === "string" && field.hint.length > 24)
-					|| fieldInactive || overwritten || fieldInvalidMessage != null;
-				var hintInline = (hintNode === null || hintIsLong)
-					? null
-					: h(ReactImpl, "span", { className: "obx-hint-inline" }, "(", hintNode, ")");
-				var hintBlock = (hintNode !== null && hintIsLong) ? hintNode : null;
-				var nodes;
+				var badge = nonDefaultBadge(field.key);
+				var headNode = h(ReactImpl, "div", { className: "obx-field-head" },
+					h(ReactImpl, "span", { className: "obx-label" }, field.label), badge);
+				// 布尔行：说明在左（label + hint 纵排）、原生 Switch 在右——DSH 设置页同款
+				//（不再整行可点：开关本身即命中区，与宿主原生行为一致）。
 				if (field.type === "boolean") {
-					// 本地加（2026-10-31，DSH 设置页同款）：说明在左、开关在右，整行可点。
-					nodes = [
-						h(ReactImpl, "div", { className: "obx-field obx-field--row", key: field.key },
-							h(ReactImpl, "div", {
-								className: "obx-field-text",
-								onClick: function () {
-									if (options.disabled === true || fieldInactive) return;
-									onChange(field, value !== true);
-								},
-							},
-								h(ReactImpl, "span", { className: "obx-field-head" },
-									h(ReactImpl, "span", { className: "obx-label" }, field.label), nonDefaultBadge,
-										hintInline),
-								hintBlock),
-							control),
-					];
+					return h(ReactImpl, "div", { className: "obx-field obx-field--row", key: field.key },
+						h(ReactImpl, "div", { className: "obx-field-text" }, headNode, hintNode),
+						h(ReactImpl, ui.Switch, {
+							checked: value === true,
+							onChange: function (next: any) { onChange(field, next === true); },
+							label: field.label, disabled: disabled,
+						}));
 				}
-				else {
-					nodes = [
+				var control: any;
+				if (field.type === "enum") {
+					// 0.10.0：下拉改原生 SegmentedControl——全部 9 个枚举 ≤4 档，分段控件
+					// 一屏可读，且即宿主原生选择控件（连接模式/策略档位同款）。
+					control = h(ReactImpl, ui.SegmentedControl, {
+						value: String(value == null ? "" : value),
+						options: field.options.map(function (option: any) {
+							return { value: option, label: field.optionLabels[option] != null ? field.optionLabels[option] : option };
+						}),
+						onChange: function (next: any) { onChange(field, next); },
+						label: field.label, disabled: disabled,
+					});
+				} else if (field.type === "stringArray") {
+					control = h(ReactImpl, "div", { className: "obx-control" },
+						h(ReactImpl, "textarea", {
+							className: "obx-textarea", rows: 2, value: String(value == null ? "" : value), disabled: disabled,
+							placeholder: field.placeholder != null ? field.placeholder : "分割方式：逗号、顿号、换行",
+							onChange: function (event: any) { onChange(field, event.target.value); },
+							"aria-label": field.label,
+						}));
+				} else if (field.type === "secret") {
+					// 密码型输入且不明文回显：value 恒为用户本次输入（初始 ''）；
+					// 状态徽标三态：已配置（neutral）/ 未配置（quiet）/ 保存后清空（neutral，
+					// 仅「确有已保存值 + 勾选清除」时——secretSet:false + 勾清除仍显「未配置」，
+					// 保持既有渲染契约）；清除勾选行独立在输入行下方，互斥由面板 onSecretChange
+					// 实现（输入新值即取消清除勾选）。
+					var clearActive = options.clearSecret === true;
+					var secretStateText = clearActive && options.secretSet === true ? secretClearPendingText
+						: options.secretSet === true ? secretSetText : secretUnsetText;
+					var secretHintChildren = [
+						"出于安全实际令牌不回传页面，只显占位圆点，输入新值即替换（令牌：NapCat 的 WebUI → 网络配置→Token）",
+					];
+					if (clearActive) secretHintChildren.push(warnSpan(secretClearHintText));
+					return [
 						h(ReactImpl, "div", { className: "obx-field", key: field.key },
-							h(ReactImpl, "span", { className: "obx-field-head" },
-								h(ReactImpl, "span", { className: "obx-label" }, field.label), nonDefaultBadge,
-								hintInline),
-							control,
-							hintBlock),
+							h(ReactImpl, "div", { className: "obx-field-head" },
+								h(ReactImpl, "span", { className: "obx-label" }, field.label),
+								h(ReactImpl, ui.Tag, { tone: options.secretSet === true ? "neutral" : "quiet", children: secretStateText })),
+							h(ReactImpl, "div", { className: "obx-control" },
+								h(ReactImpl, ui.Input, {
+									type: "password", autoComplete: "new-password",
+									value: String(value == null ? "" : value), disabled: disabled,
+									placeholder: (options.secretSet === true && !clearActive) ? "••••••••••••••••" : "留空 = 不修改",
+									"aria-label": field.label,
+									onChange: function (event: any) { onSecretChange(event.target.value); },
+								})),
+							h.apply(null, [ReactImpl, "p", { className: "obx-hint" }].concat(secretHintChildren))),
+						h(ReactImpl, "div", { className: "obx-secret-row", key: field.key + "-clear" },
+							h(ReactImpl, ui.Checkbox, {
+								checked: clearActive, disabled: disabled, label: secretClearLabelText,
+								onChange: function (next: any) { onClearSecretChange(next === true); },
+							})),
 					];
+				} else {
+					// string/number：原生 Input；number 经窄容器收窄（原 obx-input--number
+					// 的 160px 口径移到容器上，宿主 Input 的 className 落在 wrap 上不落 input）。
+					control = h(ReactImpl, "div", { className: field.type === "number" ? "obx-control--narrow" : "obx-control" },
+						h(ReactImpl, ui.Input, {
+							type: "text",
+							value: String(value == null ? "" : value), disabled: disabled,
+							placeholder: field.placeholder != null ? field.placeholder : undefined,
+							onChange: function (event: any) { onChange(field, event.target.value); },
+							"aria-invalid": fieldInvalidMessage != null ? true : undefined,
+							"aria-label": field.label,
+						}));
 				}
-			// W7：可选扩展点——字段行后追加组内附加行（connection 组 workspacePath
+				var nodes = [
+					h(ReactImpl, "div", { className: "obx-field", key: field.key }, headNode, control, hintNode),
+				];
+				// W7：可选扩展点——字段行后追加组内附加行（connection 组 workspacePath
 				// 下方的「快速填入 workspace」行由此注入；独立 class 不计入 obx-field 行数）。
 				if (typeof options.renderExtraRow === "function") {
 					var extra = options.renderExtraRow(field);
@@ -1386,40 +1390,15 @@ window.__ModuleLoader__.load({
 							return Object.assign({}, base, patchObj);
 						});
 					};
-					var toggleEl = h(ReactImpl, "label", {
-						className: "obx-toggle obx-toggle--svg",
-						role: "switch",
-						"aria-checked": nOn ? "true" : "false",
-						"aria-label": nk.label,
-						onClick: function (event: any) {
-							event.preventDefault();
-							if (options.disabled === true) return;
-							setNoticeState({ on: !nOn });
-						},
-					},
-						h(ReactImpl, "svg", { viewBox: "0 0 44 24", width: 44, height: 24, "aria-hidden": "true", focusable: "false", style: { display: "block" } },
-							h(ReactImpl, "rect", {
-								x: 0.5, y: 0.5, width: 43, height: 23, rx: 11.5,
-								fill: nOn ? "var(--obx-accent)" : "var(--obx-switch-off)",
-								style: { transition: "fill .18s ease" },
-							}),
-							h(ReactImpl, "circle", {
-								cx: 12, cy: 12, r: 9.5,
-								fill: "var(--obx-switch-knob)",
-								style: { transition: "transform .18s ease", transform: nOn ? "translateX(20px)" : "translateX(0px)" },
-							})));
 					var rowNodes = [
 						h(ReactImpl, "div", { className: "obx-field obx-field--row", key: "nt-" + nk.key },
-							h(ReactImpl, "div", {
-								className: "obx-field-text",
-								onClick: function () {
-									if (options.disabled === true) return;
-									setNoticeState({ on: !nOn });
-								},
-							},
-								h(ReactImpl, "span", { className: "obx-field-head" },
+							h(ReactImpl, "div", { className: "obx-field-text" },
+								h(ReactImpl, "div", { className: "obx-field-head" },
 									h(ReactImpl, "span", { className: "obx-label" }, nk.label))),
-							toggleEl),
+							h(ReactImpl, ui.Switch, {
+								checked: nOn, label: nk.label, disabled: options.disabled === true,
+								onChange: function () { if (options.disabled !== true) setNoticeState({ on: !nOn }); },
+							})),
 					];
 					if (nOn) {
 						rowNodes.push(h(ReactImpl, "div", { className: "obx-field", key: "ntx-" + nk.key },
@@ -1438,7 +1417,7 @@ window.__ModuleLoader__.load({
 			};
 			fieldNodes = fieldNodes.concat(renderNoticeRows(group));
 			// 本地加：组内分区（如权限的私聊/群聊）——按 keys 顺序取已渲染的字段节点，
-			// 每块前面插一个黑色小标题。
+			// 每块前面插一个小标题。
 			if (Array.isArray(group.sections) && group.sections.length > 0) {
 				var byKey: any = {};
 				group.fields.forEach(function (field: any, index: any) { byKey[field.key] = fieldNodes[index]; });
@@ -1451,32 +1430,12 @@ window.__ModuleLoader__.load({
 				}
 				fieldNodes = sectioned;
 			}
-			// 批 2（UX §2.2）：组描述行——标题下的一句人话（integration §2.5 裁定取
-			// UX §2.2 版文案，经 opts.groupDesc 传入；缺省不渲染）。
-			if (collapsible != null) {
-				// 批 2（UX §3.1 + visual §2）：details/summary 原生折叠——键盘可达、零
-				// JS 依赖；summary 行 = 组标题 + 组描述 + meta pill（「N 项 · M 项默认
-				// 开」复用 .obx-meta）+ 脏标记（「● 含未保存修改」）。折叠不隐藏变更：
-				// patch/保存与折叠无关，提交计数仍含诊断字段；aria-expanded/aria-controls 齐备。
-				var summaryChildren = [h(ReactImpl, "h3", { className: "obx-group-title" }, group.title)];
-				if (groupDesc != null) summaryChildren.push(h(ReactImpl, "span", { className: "obx-group-desc" }, groupDesc));
-				if (collapsible.summaryMeta != null) summaryChildren.push(h(ReactImpl, "span", { className: "obx-meta" }, collapsible.summaryMeta));
-				if (collapsible.dirtyMark != null) summaryChildren.push(h(ReactImpl, "span", { className: "obx-group-dirty" }, collapsible.dirtyMark));
-				return h(ReactImpl, "details", {
-					className: "obx-group obx-group--collapsible", "data-group": group.id,
-					open: collapsible.open === true,
-					onToggle: typeof collapsible.onToggle === "function" ? collapsible.onToggle : undefined,
-				},
-					h.apply(null, [ReactImpl, "summary",
-						{ className: "obx-group-summary", "aria-expanded": collapsible.open === true, "aria-controls": "obx-group-body-" + group.id }]
-						.concat(summaryChildren)),
-					h(ReactImpl, "div", { className: "obx-group-body", id: "obx-group-body-" + group.id },
-						fieldNodes));
-			}
-			// 本地加：组标题和括号说明同一行（之前说明被 flex 列布局压到下一行）。
+			// 组标题 + 一句人话描述（经 opts.groupDesc 传入；缺省不渲染）。
+			// 0.10.0：诊断组折叠（details/summary + sessionStorage 记忆）随页签式导航
+			// 移除——组本身即页签内容，折叠失去意义。
 			var sectionChildren = [h(ReactImpl, "div", { className: "obx-group-head" },
 				h(ReactImpl, "h3", { className: "obx-group-title" }, group.title),
-				groupDesc != null ? h(ReactImpl, "span", { className: "obx-group-desc obx-group-desc--inline" }, "(", groupDesc, ")") : null)];
+				groupDesc != null ? h(ReactImpl, "span", { className: "obx-group-desc" }, groupDesc) : null)];
 			return h.apply(null, [ReactImpl, "section", { className: "obx-group", "data-group": group.id }]
 				.concat(sectionChildren, [fieldNodes]));
 		}
@@ -1505,6 +1464,7 @@ window.__ModuleLoader__.load({
 		 */
 		function renderWorkspacePicker(ReactImpl: any, opts: any) {
 			var options = opts == null ? {} : opts;
+			var ui = options.ui;
 			if (options.loaded !== true) return null;
 			var workspaces = Array.isArray(options.workspaces) ? options.workspaces : [];
 			if (options.available !== true || workspaces.length === 0) {
@@ -1549,8 +1509,8 @@ window.__ModuleLoader__.load({
 						var label = String(workspace.path == null ? "" : workspace.path) + "（" + String(workspace.sessionCount == null ? 0 : workspace.sessionCount) + " 会话）";
 						return h(ReactImpl, "option", { key: String(workspace.id), value: String(workspace.id) }, label);
 					})),
-				h(ReactImpl, "button", {
-					className: "obx-btn", type: "button", disabled: disabled || selected == null,
+				h(ReactImpl, ui.Button, {
+					disabled: disabled || selected == null,
 					onClick: function () {
 						var onApply = options.onApply;
 						if (selected != null && typeof onApply === "function") onApply(selected.path);
@@ -1626,24 +1586,8 @@ window.__ModuleLoader__.load({
 				};
 			}, []);
 
-			// 批 2（UX §3.1，T8 补回上游缺口②）：诊断组折叠态——sessionStorage 记忆
-			//（"1" = 展开），details 原生 onToggle 回写；持久化不可用时仅内存态生效。
-			var diagnosticsExpandedState = React.useState(function () {
-				try {
-					return window.sessionStorage.getItem(DIAGNOSTICS_EXPANDED_KEY) === "1";
-				} catch (error) {
-					return false;
-				}
-			});
-			var diagnosticsExpanded = diagnosticsExpandedState[0];
-			var setDiagnosticsExpanded = diagnosticsExpandedState[1];
-			var toggleDiagnostics = function (event: any) {
-				var nextOpen = event != null && event.target != null && event.target.open === true;
-				setDiagnosticsExpanded(nextOpen);
-				try {
-					window.sessionStorage.setItem(DIAGNOSTICS_EXPANDED_KEY, nextOpen ? "1" : "0");
-				} catch (error) { /* 持久化不可用时仅内存态生效 */ }
-			};
+			// 0.10.0：诊断组折叠态（sessionStorage 记忆）随折叠交互移除——诊断组为
+			// 独立页签，组内折叠失去意义（常量与工具区注释同步）。
 
 			// 本地加：保存/报错提示改成顶部浮窗，5 秒后自动消失。
 			React.useEffect(function () {
@@ -1832,11 +1776,10 @@ window.__ModuleLoader__.load({
 				: computeDirtyKeys(draft, snapshot.config, { secretDraft: secretDraft, clearSecret: clearSecret });
 			var dirtyCount = dirtyKeys.length;
 
-			// 批 3（UX §5.6）：数字行内校验——blur 记态（非法 → 合法范围文案），修正
-			// 自动消除（onChange 对已标红键即时重校验）。标红不阻断输入；保存按钮禁用
-			// 由渲染层按标红键数落位（§5.6 原文「保存按钮禁用并 title 说明」），
+			// 批 3（UX §5.6）：数字行内校验——0.10.0 起改为「每次编辑即时校验」（原
+			// blur 校验随旧布局移除）：非法 → 合法范围文案记入标红，修正自动消除；
 			// computePatch 的 NaN invalidKeys 拦截保留为 save() 内最后防线。
-			var handleNumberBlur = function (field: any, rawText: any) {
+			var validateNumberField = function (field: any, rawText: any) {
 				var range = numberRangeInvalid(field, rawText); // null = 合法；string = 合法范围文案
 				setInvalidNumbers(function (previous: any) {
 					if (range == null) {
@@ -1867,12 +1810,12 @@ window.__ModuleLoader__.load({
 			}, [dirtyCount > 0]);
 
 			if (snapshot === null || draft === null) {
-				// 批 2（UX §7）：加载失败停留当前面板——错误横幅 + 重试按钮走既有
+				// 批 2（UX §7）：加载失败停留当前面板——错误行 + 重试按钮走既有
 				// refetch（不新增请求方法）；成功后快照落位回到完整面板。
 				return h(React, "div", { className: "obx-panel" },
 					h(React, "p", { className: "obx-hint" }, t("settings.loading")),
-					error === null ? null : h(React, "div", { className: "obx-error", role: "alert" }, t("status.error") + "：" + error),
-					error === null ? null : h(React, "button", { className: "obx-btn", type: "button", onClick: refetch }, t("common.retry")));
+					error === null ? null : h(React, "p", { className: "obx-error", role: "alert" }, t("status.error") + "：" + error),
+					error === null ? null : h(React, UI.Button, { variant: "ghost", onClick: refetch }, t("common.retry")));
 			}
 
 			var secretSet = false;
@@ -1899,17 +1842,8 @@ window.__ModuleLoader__.load({
 			// 禁用≠清空（值保留在草稿，computePatch 值比较语义不变）。
 			var modeInactiveKeys = deriveModeInactiveKeys(draft.mode);
 
-			// 批 2（UX §3.1）：诊断组折叠 summary 数据——「N 项 · M 项默认开」按
-			// GROUPS/DEFAULTS 派生（M = 默认 true 的 actionAuditEnabled/inboxRedact/injectEnabled）；
-			// 脏标记只看诊断键是否落入 dirtyKeys——折叠不隐藏变更（patch/保存与折叠
-			// 无关，工具栏 badge 与提交计数仍含诊断字段）。
-			var diagnosticsGroup = GROUPS.find(function (group) { return group.id === "diagnostics"; });
-			var diagnosticsTotal = diagnosticsGroup != null ? diagnosticsGroup.fields.length : 0;
-			var diagnosticsDefaultOnCount = diagnosticsGroup == null
-				? 0
-				: diagnosticsGroup.fields.filter(function (field) { return DEFAULTS[field.key] === true; }).length;
-			var diagnosticsKeys = GROUP_KEYS.diagnostics != null ? GROUP_KEYS.diagnostics : [];
-			var diagnosticsDirty = dirtyKeys.some(function (key) { return diagnosticsKeys.indexOf(key) >= 0; });
+			// 0.10.0：诊断组折叠 summary 派生（N 项/M 项默认开/脏标记）随折叠交互移除；
+			// 诊断字段照常计入 dirtyKeys 与保存流，页签切换不隐藏变更。
 
 			// 批 2（UX §5.7）：危险操作确认——有未保存修改时，「重新加载」「恢复默认值」
 			// 先经浏览器原生 confirm（「将丢弃 N 项未保存修改」）；无脏改动直接执行。
@@ -1958,15 +1892,16 @@ window.__ModuleLoader__.load({
 				clearSecret: clearSecret,
 				nonDefaultKeys: nonDefaultKeys,
 				draft: draft,
-				// 批 3（UX §5.6/§5.4）：行内校验标红数据源 + blur 校验入口 + 冲突橙标键
+				// 批 3（UX §5.6/§5.4）：行内校验标红数据源 + 冲突橙标键（校验时机 =
+				// onChange 即时校验，见 validateNumberField）
 				invalidNumbers: invalidNumberMessages,
-				onNumberBlur: handleNumberBlur,
 				remoteOverwrittenKeys: conflictKeys,
 				// W7：workspacePath 字段行下方的「快速填入 workspace」行（独立于
 				// obx-field 行；onApply 只写草稿不保存——保存仍走 save() 显式通道）。
 				renderExtraRow: function (field: any) {
 					if (field.key !== "workspacePath" && field.key !== "groupWorkspacePath") return null;
 					return renderWorkspacePicker(React, {
+						ui: UI,
 						loaded: workspace.loaded,
 						available: workspace.available,
 						workspaces: workspace.workspaces,
@@ -1992,8 +1927,8 @@ window.__ModuleLoader__.load({
 						return;
 					}
 					setDraft(Object.assign({}, draft, (function () { var next: any = {}; next[field.key] = nextValue; return next; })()));
-					// 批 3（UX §5.6）：已标红的数字键随输入重校验，修正后自动消除标红
-					if (field.type === "number" && invalidNumbers[field.key] != null) handleNumberBlur(field, nextValue);
+					// 批 3（UX §5.6）：数字键每次编辑即时校验——标红随输入消除/落位
+					if (field.type === "number") { validateNumberField(field, nextValue); }
 					// 批 3（UX §5.4）：冲突键被再次编辑后撤销行内橙标（该提示描述的是被
 					// 覆盖时刻的状态，用户改值后不再成立）
 					if (conflictKeys.indexOf(field.key) >= 0) setConflictKeys(conflictKeys.filter(function (key: any) { return key !== field.key; }));
@@ -2017,63 +1952,51 @@ window.__ModuleLoader__.load({
 				},
 			};
 
-			// 批 3（UX §5.4）：冲突横幅改显式状态——refetchMerged 置位 conflictActive，
-			// save() 开场/失败分支与 refetch()/accept() 复位（替换批 1 的文案恒等派生）。
-
-			return h(React, "div", { className: "obx-panel obx-shell" },
+			// 0.10.0 页面骨架（对齐宿主原生页）：头部（20px/500 标题 + 状态 + ghost 工具栏
+			// + SegmentedTabs 页签行）→ 滚动主体（反馈行 + 热生效提示 + 当前分组）→ 底部
+			// 保存条（原生 SettingsForm 式）。分组内容经 renderGroup 纯函数产出（ui 注入）。
+			return h(React, "div", { className: "obx-panel" },
 				h(React, "div", { className: "obx-head" },
 					h(React, "div", { className: "obx-head-row" },
 						h(React, "h2", { className: "obx-title" }, t("settings.title")),
-						h(React, "span", { className: "obx-spacer" }),
-						dirtyCount > 0 ? h(React, "span", { className: "obx-badge obx-warn" }, format(t("save.dirtyBadge"), { count: dirtyCount })) : null,
-						h(React, "span", { className: "obx-meta", title: "面板构建标记" }, "ui-svg"),
-						h(React, "span", { className: "obx-meta" }, t("revision.label") + " " + String(snapshot.revision)),
-						snapshot.entryActive === true ? null : h(React, "span", { className: "obx-meta obx-warn", title: t("effect.entryInactiveTitle") }, t("effect.entryInactive"))),
-					h(React, "div", { className: "obx-actions" },
-						h(React, "span", { className: "obx-actions-side" },
-							h(React, "button", { className: "obx-btn obx-btn--pill", style: { borderRadius: "999px" }, type: "button", disabled: busy, onClick: handleReset }, t("settings.reset"))),
-						h(React, "span", { className: "obx-actions-side obx-actions-side--center" },
-							h(React, "button", { className: "obx-btn obx-btn--pill", style: { borderRadius: "999px" }, type: "button", disabled: busy, onClick: handleReload }, t("settings.reload"))),
-						h(React, "span", { className: "obx-actions-side obx-actions-side--end" },
-							h(React, "button", {
-							className: "obx-btn obx-btn--pill primary", style: { borderRadius: "999px" }, type: "button",
+						dirtyCount > 0 ? h(React, "span", { className: "obx-status-warn" }, format(t("save.dirtyBadge"), { count: dirtyCount })) : null,
+						snapshot.entryActive === true ? null : h(React, "span", { className: "obx-status-warn", title: t("effect.entryInactiveTitle") }, t("effect.entryInactive")),
+						h(React, "span", { className: "obx-head-spacer" }),
+						h(React, UI.Button, { variant: "ghost", disabled: busy, onClick: handleReset }, t("settings.reset")),
+						h(React, UI.Button, { variant: "ghost", disabled: busy, onClick: handleReload }, t("settings.reload"))),
+					h(React, "div", { className: "obx-head-row" },
+						h(React, UI.SegmentedTabs, {
+							items: GROUPS.map(function (group: any) { return { value: group.id, label: group.title }; }),
+							value: activeTab,
+							onChange: function (next: any) { setActiveTab(next); },
+							label: "设置分组",
+						}),
+						h(React, "span", { className: "obx-head-spacer" }),
+						h(React, "span", { className: "obx-meta", title: "面板构建标记" }, "ui-native"),
+						h(React, "span", { className: "obx-meta" }, t("revision.label") + " " + String(snapshot.revision)))),
+				h(React, "div", { className: "obx-body" },
+					(error !== null || notice !== "") ? h(React, "div", { className: "obx-toast-wrap", "aria-live": "polite" },
+						error !== null ? h(React, "p", { className: "obx-error" + (conflictActive ? " obx-error--conflict" : ""), role: "alert" }, t("status.error") + "：" + error) : null,
+						notice !== "" ? h(React, "p", { className: "obx-notice" }, notice) : null) : null,
+					h(React, "p", { className: "obx-effect" }, t("effect.hint")),
+					GROUPS.filter(function (group) { return group.id === activeTab; }).map(function (group) {
+						return renderGroup(React, group, Object.assign({}, changeHandlers, {
+							ui: UI,
+							texts: texts,
+							groupDesc: t("group." + group.id + ".desc"),
+							modeInactiveKeys: modeInactiveKeys,
+						}));
+					}),
+					h(React, "div", { className: "obx-foot" },
+						h(React, "span", { className: "obx-head-spacer" }),
+						h(React, UI.Button, {
+							variant: "primary",
 							disabled: busy || dirtyCount === 0 || invalidNumberCount > 0,
 							title: invalidNumberCount > 0
 								? format(t("save.badNumber"), { keys: invalidNumberLabels.join("、") })
 								: dirtyCount === 0 ? t("save.noChangesTitle") : undefined,
 							onClick: save,
-							}, busy ? t("save.saving") : t("save.submit")))),
-					h(React, "div", { className: "obx-tabs", role: "tablist" },
-						GROUPS.map(function (group) {
-							return h(React, "button", {
-								key: group.id, type: "button", role: "tab",
-								className: "obx-tab",
-								"aria-selected": activeTab === group.id ? "true" : "false",
-								onClick: function () { setActiveTab(group.id); },
-							}, group.title);
-						}))),
-				h(React, "div", { className: "obx-body" },
-					(error !== null || notice !== "") ? h(React, "div", { className: "obx-toast-wrap", "aria-live": "polite" },
-						error !== null ? h(React, "div", { className: "obx-error obx-toast" + (conflictActive ? " obx-error--conflict" : ""), role: "alert" }, t("status.error") + "：" + error) : null,
-						notice !== "" ? h(React, "p", { className: "obx-notice obx-toast" }, notice) : null) : null,
-					h(React, "div", { className: "obx-effect" }, t("effect.hint")),
-					GROUPS.filter(function (group) { return group.id === activeTab; }).map(function (group) {
-						return renderGroup(React, group, Object.assign({}, changeHandlers, {
-							texts: texts,
-							groupDesc: t("group." + group.id + ".desc"),
-							modeInactiveKeys: modeInactiveKeys,
-							// 批 2（UX §3.1，T8 补回上游缺口②）：诊断组折叠 + sessionStorage 记忆；
-							// summary meta =「N 项 · M 项默认开」，脏时挂「● 含未保存修改」。
-							collapsible: group.id === "diagnostics"
-								? {
-									open: diagnosticsExpanded === true,
-									onToggle: toggleDiagnostics,
-									summaryMeta: format(t("diagnostics.summary"), { total: diagnosticsTotal, enabled: diagnosticsDefaultOnCount }),
-									dirtyMark: diagnosticsDirty === true ? t("diagnostics.dirtyMark") : null,
-								}
-								: undefined,
-						}));
-					})));
+						}, busy ? t("save.saving") : t("save.submit")))));
 		}
 		//#endregion
 
