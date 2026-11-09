@@ -327,9 +327,11 @@ export interface BridgeDeps {
    * assemblies / unexpected hosts) = answer interception stays disabled and
    * every reply flows into the conversation normally. */
   userQuestions?: UserQuestionsPort | undefined
-  /** T24: the host session-title service (dsh-session-title; declared in the
-   * plugin inject list). Absent (test assemblies / deployments with the title
-   * plugin removed) = title sync is skipped entirely — never a crash. */
+  /** T24/T27: the host session-title service (dsh-session-title). Read by
+   * name via a tolerant lookup in index.ts (deliberately NOT a cordis inject
+   * dependency — inject is hard, a missing service would keep the whole
+   * plugin from loading). Absent (title plugin removed / test assemblies) =
+   * title sync is skipped — no crash, no load failure. */
   sessionTitle?: SessionTitlePort | undefined
   config: BridgeConfig & TraceBridgeConfig
   policy: AccessPolicyConfig
@@ -846,9 +848,12 @@ export class ChatBridge {
    * 标题的原行为——QQ 派发的 source.kind 'plugin:dsh-onebot' 不进宿主
    * onUserMessage，QQ 会话原本永远拿不到自动标题）。门控与降级：
    * - titleSyncEnabled 关（默认）→ 不做任何事（零行为差异）；
-   * - 服务未部署（deps.sessionTitle 缺）→ 跳过，不崩；
+   * - 服务按名可选读取（deps.sessionTitle 为 undefined，含宿主未部署标题
+   *   插件）→ 跳过，不崩、不影响加载；
    * - 钉住态（snapshot.source.kind==='user'，用户在宿主里手动命名）→
-   *   绝不 refresh——refresh 的语义就是故意解除钉住；
+   *   绝不 refresh——refresh 的语义就是故意解除钉住；跨进程竞态（refresh
+   *   在途时用户在宿主 rename）由宿主 supersede 语义化解——rename 会中止
+   *   该会话 in-flight 的标题生成，迟到的 provider 结果不提交；
    * - refresh 后台执行不 await 主流程；get/refresh 同步抛或拒绝都只
    *   warn（标题是辅助功能，失败静默降级，不冒泡进派发主流程）。 */
   private syncSessionTitle(chat: ChatAgent): void {

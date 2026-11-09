@@ -11,7 +11,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 
-import { Config } from '../src/index.js'
+import { Config, resolveSessionTitle } from '../src/index.js'
 import { SCHEMA_DEFAULTS, validatePatch } from '../src/settings-remote.js'
 import { makeHarness } from './helpers/bridge-harness.js'
 
@@ -92,6 +92,28 @@ describe('T24 桥接：派发回合后的标题同步门控', () => {
     await vi.waitFor(() => expect(service.refresh).toHaveBeenCalledTimes(1))
     await vi.waitFor(() => expect(logs.some(l => l.level === 'warn' && l.message.includes('会话标题刷新失败') && l.message.includes('provider boom'))).toBe(true))
   }, 15000)
+})
+
+describe('T24/T27 resolveSessionTitle：注入缺失真实形态的容错读取', () => {
+  it('ctx.get 返回服务：原样返回（正常宿主形态）', () => {
+    const service = makeTitleService()
+    const ctx = { get: (name: string) => (name === 'sessionTitle' ? service : undefined) }
+    expect(resolveSessionTitle(ctx)).toBe(service)
+  })
+
+  it('ctx 完全无 sessionTitle（无 get 方法、无属性）：归一 undefined，不抛', () => {
+    expect(resolveSessionTitle({})).toBeUndefined()
+  })
+
+  it('ctx.get 返回 null（cordis 服务未注册的真实返回）：归一 undefined，不抛', () => {
+    const ctx = { get: () => null }
+    expect(resolveSessionTitle(ctx)).toBeUndefined()
+  })
+
+  it('ctx.get 抛异常：吞掉归一 undefined，不冒泡', () => {
+    const ctx = { get: () => { throw new Error('store disposed') } }
+    expect(resolveSessionTitle(ctx)).toBeUndefined()
+  })
 })
 
 describe('T24 设置键：titleSyncEnabled', () => {

@@ -102,10 +102,12 @@ type Context = CordisContext & {
     askTimed(request: unknown, callId: string, timeoutMs: number): Promise<unknown>
     answer(agent: unknown, callId: string, payload: { answers: Array<{ id: string; selected: string[]; custom?: string }> }): Promise<boolean>
   }
-  /** T24 (PR port 会话标题同步)：宿主 dsh-session-title 服务（dsh-base 标准
-   * include 集必装，已加入 inject 列表）。桥接侧读取仍走容错 lookup——部署
-   * 摘除标题插件时取到 undefined 就跳过同步，绝不阻塞加载/崩载。 */
-  sessionTitle: {
+  /** T24/T27 (PR port 会话标题同步)：宿主 dsh-session-title 服务（dsh-base
+   * 标准 include 集自带）。有意不进 inject 列表——cordis inject 是硬依赖
+   * （缺任一注入服务时 fiber 恒 INACTIVE、apply 不执行，宿主摘除标题插件会
+   * 导致整个插件静默不加载）。运行时经 resolveSessionTitle 按名容错读取：
+   * 服务缺失=undefined=桥接侧跳过标题同步。 */
+  sessionTitle?: {
     /** 当前标题快照；undefined = 尚无标题；source.kind 'user' = 用户钉住。 */
     get(session: Session): { source?: { kind?: string } } | undefined
     /** 触发 provider 重新生成标题（语义=故意解除钉住——钉住态绝不调）。 */
@@ -114,7 +116,22 @@ type Context = CordisContext & {
 }
 
 export const name = 'dsh-onebot'
-export const inject = ['tools', 'systemPrompt', 'agents', 'sessions', 'agentDefaultModel', 'agentPresets', 'sessionPersistence', 'workspaceRegistry', 'commands', 'llm', 'sessionTitle']
+export const inject = ['tools', 'systemPrompt', 'agents', 'sessions', 'agentDefaultModel', 'agentPresets', 'sessionPersistence', 'workspaceRegistry', 'commands', 'llm']
+
+/** T24/T27: 容错读取宿主 dsh-session-title 服务（与 userQuestions 同手法）。
+ * 按名从 ctx 读取（cordis 下服务未注册时 ctx.get 返回 null/undefined，宿主
+ * 摘除 dsh-session-title 亦然），取不到或读取抛错一律归一为 undefined；
+ * 桥接侧对 undefined 跳过标题同步。绝不走 inject——cordis inject 是硬依赖，
+ * 缺服务时 fiber 恒 INACTIVE，整个插件会静默不加载。 */
+export function resolveSessionTitle(ctx: unknown): import('./bridge.js').SessionTitlePort | undefined {
+  try {
+    const host = ctx as { get?: (name: string) => unknown; sessionTitle?: import('./bridge.js').SessionTitlePort }
+    const service = typeof host.get === 'function' ? host.get('sessionTitle') : host.sessionTitle
+    return (service ?? undefined) as import('./bridge.js').SessionTitlePort | undefined
+  } catch {
+    return undefined
+  }
+}
 
 /** Plugin configuration (validated by schemastery). */
 export interface Config {
@@ -682,16 +699,11 @@ export function apply(ctx: Context, config: Config): void {
     get userQuestions() {
       return resolveUserQuestions(ctx)
     },
-    // T24 (PR port 会话标题同步)：sessionTitle 在 inject 列表里（宿主 dsh-base
-    // 标准部署必装），这里仍走容错 lookup——部署摘除标题插件时取到 undefined
-    // 就跳过同步（桥接侧已兜底），绝不崩载。
+    // T24/T27 (PR port 会话标题同步)：sessionTitle 不在 inject 列表（cordis
+    // inject 是硬依赖），这里按名容错读取——宿主摘除/未启动标题插件时取到
+    // undefined 就跳过同步（桥接侧已兜底），加载与派发主流程不受影响。
     get sessionTitle() {
-      try {
-        const service = (ctx as unknown as { get?: (name: string) => unknown }).get?.('sessionTitle')
-        return (service ?? undefined) as import('./bridge.js').SessionTitlePort | undefined
-      } catch {
-        return undefined
-      }
+      return resolveSessionTitle(ctx)
     },
     sessionPersistence: ctx.sessionPersistence,
     workspaceRegistry: ctx.workspaceRegistry as unknown as WorkspaceRegistryLike,
