@@ -13,7 +13,7 @@ import type { Context as CordisContext } from '@deepseek-ai/cordis'
 import type SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import type ToolRuntime from '@deepseek-ai/dsh-tools'
 import type { AgentRegistry } from '@deepseek-ai/dsh-agent'
-import type { SessionStore } from '@deepseek-ai/dsh-session'
+import type { Session, SessionStore } from '@deepseek-ai/dsh-session'
 import type { ModelSelection } from '@deepseek-ai/dsh-agent'
 import type Z from '@deepseek-ai/schemastery'
 import type { OneBotEvent } from './connection.js'
@@ -102,10 +102,19 @@ type Context = CordisContext & {
     askTimed(request: unknown, callId: string, timeoutMs: number): Promise<unknown>
     answer(agent: unknown, callId: string, payload: { answers: Array<{ id: string; selected: string[]; custom?: string }> }): Promise<boolean>
   }
+  /** T24 (PR port 会话标题同步)：宿主 dsh-session-title 服务（dsh-base 标准
+   * include 集必装，已加入 inject 列表）。桥接侧读取仍走容错 lookup——部署
+   * 摘除标题插件时取到 undefined 就跳过同步，绝不阻塞加载/崩载。 */
+  sessionTitle: {
+    /** 当前标题快照；undefined = 尚无标题；source.kind 'user' = 用户钉住。 */
+    get(session: Session): { source?: { kind?: string } } | undefined
+    /** 触发 provider 重新生成标题（语义=故意解除钉住——钉住态绝不调）。 */
+    refresh(session: Session): Promise<unknown>
+  }
 }
 
 export const name = 'dsh-onebot'
-export const inject = ['tools', 'systemPrompt', 'agents', 'sessions', 'agentDefaultModel', 'agentPresets', 'sessionPersistence', 'workspaceRegistry', 'commands', 'llm']
+export const inject = ['tools', 'systemPrompt', 'agents', 'sessions', 'agentDefaultModel', 'agentPresets', 'sessionPersistence', 'workspaceRegistry', 'commands', 'llm', 'sessionTitle']
 
 /** Plugin configuration (validated by schemastery). */
 export interface Config {
@@ -211,6 +220,9 @@ export interface Config {
   memoryFiles: string[]
   /** T4 (PR port 上下文尾巴)：/new 带上一会话最后几句（默认关）。 */
   chatTailsEnabled: boolean
+  /** T24 (PR port 会话标题同步)：QQ 用户消息派发回合后触发宿主会话标题
+   * 刷新（每条消息一次）；用户钉住的标题永不覆盖；默认关。 */
+  titleSyncEnabled: boolean
   inboundFileMaxBytes: number
   /** @deprecated D4a alias of inboundFileMaxBytes; honored for one release. */
   maxInboundFileBytes?: number
@@ -432,6 +444,8 @@ export const Config: Z<Config> = z.object({
     .description('记忆文件路径列表（T4 PR 移植）：支持 ~/ 展开；仅在 memoryFilesEnabled 开启且私聊会话生效'),
   chatTailsEnabled: z.boolean().default(false)
     .description('上下文尾巴开关（T4 PR 移植）：开启后 /new 把上一会话最后几句（最多 8 条、每条 300 字符，落盘 mediaDir/chat-tails.json）带进新会话，模型开场先接上一段话头；默认关（/new 维持纯新会话）'),
+  titleSyncEnabled: z.boolean().default(false)
+    .description('会话标题同步（T24 PR 移植）：开启后每条 QQ 用户消息派发回合后触发宿主会话标题刷新（一次小 LLM 调用，等价宿主自动标题 all-prompts 的原行为——QQ 消息的来源标记不会触发宿主自动标题，本开关补上）；用户在宿主里手动钉住的标题永不覆盖；标题服务未部署或刷新失败时静默降级（仅告警日志）；默认关闭；改动需刷新页面/重启后生效'),
   inboundFileMaxBytes: z.number().default(INBOUND_FILE_MAX_BYTES)
     .description('QQ 入站文件最大字节数（直链/base64 拉取，0 = 不限制）'),
   maxInboundFileBytes: z.number().deprecated()
@@ -668,6 +682,17 @@ export function apply(ctx: Context, config: Config): void {
     get userQuestions() {
       return resolveUserQuestions(ctx)
     },
+    // T24 (PR port 会话标题同步)：sessionTitle 在 inject 列表里（宿主 dsh-base
+    // 标准部署必装），这里仍走容错 lookup——部署摘除标题插件时取到 undefined
+    // 就跳过同步（桥接侧已兜底），绝不崩载。
+    get sessionTitle() {
+      try {
+        const service = (ctx as unknown as { get?: (name: string) => unknown }).get?.('sessionTitle')
+        return (service ?? undefined) as import('./bridge.js').SessionTitlePort | undefined
+      } catch {
+        return undefined
+      }
+    },
     sessionPersistence: ctx.sessionPersistence,
     workspaceRegistry: ctx.workspaceRegistry as unknown as WorkspaceRegistryLike,
     agentDefaultModel: ctx.agentDefaultModel,
@@ -718,6 +743,8 @@ export function apply(ctx: Context, config: Config): void {
       memoryFilesEnabled: config.memoryFilesEnabled,
       memoryFiles: config.memoryFiles,
       chatTailsEnabled: config.chatTailsEnabled,
+      // T24 (PR port 会话标题同步)：开关透传（默认关；门控与降级在 bridge 侧）。
+      titleSyncEnabled: config.titleSyncEnabled,
       maxInboundFileBytes: config.inboundFileMaxBytes,
       chatIdleEvictDays: config.chatIdleEvictDays,
       ...gateConfig,

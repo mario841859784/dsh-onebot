@@ -175,6 +175,24 @@ export interface BridgeConfig {
    * 投递，从首条算起最多 3000ms 封顶；absent → 600。仅在 inboxQueueEnabled
    * 开启时生效（开关与延迟设置项同一配置组）。 */
   inboxQueueDelayMs?: number
+  /** T24 (PR port 会话标题同步)：QQ 用户消息派发回合后触发宿主会话标题刷新
+   * （每条消息一次，等价宿主自动标题 all-prompts 的原行为——QQ 派发的
+   * source.kind 'plugin:dsh-onebot' 不触发宿主 onUserMessage，本开关补上）；
+   * absent/false = 关（默认，裁定口径）。用户在宿主里钉住的标题
+   * （snapshot.source.kind==='user'）永不覆盖；服务未部署或刷新失败静默
+   * 降级（warn 日志），绝不冒泡进派发主流程。 */
+  titleSyncEnabled?: boolean
+}
+
+/** T24 (PR port 会话标题同步)：宿主 dsh-session-title 服务的最小结构面
+ * （不 import 宿主包类型——宿主包不在本插件构建/测试依赖里，同
+ * userQuestions 的结构化复刻手法）。get() 读当前标题快照（undefined = 尚
+ * 无标题；source.kind 'user' = 用户在宿主里手动钉住，refresh 的语义是故意
+ * 解除钉住——钉住态绝不调）；refresh() 触发 provider 重新生成标题。
+ * 服务未部署（宿主摘除 session-title 插件）时取不到 = 同步跳过，不崩。 */
+export interface SessionTitlePort {
+  get(session: Session): { source?: { kind?: string } } | undefined
+  refresh(session: Session): Promise<unknown>
 }
 
 /** W1 trace/config extensions: the observability knobs ride as optional
@@ -309,6 +327,10 @@ export interface BridgeDeps {
    * assemblies / unexpected hosts) = answer interception stays disabled and
    * every reply flows into the conversation normally. */
   userQuestions?: UserQuestionsPort | undefined
+  /** T24: the host session-title service (dsh-session-title; declared in the
+   * plugin inject list). Absent (test assemblies / deployments with the title
+   * plugin removed) = title sync is skipped entirely — never a crash. */
+  sessionTitle?: SessionTitlePort | undefined
   config: BridgeConfig & TraceBridgeConfig
   policy: AccessPolicyConfig
   /** W1/T5 health: the ALREADY-redacted plugin config snapshot (secrets
@@ -814,7 +836,35 @@ export class ChatBridge {
     if (injectedRound !== undefined) this.injectRoundByChat.set(chatId, injectedRound.traceId)
     else this.injectRoundByChat.delete(chatId)
     this.deps.config.inject?.noteDispatch(chatId)
+    // T24 (PR port 会话标题同步)：派发回合后按开关门控触发宿主标题刷新。
+    this.syncSessionTitle(chat)
     this.startTyping(chat)
+  }
+
+  /** T24 (PR port 会话标题同步)：每条 QQ 用户消息派发回合后，让宿主标题
+   * 服务为该会话重新生成标题（频率=每条消息，等价宿主 all-prompts 自动
+   * 标题的原行为——QQ 派发的 source.kind 'plugin:dsh-onebot' 不进宿主
+   * onUserMessage，QQ 会话原本永远拿不到自动标题）。门控与降级：
+   * - titleSyncEnabled 关（默认）→ 不做任何事（零行为差异）；
+   * - 服务未部署（deps.sessionTitle 缺）→ 跳过，不崩；
+   * - 钉住态（snapshot.source.kind==='user'，用户在宿主里手动命名）→
+   *   绝不 refresh——refresh 的语义就是故意解除钉住；
+   * - refresh 后台执行不 await 主流程；get/refresh 同步抛或拒绝都只
+   *   warn（标题是辅助功能，失败静默降级，不冒泡进派发主流程）。 */
+  private syncSessionTitle(chat: ChatAgent): void {
+    if (this.deps.config.titleSyncEnabled !== true) return
+    const service = this.deps.sessionTitle
+    if (service === undefined) return
+    const session = chat.agent.session
+    try {
+      const snapshot = service.get(session)
+      if (snapshot?.source?.kind === 'user') return
+      void service.refresh(session).catch((error: unknown) => {
+        this.deps.log('warn', '会话标题刷新失败 (' + chat.sessionId + '): ' + describeError(error))
+      })
+    } catch (error) {
+      this.deps.log('warn', '会话标题刷新失败 (' + chat.sessionId + '): ' + describeError(error))
+    }
   }
 
   /** Prepend per-chat context directives (/goal reminder) to a turn's user

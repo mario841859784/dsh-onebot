@@ -29,10 +29,10 @@ declare const document: any;
  *     listWorkspaces()（W7：只读查询宿主 workspace 注册表，{available, workspaces:
  *     [{id,path,sessionCount}]}；registry 缺席降级 available:false 不抛错），
  *     全 positional（宿主网关 methodParameterNames 拒绝解构/默认值/rest）；
- *   - 快照结构 = T1 §3 OnebotSettingsSnapshot（revision/entryActive/config(70 键，
+ *   - 快照结构 = T1 §3 OnebotSettingsSnapshot（revision/entryActive/config(71 键，
  *     含 notices 对象)/secrets/groups(6 组)/effect='restart'），accessToken 恒 ''（脱敏）；
- *   - 六组 68 键面板分组与 schema 默认值 = src/settings-remote.ts 常量（T8 口径：
- *     SETTINGS_GROUPS 68 面板键 + chatIdleEvictDays 只在 config 不上面板）。
+ *   - 六组 69 键面板分组与 schema 默认值 = src/settings-remote.ts 常量（T8 口径：
+ *     SETTINGS_GROUPS 69 面板键 + chatIdleEvictDays 只在 config 不上面板）。
  *
  * T8 相对贡献者版的差异（编排者评审硬要求 + 本仓裁决）：
  *   1. 补回上游缺口①：W6「非默认」徽标（值≠默认值的键一律挂标，title=与默认值不同）；
@@ -41,7 +41,7 @@ declare const document: any;
  *      inboxQueueEnabled/inboxQueueDelayMs，DEFAULTS 取本仓拍板值
  *      （dmPromptFile/groupPromptFile/memoryFilesEnabled 关）；
  *   4. notices 面板改 5 真键（本仓 schema 无 newSession）；
- *   5. patchSchema/configSchema 覆盖全部 70 键（防网关按 schema 剥键丢编辑）；
+ *   5. patchSchema/configSchema 覆盖全部 71 键（防网关按 schema 剥键丢编辑）；
  *   6. T11：首页左侧边栏「QQ 机器人」入口（sidebarEntryEnabled 开关，main 与
  *      sidebar.panellist 同 id "qq-bot" 成对注册；false 时两者均不注册）。
  * 任一侧变更 descriptor/分组/键集/默认值时，必须同步本文件并在 DEVLOG 记录。
@@ -155,6 +155,8 @@ window.__ModuleLoader__.load({
 					// T7 转正：入站连发合并（开关默认关；合并窗口 600ms，首条起最多 3000ms 封顶）。
 					{ key: "inboxQueueEnabled", label: "入站连发合并", type: "boolean", hint: "同会话连发的多条消息合成一条投递" },
 					{ key: "inboxQueueDelayMs", label: "合并等待窗口（毫秒）", type: "number", hint: "每条消息先等一个窗口再投递；0 = 立即", showIf: { key: "inboxQueueEnabled", value: true } },
+					// T24：会话标题同步（开关默认关；用户在宿主里钉住的标题永不覆盖）。
+					{ key: "titleSyncEnabled", label: "QQ 会话标题同步", type: "boolean", hint: "每条消息后让宿主刷新会话标题（一次小 LLM 调用）；宿主里手动命名的标题不会被覆盖" },
 														],
 			},
 			{
@@ -286,6 +288,8 @@ window.__ModuleLoader__.load({
 			gifFramesEnabled: false,
 			inboxQueueEnabled: false,
 			inboxQueueDelayMs: 600,
+			// T24：QQ 会话标题同步开关（默认关）。
+			titleSyncEnabled: false,
 		};
 		// T8：notices 通知开关补上面板。值可以是 false=不发 / true=默认文案 /
 		// 字符串=自定义文案。5 键对齐 src/settings-remote.ts NOTICE_KEYS（本仓
@@ -413,7 +417,7 @@ window.__ModuleLoader__.load({
 		//#endregion
 
 		//#region Remote 契约 schema（与 host lib/settings-remote.js 快照/校验逐字对齐）
-		/** 69 键生效值（host buildSnapshot 的 effectiveConfig 全键返回；accessToken 恒 ''；
+		/** 71 键生效值（host buildSnapshot 的 effectiveConfig 全键返回；accessToken 恒 ''；
 		 *  notices 为 5 子键对象）。声明外键会被 vObject 剥离，故必须逐键列出。 */
 		var configSchema = vObject({
 			mode: vEnum(["reverse", "forward"]),
@@ -486,6 +490,8 @@ window.__ModuleLoader__.load({
 			gifFramesEnabled: vBoolean(),
 			inboxQueueEnabled: vBoolean(),
 			inboxQueueDelayMs: vNumber(),
+			// T24：QQ 会话标题同步开关。
+			titleSyncEnabled: vBoolean(),
 			notices: vObject({
 				steerAccepted: vNoticeValue(),
 				queue: vNoticeValue(),
@@ -509,7 +515,7 @@ window.__ModuleLoader__.load({
 			}),
 			effect: vEnum(["restart"]), // T1 §5：19 键统一插件级热重启
 		});
-		/** updateSettings 入参（T8：69 键任意子集的扁平 JSON；accessToken 缺省=不改，''=清空；
+		/** updateSettings 入参（T8：71 键任意子集的扁平 JSON；accessToken 缺省=不改，''=清空；
 		 *  notices 为 5 子键对象任意子集。客户端网关可能按本 schema 剥键，缺键=编辑被静默
 		 *  丢弃，故全键逐字列出——数字界与 src/settings-remote.ts NUMBER_RANGE 对齐）。 */
 		var patchSchema = vObject({
@@ -553,6 +559,8 @@ window.__ModuleLoader__.load({
 			deferredTimeoutMs: vOptional(vNumber(0)),
 			inboxQueueEnabled: vOptional(vBoolean()),
 			inboxQueueDelayMs: vOptional(vNumber(0)),
+			// T24：QQ 会话标题同步开关。
+			titleSyncEnabled: vOptional(vBoolean()),
 			newSessionGreeting: vOptional(vBoolean()),
 			firstMessageAsUser: vOptional(vBoolean()),
 			memoryFilesEnabled: vOptional(vBoolean()),

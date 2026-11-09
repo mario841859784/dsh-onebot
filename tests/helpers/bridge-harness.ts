@@ -118,7 +118,7 @@ export function makeFakeAgents(
 }
 
 /** Full bridge + WS harness: inbound via real WebSocket, outbound captured. */
-export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; log?: (level: string, message: string) => void; notices?: NoticeTexts; monoFamilies?: readonly string[]; allowPrivateHosts?: boolean; respond?: Record<string, (params: Record<string, unknown>) => unknown>; userQuestions?: unknown; wakeNamesAdmin?: string[]; wakeNamesMember?: string[]; replyCountsAsMention?: boolean; atAllCountsAsMention?: boolean; pokeEnabled?: boolean; outboundDefenseEnabled?: boolean; asideOnlySilentEnabled?: boolean; dmPromptFile?: string; groupPromptFile?: string; memoryFilesEnabled?: boolean; memoryFiles?: readonly string[]; chatTailsEnabled?: boolean; inboxQueueEnabled?: boolean; inboxQueueDelayMs?: number }) {
+export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; log?: (level: string, message: string) => void; notices?: NoticeTexts; monoFamilies?: readonly string[]; allowPrivateHosts?: boolean; respond?: Record<string, (params: Record<string, unknown>) => unknown>; userQuestions?: unknown; sessionTitle?: unknown; wakeNamesAdmin?: string[]; wakeNamesMember?: string[]; replyCountsAsMention?: boolean; atAllCountsAsMention?: boolean; pokeEnabled?: boolean; outboundDefenseEnabled?: boolean; asideOnlySilentEnabled?: boolean; dmPromptFile?: string; groupPromptFile?: string; memoryFilesEnabled?: boolean; memoryFiles?: readonly string[]; chatTailsEnabled?: boolean; inboxQueueEnabled?: boolean; inboxQueueDelayMs?: number; titleSyncEnabled?: boolean }) {
   const ctx = new Context()
   const sessionIds: string[] = []
   const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[], agentListeners: [] as Array<{ event: string; listener: (request: unknown, next: () => Promise<unknown>) => unknown }>, channelSectionTexts: [] as Array<{ name: string; text: string }> }
@@ -140,6 +140,8 @@ export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: st
     defaultModel: undefined,
     // T2-B3: the host userQuestions service stub (absent = no interception).
     ...(opts?.userQuestions !== undefined ? { userQuestions: opts.userQuestions } : {}),
+    // T24: the host session-title service stub (absent = sync skipped).
+    ...(opts?.sessionTitle !== undefined ? { sessionTitle: opts.sessionTitle } : {}),
     config: {
       botQQ: '10002', ignoreSelf: opts?.ignoreSelf ?? false, requireMention: true,
       interimMessages: opts?.interimMessages ?? true, sendErrorNotice: true, restrictedMemberPrefix: false,
@@ -178,6 +180,8 @@ export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: st
       // T7 (PR port 入站连发合并)：开关+窗口透传（absent = 默认关）。
       ...(opts?.inboxQueueEnabled !== undefined ? { inboxQueueEnabled: opts.inboxQueueEnabled } : {}),
       ...(opts?.inboxQueueDelayMs !== undefined ? { inboxQueueDelayMs: opts.inboxQueueDelayMs } : {}),
+      // T24 (PR port 会话标题同步)：开关透传（absent = 默认关）。
+      ...(opts?.titleSyncEnabled !== undefined ? { titleSyncEnabled: opts.titleSyncEnabled } : {}),
     },
     policy: {
       dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],

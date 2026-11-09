@@ -284,6 +284,6 @@ describe('T7 设置键：inboxQueueEnabled/inboxQueueDelayMs', () => {
   })
 
   it('behavior 组键序：deferredTimeoutMs 之后追加两键', () => {
-    expect(SETTINGS_GROUPS.behavior.slice(-3)).toEqual(['deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs'])
+    expect(SETTINGS_GROUPS.behavior.slice(-4)).toEqual(['deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled'])
   })
 })
