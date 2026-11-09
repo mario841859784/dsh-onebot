@@ -332,6 +332,8 @@ export const Config: Z<Config> = z.object({
     .description('放行所有用户（仅开发用；也可用 ONEBOT_ALLOW_ALL_USERS=true）'),
   ignoreSelf: z.boolean().default(true)
     .description('忽略机器人自己发出的消息（防自循环）'),
+  sidebarEntryEnabled: z.boolean().default(true)
+    .description('DSH 首页左侧边栏「QQ 机器人」入口（T11）：true（默认）=客户端在首页左侧边栏注册入口，点开即现有设置面板（与插件菜单下的设置页入口同一面板）；false=不注册侧边栏入口与配对面板（插件菜单下的设置页入口保留）。改动保存后需刷新网页生效（客户端按启动时快照决定注册，无推送通道）'),
   interimMessages: z.boolean().default(true)
     .description('是否把模型每步（含工具调用之间的中间回复）的文本立即发出；false 则只发最终回复。true 时：中间消息实时可见、每条在 interimRecallMs 后自动单独撤回、回合结束先发一张整轮 t2i 小结卡再发最终回复'),
   interimRecallMs: z.number().default(90_000)

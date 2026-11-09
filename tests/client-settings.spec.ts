@@ -4,13 +4,13 @@
  * 验证 src/client.ts（构建产物 lib/client.js，CJS 包裹挂 window.__ModuleLoader__）
  * 的模块级契约：
  *   ① 语法可解析（new Function）+ CJS banner/footer 形态 + externals 仅 react；
- *   ② 入口导出 inject + apply；T11 侧边栏入口未混入本批（无 sidebar.panellist）；
- *   ③ 六组 67 键：分组/键序/默认值与宿主侧 src/settings-remote.ts 导出常量逐字
+ *   ② 入口导出 inject + apply；T11 侧边栏入口成对注册（main + sidebar.panellist 同 id）；
+ *   ③ 六组 68 键：分组/键序/默认值与宿主侧 src/settings-remote.ts 导出常量逐字
  *      一致（descriptor 契约核对，防两侧漂移）；notices 为 5 真键（无贡献者 newSession）；
  *   ④ Typert descriptor 与宿主服务方法面逐字对齐：getSettings() /
  *      updateSettings(patch, expectedRevision) / listWorkspaces()，全 positional，
- *      patch/config codec 覆盖全部 69 键（防客户端网关按 schema 剥键丢编辑）；
- *   ⑤ 渲染函数模块级可测：renderGroup 纯函数产出 67 键控件行；showIf 条件显隐；
+ *      patch/config codec 覆盖全部 70 键（防客户端网关按 schema 剥键丢编辑）；
+ *   ⑤ 渲染函数模块级可测：renderGroup 纯函数产出 68 键控件行；showIf 条件显隐；
  *      accessToken 密码型输入且不明文回显；boolean 行 role=switch 左右布局；
  *      notices 行为组按 newMessagePolicy 档位显隐；
  *   ⑥ T8 补回上游缺口①：W6「非默认」徽标对所有类型键挂标（title=与默认值不同）；
@@ -90,7 +90,7 @@ const allFields = client.ALL_FIELDS as Array<{ key: string; type: string; showIf
 const draft = client.draftFromSnapshot as (snapshot: { config: Record<string, unknown> }) => Record<string, unknown>
 const defaults = client.DEFAULTS as Record<string, unknown>
 
-/** 宿主形态快照 config：SCHEMA_DEFAULTS 全 69 键（含 notices + chatIdleEvictDays），accessToken 按脱敏约定为 ''。 */
+/** 宿主形态快照 config：SCHEMA_DEFAULTS 全 70 键（含 notices + chatIdleEvictDays），accessToken 按脱敏约定为 ''。 */
 const SNAPSHOT_CONFIG: Record<string, unknown> = { ...SCHEMA_DEFAULTS, accessToken: '' }
 const baseDraft = () => draft({ config: SNAPSHOT_CONFIG })
 const renderGroup = (groupId: string, opts: Record<string, unknown>) =>
@@ -134,10 +134,12 @@ describe('T8 客户端 bundle — 装载契约（CJS 包裹 / externals / 入口
     expect(CLIENT_SOURCE).not.toMatch(/\bimport\s/)
   })
 
-  it('T8 边界：贡献者侧边栏入口未混入本批（留给 T11）', () => {
-    expect(CLIENT_SOURCE).not.toContain('sidebar.panellist')
-    expect(CLIENT_SOURCE).not.toContain('OnebotSidebarIcon')
-    expect(CLIENT_SOURCE).not.toContain('nav.entry')
+  it('T11 边界：侧边栏入口图标为自绘 SVG（externals 冻结仅 react，不引宿主 primitives 图标表）', () => {
+    expect(CLIENT_SOURCE).toContain('sidebar.panellist') // T11：侧边栏列表槽注入
+    expect(CLIENT_SOURCE).toContain('OnebotSidebarIcon')
+    expect(CLIENT_SOURCE).toContain('SIDEBAR_PANEL_ID')
+    expect(client.OnebotSidebarIcon).toBeTypeOf('function')
+    expect(client.SIDEBAR_PANEL_ID).toBe('qq-bot')
     expect(CLIENT_SOURCE).toContain('ui-svg') // 面板构建标记保留
   })
 })
@@ -169,7 +171,7 @@ describe('T8 客户端 bundle — descriptor 契约核对（与宿主 src/settin
     expect(listWorkspaces.result.schema.parse({ available: false, workspaces: [] })).toEqual({ available: false, workspaces: [] })
   })
 
-  it('result codec 可解析宿主形态快照（69 键 config 含 notices/chatIdleEvictDays + secrets 脱敏标记 + groups + effect=restart）', () => {
+  it('result codec 可解析宿主形态快照（70 键 config 含 notices/chatIdleEvictDays + secrets 脱敏标记 + groups + effect=restart）', () => {
     const getSettings = descriptors[0] as { result: { schema: { parse(value: unknown): unknown } } }
     const snapshot = {
       revision: 3,
@@ -196,7 +198,7 @@ describe('T8 客户端 bundle — descriptor 契约核对（与宿主 src/settin
     expect(() => getSettings.result.schema.parse({ revision: 0, entryActive: true, config: SNAPSHOT_CONFIG, secrets: [], groups: SETTINGS_GROUPS, effect: 'none' })).toThrow()
   })
 
-  it('updateSettings patch codec 接受全 69 键任意子集（含 T6/T7 转正键与 notices）、拒绝非法值', () => {
+  it('updateSettings patch codec 接受全 70 键任意子集（含 T6/T7 转正键与 notices）、拒绝非法值', () => {
     const updateSettings = descriptors[1] as { parameters: Array<{ codec: { schema: { parse(value: unknown): unknown } } }> }
     const patchCodec = updateSettings.parameters[0].codec.schema
     expect(patchCodec.parse({ port: 1234, mode: 'reverse' })).toEqual({ port: 1234, mode: 'reverse' })
@@ -213,26 +215,29 @@ describe('T8 客户端 bundle — descriptor 契约核对（与宿主 src/settin
   })
 })
 
-describe('T8 客户端 bundle — 六组 67 键（与 host SETTINGS_GROUPS 逐字一致，T8 恢复全等契约）', () => {
-  it('分组键序逐字对齐 host SETTINGS_GROUPS（6 组 67 键，含 T6/T7 转正键）', () => {
+describe('T8 客户端 bundle — 六组 68 键（与 host SETTINGS_GROUPS 逐字一致，T8 恢复全等契约）', () => {
+  it('分组键序逐字对齐 host SETTINGS_GROUPS（6 组 68 键，含 T6/T7 转正键与 T11 sidebarEntryEnabled）', () => {
     expect(client.GROUP_KEYS).toStrictEqual(SETTINGS_GROUPS)
     expect(groups.map((group) => group.id)).toEqual(['connection', 'permissions', 'behavior', 'session', 'media', 'diagnostics'])
-    expect(allFields).toHaveLength(67)
+    expect(allFields).toHaveLength(68)
     const clientKeys = allFields.map((field) => field.key)
-    expect(new Set(clientKeys).size).toBe(67) // 无重复
+    expect(new Set(clientKeys).size).toBe(68) // 无重复
     for (const key of clientKeys) expect([...ALL_KEYS]).toContain(key) // 无孤儿键
     // T6/T7 新增键落位
     expect(groups.find((group) => group.id === 'media')!.fields.map((field) => field.key)).toContain('gifFramesEnabled')
     expect(groups.find((group) => group.id === 'behavior')!.fields.map((field) => field.key)).toEqual(
       expect.arrayContaining(['inboxQueueEnabled', 'inboxQueueDelayMs']),
     )
+    // T11：侧边栏入口开关落位 connection 组
+    expect(groups.find((group) => group.id === 'connection')!.fields.map((field) => field.key)).toContain('sidebarEntryEnabled')
   })
 
   it('默认值逐字对齐 host SCHEMA_DEFAULTS（T8 恢复全等，无豁免；notices 走面板 5 真键不在 DEFAULTS）', () => {
     const hostDefaults = SCHEMA_DEFAULTS as Record<string, unknown>
-    expect(Object.keys(defaults)).toHaveLength(68) // 67 面板键 + chatIdleEvictDays
+    expect(Object.keys(defaults)).toHaveLength(69) // 68 面板键 + chatIdleEvictDays
     expect('notices' in defaults).toBe(false) // notices 由 NOTICE_KEYS 面板通道承载
     expect(defaults.chatIdleEvictDays).toBe(hostDefaults.chatIdleEvictDays) // 不上面板但参与徽标对照
+    expect(defaults.sidebarEntryEnabled).toBe(true) // T11：侧边栏入口默认开（用户裁定）
     for (const [key, value] of Object.entries(defaults)) {
       expect(key in hostDefaults).toBe(true) // 无孤儿键
       expect(value).toEqual(hostDefaults[key])
@@ -373,18 +378,18 @@ describe('T8 showIf 条件显隐 — 贡献者面板交互契约', () => {
     expect(visibleLabels('session', { memoryFilesEnabled: true })).toContain('记忆文件路径')
   })
 
-  it('渲染行计数与 showIf 自洽：默认草稿顶层字段行 67 行 = 全键 - 8 个隐藏键（host/port/interimRecallMs/inboxQueueDelayMs/memoryFiles/sttCommand/sttArgs/sttModel）', () => {
+  it('渲染行计数与 showIf 自洽：默认草稿顶层字段行 68 行 = 全键 - 8 个隐藏键（host/port/interimRecallMs/inboxQueueDelayMs/memoryFiles/sttCommand/sttArgs/sttModel）', () => {
     const visible = (field: { showIf?: { key: string; value: unknown } }) => !field.showIf || baseDraft()[field.showIf.key] === field.showIf.value
     const expectedVisible = allFields.filter(visible).length
-    expect(expectedVisible).toBe(59)
+    expect(expectedVisible).toBe(60)
     const rowsPerGroup = groups.map((group) => topFieldRows(renderGroup(group.id, {})).length)
-    expect(rowsPerGroup).toEqual([11, 15, 17, 4, 13, 7]) // behavior 17 = 9 字段 + 4 通知开关行 + 4 文案行
-    expect(rowsPerGroup.reduce((sum, count) => sum + count, 0)).toBe(67)
+    expect(rowsPerGroup).toEqual([12, 15, 17, 4, 13, 7]) // behavior 17 = 9 字段 + 4 通知开关行 + 4 文案行；connection 12 含 T11 sidebarEntryEnabled
+    expect(rowsPerGroup.reduce((sum, count) => sum + count, 0)).toBe(68)
   })
 })
 
 describe('T8 客户端 bundle — 渲染函数模块级可测（renderGroup 纯函数）', () => {
-  it('六组各产出标题与逐字段控件行；控件类型齐备（9 下拉 + 12 多行文本 + 28 开关 + 17 文本框 + 1 密码框）', () => {
+  it('六组各产出标题与逐字段控件行；控件类型齐备（9 下拉 + 12 多行文本 + 29 开关 + 17 文本框 + 1 密码框）', () => {
     const sections = groups.map((group) => renderGroup(group.id, {}))
     expect(sections.map((section) => section.props['data-group'])).toEqual(['connection', 'permissions', 'behavior', 'session', 'media', 'diagnostics'])
     const elements = sections.flatMap((section) => walk(section))
@@ -394,7 +399,7 @@ describe('T8 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     expect(inputs.filter((input) => input.props.type === 'checkbox')).toHaveLength(1) // 仅 secret 清除勾选（布尔改用开关）
     expect(inputs.filter((input) => input.props.type === 'text')).toHaveLength(17) // 8 可见 number + 9 可见 string
     expect(inputs.filter((input) => input.props.type === 'password')).toHaveLength(1)
-    expect(elements.filter((element) => element.props.role === 'switch')).toHaveLength(28) // 24 布尔 + 4 通知开关
+    expect(elements.filter((element) => element.props.role === 'switch')).toHaveLength(29) // 25 布尔 + 4 通知开关
   })
 
   it('布尔行左右布局：整行 role=switch，aria-checked 跟随草稿值（贡献者 SVG 开关语义）', () => {
@@ -668,7 +673,7 @@ describe('T8 冲突合并 — mergeOnConflict（远端未变保留草稿、远�
     expect(JSON.stringify(before)).toBe(beforeJson)
   })
 
-  it('部分冲突：远端已变的脏键跟随新快照并入 conflictKeys，其余保留；合并覆盖全部 67 面板键', () => {
+  it('部分冲突：远端已变的脏键跟随新快照并入 conflictKeys，其余保留；合并覆盖全部 68 面板键', () => {
     const before = baseDraft()
     before.port = '9999'
     before.botQQ = '10086'
@@ -678,7 +683,7 @@ describe('T8 冲突合并 — mergeOnConflict（远端未变保留草稿、远�
     expect(merged.keptCount).toBe(1)
     expect(merged.draft.port).toBe('3000')
     expect(merged.draft.botQQ).toBe('10086')
-    expect(Object.keys(merged.draft)).toHaveLength(67)
+    expect(Object.keys(merged.draft)).toHaveLength(68)
     expect((client.computeDirtyKeys as Function)(merged.draft, next)).toEqual(['botQQ'])
   })
 

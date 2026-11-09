@@ -29,10 +29,10 @@ declare const document: any;
  *     listWorkspaces()（W7：只读查询宿主 workspace 注册表，{available, workspaces:
  *     [{id,path,sessionCount}]}；registry 缺席降级 available:false 不抛错），
  *     全 positional（宿主网关 methodParameterNames 拒绝解构/默认值/rest）；
- *   - 快照结构 = T1 §3 OnebotSettingsSnapshot（revision/entryActive/config(69 键，
+ *   - 快照结构 = T1 §3 OnebotSettingsSnapshot（revision/entryActive/config(70 键，
  *     含 notices 对象)/secrets/groups(6 组)/effect='restart'），accessToken 恒 ''（脱敏）；
- *   - 六组 67 键面板分组与 schema 默认值 = src/settings-remote.ts 常量（T8 口径：
- *     SETTINGS_GROUPS 67 面板键 + chatIdleEvictDays 只在 config 不上面板）。
+ *   - 六组 68 键面板分组与 schema 默认值 = src/settings-remote.ts 常量（T8 口径：
+ *     SETTINGS_GROUPS 68 面板键 + chatIdleEvictDays 只在 config 不上面板）。
  *
  * T8 相对贡献者版的差异（编排者评审硬要求 + 本仓裁决）：
  *   1. 补回上游缺口①：W6「非默认」徽标（值≠默认值的键一律挂标，title=与默认值不同）；
@@ -41,8 +41,9 @@ declare const document: any;
  *      inboxQueueEnabled/inboxQueueDelayMs，DEFAULTS 取本仓拍板值
  *      （dmPromptFile/groupPromptFile/memoryFilesEnabled 关）；
  *   4. notices 面板改 5 真键（本仓 schema 无 newSession）；
- *   5. patchSchema/configSchema 覆盖全部 69 键（防网关按 schema 剥键丢编辑）；
- *   6. 侧边栏入口留给 T11，本批不做。
+ *   5. patchSchema/configSchema 覆盖全部 70 键（防网关按 schema 剥键丢编辑）；
+ *   6. T11：首页左侧边栏「QQ 机器人」入口（sidebarEntryEnabled 开关，main 与
+ *      sidebar.panellist 同 id "qq-bot" 成对注册；false 时两者均不注册）。
  * 任一侧变更 descriptor/分组/键集/默认值时，必须同步本文件并在 DEVLOG 记录。
  *
  * 生效语义（T1 §5）：19 键统一「保存即热生效」——插件 fiber 秒级原地重启，
@@ -71,6 +72,9 @@ window.__ModuleLoader__.load({
 		var PLUGIN_ID = "dsh-onebot-qq";
 		var REMOTE_NS = "onebotSettings"; // Typert Remote 命名空间（T1 §4，与 host 服务键一致）
 		var NS = "dsh-onebot"; // locale 命名空间
+		// T11：侧边栏入口与 main 面板共用 id（宿主 layout.selectPanel 按 main keyed
+		// slot 的 key 校验，sidebar.panellist 的 id 必须与之一致，缺面板抛错）。
+		var SIDEBAR_PANEL_ID = "qq-bot";
 		//#endregion
 
 		//#region 六组 67 键字段定义（T8 重写：分组/键集/类型与
@@ -103,6 +107,9 @@ window.__ModuleLoader__.load({
 					// 本地加（2026-11-01）：NapCat 文件服务/反代在本机或内网时，下载检查得放行。
 					{ key: "allowPrivateHosts", label: "允许下载本机/内网地址", type: "boolean", hint: "默认拦内网链接防伪造；NapCat 文件服务在本机时开" },
 					{ key: "ignoreSelf", label: "忽略自己发的消息", type: "boolean", hint: "机器人自己的回声不处理" },
+					// T11：DSH 首页左侧边栏入口开关（关=不注册侧边栏入口与配对面板；
+					// 插件菜单下的设置页入口保留。客户端按启动时快照决定，改完刷新生效）。
+					{ key: "sidebarEntryEnabled", label: "首页侧边栏入口", type: "boolean", hint: "在 DSH 首页左侧边栏显示「QQ 机器人」入口；改动需刷新页面生效" },
 				],
 			},
 			{
@@ -246,6 +253,8 @@ window.__ModuleLoader__.load({
 			memoryFilesEnabled: false, // T4 拍板默认关（贡献者 true）
 			memoryFiles: [],
 			ignoreSelf: true,
+			// T11：侧边栏入口开关（用户裁定默认开）。
+			sidebarEntryEnabled: true,
 			sttEnabled: true,
 			agentPreset: "",
 			chatIdleEvictDays: 7,
@@ -445,6 +454,7 @@ window.__ModuleLoader__.load({
 			memoryFilesEnabled: vBoolean(),
 			memoryFiles: vArray(vString(0, 1024)),
 			ignoreSelf: vBoolean(),
+			sidebarEntryEnabled: vBoolean(),
 			sttEnabled: vBoolean(),
 			agentPreset: vString(0, 128),
 			chatIdleEvictDays: vNumber(),
@@ -516,6 +526,7 @@ window.__ModuleLoader__.load({
 			groupPromptFile: vOptional(vString(0, 1024)),
 			allowPrivateHosts: vOptional(vBoolean()),
 			ignoreSelf: vOptional(vBoolean()),
+			sidebarEntryEnabled: vOptional(vBoolean()),
 			requireMention: vOptional(vBoolean()),
 			adminUsers: vOptional(vArray(vString(0, 64))),
 			dmPolicy: vOptional(vEnum(["open", "allowlist", "disabled"])),
@@ -665,6 +676,8 @@ window.__ModuleLoader__.load({
 			"conflict.secretCleared": "accessToken 输入已清空，如需修改请重新输入。",
 			"field.numberInvalid": "必须是 {range} 的有限数字",
 			"field.remoteOverwritten": "已被其他来源修改，已同步为最新值",
+			// T11：首页左侧边栏入口词条（sidebar.panellist 的 label；en 同批齐平）。
+			"sidebar.panel": "QQ 机器人",
 		};
 		var en = {
 			"settings.title": "QQ Bot (OneBot) settings",
@@ -706,6 +719,7 @@ window.__ModuleLoader__.load({
 			"conflict.secretCleared": "The accessToken input has been cleared; re-enter it if you still want to change it.",
 			"field.numberInvalid": "Must be a finite number {range}",
 			"field.remoteOverwritten": "Changed by another source — synced to the latest value",
+			"sidebar.panel": "QQ Bot",
 		};
 		/** 双语 key 集一致性自检：缺漏仅告警不致崩溃。 */
 		function assertSameKeys(a: any, b: any) {
@@ -2046,6 +2060,30 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 
+		//#region T11 侧边栏图标
+		/**
+		 * 首页左侧边栏入口图标。宿主 sidebar 以 {size, active} 渲染注册的图标组件
+		 * （对照 dsh-client-ui-sidebar panelGlyph：size=16/18）；client bundle externals
+		 * 冻结为 react，不能 require 宿主 primitives 图标表，故自绘内联 SVG。
+		 */
+		function OnebotSidebarIcon(props: any) {
+			var size = props && typeof props.size === "number" ? props.size : 18;
+			return React.createElement("svg", {
+				viewBox: "0 0 24 24", width: size, height: size,
+				fill: "none", stroke: "currentColor", strokeWidth: 1.8,
+				strokeLinecap: "round", strokeLinejoin: "round",
+				"aria-hidden": "true", focusable: "false",
+			}, [
+				React.createElement("rect", { key: "head", x: 4, y: 7, width: 16, height: 11, rx: 3 }),
+				React.createElement("path", { key: "antenna", d: "M12 3.5v3.5" }),
+				React.createElement("circle", { key: "antennaDot", cx: 12, cy: 3, r: 1, fill: "currentColor", stroke: "none" }),
+				React.createElement("circle", { key: "eyeL", cx: 9, cy: 12.5, r: 1.1, fill: "currentColor", stroke: "none" }),
+				React.createElement("circle", { key: "eyeR", cx: 15, cy: 12.5, r: 1.1, fill: "currentColor", stroke: "none" }),
+				React.createElement("path", { key: "mouth", d: "M9.5 15.5h5" }),
+			]);
+		}
+		//#endregion
+
 		//#region 客户端入口
 		var inject = ["slots", "locale", "remote"];
 		/**
@@ -2076,7 +2114,29 @@ window.__ModuleLoader__.load({
 				function (props: any) { if (props && props.view === "summary") return t("settings.desc"); return React.createElement(OnebotSettingsPanel, Object.assign({}, props, { remote: remote })); },
 			); });
 
-			// 侧边栏入口留给 T11，本批不做。
+			// T11：首页左侧边栏「QQ 机器人」入口（可开关）。宿主合同：main keyed slot
+			// 与 sidebar.panellist 列表条目必须同 id 成对注册（宿主 dsh-client-ui-layout
+			// selectPanel 校验 main key 缺失即抛错；先例 dsh-client-ui-plugin-manager /
+			// dsh-client-ui-schedule 同款）。开关按当前快照一次读取：false 时两侧都不
+			// 注册（避免不成对状态）；插件菜单下的 plugins.bundle.config 设置页入口
+			// 无条件保留。改动需刷新页面生效（Typert Remote 仅请求/响应，无推送通道）。
+			var sidebarEnabled = true;
+			try {
+				var sidebarSnapshot = await remote.getSettings();
+				sidebarEnabled = sidebarSnapshot.config.sidebarEntryEnabled !== false;
+			} catch (error) {
+				sidebarEnabled = true; // 快照读取失败按 schema 默认值（开）兜底
+			}
+			if (sidebarEnabled) {
+				ctx.slots.inject("main", function () { return ctx.slots.register(
+					{ name: "main", key: SIDEBAR_PANEL_ID, locale: NS },
+					function (props: any) { return React.createElement(OnebotSettingsPanel, Object.assign({}, props, { remote: remote })); },
+				); });
+				ctx.slots.inject("sidebar.panellist", function () { return ctx.slots.register(
+					{ name: "sidebar.panellist", id: SIDEBAR_PANEL_ID, order: 20, locale: NS, label: function () { return t("sidebar.panel"); } },
+					OnebotSidebarIcon,
+				); });
+			}
 
 			return function () { void disposeRemote(); };
 		}
@@ -2102,6 +2162,8 @@ window.__ModuleLoader__.load({
 		exports.unwrap = unwrap;
 		exports.renderGroup = renderGroup;
 		exports.OnebotSettingsPanel = OnebotSettingsPanel;
+		exports.OnebotSidebarIcon = OnebotSidebarIcon;
+		exports.SIDEBAR_PANEL_ID = SIDEBAR_PANEL_ID;
 		// 批 3（UX §5.4/§5.6）：冲突合并保留 + 数字行内校验（纯函数，单测护航）
 		exports.NUMBER_RANGE = NUMBER_RANGE;
 		exports.numberRangeInvalid = numberRangeInvalid;

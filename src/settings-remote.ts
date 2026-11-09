@@ -59,17 +59,18 @@ export const NAMESPACE = 'onebotSettings'
 /** 快照固定值：全部键均为插件级热重启生效（T1 §5；T5 扩到 66 键、T7 扩到 69 键同粒度）。 */
 export const REMOTE_EFFECT = 'restart'
 
-/** 设置页 UI 六组 69 键（T5：键表对齐贡献者 0.9.19 版——connection 13 /
+/** 设置页 UI 六组 70 键（T5：键表对齐贡献者 0.9.19 版——connection 14 /
  *  permissions 15 / behavior 9 / session 5 / media 15 / diagnostics 7；T6 media
  *  组尾增 gifFramesEnabled=16、T7 behavior 组尾增 inboxQueueEnabled/
- *  inboxQueueDelayMs=11；与 src/index.ts Config schema 一一对应，未入库功能的键
+ *  inboxQueueDelayMs=11、T11 connection 组尾增 sidebarEntryEnabled=14；与
+ *  src/index.ts Config schema 一一对应，未入库功能的键
  *  先行进表、schema 定义随后批接上，见 PENDING_SCHEMA_KEYS）。T1 四组 29 键
  *  仍为前四组前缀，旧面板（lib/client.js 手写真相源，T8 重写）继续可渲染。
  *  分组沿用 W6 取舍：diagnostics 组 = 观测/调试面开关；session/media 两组来自
  *  贡献者键表（T4 提示词/记忆文件、T5 媒体限额键的 UI 归属）。gifFramesEnabled
  *  为本仓 T6 批次自有开关（贡献者无对应键），归入 media 组。 */
 export const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>> = {
-  connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath', 'groupWorkspacePath', 'forceSessionId', 'dmPromptFile', 'groupPromptFile', 'allowPrivateHosts', 'ignoreSelf'],
+  connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath', 'groupWorkspacePath', 'forceSessionId', 'dmPromptFile', 'groupPromptFile', 'allowPrivateHosts', 'ignoreSelf', 'sidebarEntryEnabled'],
   permissions: ['requireMention', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'replyCountsAsMention', 'atAllCountsAsMention', 'faceStyle', 'pokeEnabled', 'restrictedMemberPrefix', 'sensitivePatterns'],
   behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs'],
   session: ['newSessionGreeting', 'firstMessageAsUser', 'memoryFilesEnabled', 'memoryFiles', 'agentPreset'],
@@ -102,6 +103,9 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   // T5 翻转：下载 SSRF 防护逃生门（原 false）。
   allowPrivateHosts: true,
   ignoreSelf: true,
+  // T11：DSH 首页左侧边栏「QQ 机器人」入口开关（用户裁定默认开；客户端按
+  // 当前快照条件注册，false 时侧边栏入口与配对 main 面板 slot 均不注册）。
+  sidebarEntryEnabled: true,
   requireMention: true,
   adminUsers: [],
   dmPolicy: 'open',
@@ -217,19 +221,20 @@ const NUMBER_RANGE: Readonly<Record<string, readonly [number, number | undefined
   inboxQueueDelayMs: [0, undefined],
 }
 /** 布尔键白名单（T1 §4 + W6 + T5 键表 22 键 + T6 gifFramesEnabled + T7
- *  inboxQueueEnabled：24 键）。 */
+ *  inboxQueueEnabled + T11 sidebarEntryEnabled：25 键）。 */
 const BOOLEAN_KEYS: readonly string[] = [
   'requireMention', 'allowAllUsers', 'interimMessages', 'interimRecall', 'sendErrorNotice',
   'newSessionGreeting', 'replyCountsAsMention', 'atAllCountsAsMention',
   'actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun',
   'textImageEnabled', 'pokeEnabled', 'firstMessageAsUser', 'memoryFilesEnabled', 'ignoreSelf',
   'sttEnabled', 'restrictedMemberPrefix', 'allowPrivateHosts', 'gifFramesEnabled', 'inboxQueueEnabled',
+  'sidebarEntryEnabled',
 ]
 const STRING_KEYS: readonly string[] = ['host', 'url', 'accessToken', 'botQQ', 'workspacePath', 'groupWorkspacePath', 'forceSessionId', 'dmPromptFile', 'groupPromptFile', 'cardFooter', 'agentPreset', 'sttCommand', 'sttModel']
 const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'memoryFiles', 'sensitivePatterns', 'sttArgs', 'fontFiles', 'fontFamilies']
-/** 全部 69 键（校验与快照的唯一键集；9 枚举 + 12 数字 + 24 布尔 + 13 字符串 +
+/** 全部 70 键（校验与快照的唯一键集；9 枚举 + 12 数字 + 25 布尔 + 13 字符串 +
  *  10 字符串数组 + notices 单独通道；T6 新增 gifFramesEnabled、T7 新增
- *  inboxQueueEnabled/inboxQueueDelayMs）。 */
+ *  inboxQueueEnabled/inboxQueueDelayMs、T11 新增 sidebarEntryEnabled）。 */
 export const ALL_KEYS: readonly string[] = [
   ...Object.keys(ENUM_KEYS), ...NUMBER_KEYS, ...BOOLEAN_KEYS, ...STRING_KEYS, ...STRING_ARRAY_KEYS, 'notices',
 ]
@@ -240,7 +245,7 @@ export interface OnebotSettingsSnapshot {
   revision: number
   /** dsh-onebot 条目 fiber 是否 active（fiber.state === 2，同 configEditor.edit 的活性判据）。 */
   entryActive: boolean
-  /** 67 键生效值；accessToken 脱敏为 ''。 */
+  /** 70 键生效值；accessToken 脱敏为 ''。 */
   config: Record<string, unknown>
   /** 脱敏键标记：明文是否已配置。 */
   secrets: Array<{ path: string[]; set: boolean }>
