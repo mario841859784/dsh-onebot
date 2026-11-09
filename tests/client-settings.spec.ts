@@ -104,6 +104,9 @@ function loadClientModule(): Record<string, unknown> {
 }
 
 const client = loadClientModule()
+/** 词条桩：与面板 ctx.locale.bind 的 t 同口径（0.10.0 字段文案词典化）。 */
+const localeZh = client.LOCALE_ZH as Record<string, string>
+const stubT = (key: string) => (localeZh[key] !== undefined ? localeZh[key] : key)
 const descriptors = client.ONEBOT_SETTINGS_DESCRIPTORS as Array<Record<string, unknown>>
 const groups = client.GROUPS as Array<{ id: string; title: string; fields: Array<{ key: string; label: string; type: string; options?: string[]; hint?: string; showIf?: { key: string; value: unknown } }> }>
 const allFields = client.ALL_FIELDS as Array<{ key: string; type: string; showIf?: { key: string; value: unknown } }>
@@ -117,6 +120,7 @@ const renderGroup = (groupId: string, opts: Record<string, unknown>) =>
   (client.renderGroup as Function)(stubReact, groups.find((entry) => entry.id === groupId), {
     draft: baseDraft(),
     ui: stubUi,
+    t: stubT,
     onChange: () => {},
     onSecretChange: () => {},
     onClearSecretChange: () => {},
@@ -478,6 +482,7 @@ describe('T8 补回上游缺口① — W6「非默认」徽标（所有类型键
       .flatMap((group) => (client.renderGroup as Function)(stubReact, group, {
         draft: draftValues,
         ui: stubUi,
+        t: stubT,
         nonDefaultKeys,
         secretSet: false,
         clearSecret: false,
@@ -518,7 +523,7 @@ describe('T8 补回上游缺口① — W6「非默认」徽标（所有类型键
     const hits = panelKeys({ ...SNAPSHOT_CONFIG, traceEnabled: true, rateLimitPerMinute: 60, gifFramesEnabled: true })
     expect(hits).toHaveLength(3)
     expect(hits.sort()).toEqual(['gifFramesEnabled', 'rateLimitPerMinute', 'traceEnabled'])
-    expect(CLIENT_SOURCE).toContain('title: "与默认值不同"')
+    expect(CLIENT_SOURCE).toContain('tr("field.nonDefaultTitle", "与默认值不同")')
   })
 })
 
@@ -652,6 +657,7 @@ describe('T8 数字行内校验 — NUMBER_RANGE 对齐 host + numberRangeInvali
     const section = (client.renderGroup as Function)(stubReact, connection, {
       draft: { ...baseDraft(), mode: 'reverse' }, // reverse 档位 port 才可见（showIf）
       ui: stubUi,
+      t: stubT,
       invalidNumbers: { port: '必须是 1–65535 的有限数字' },
       onChange: () => {},
       onSecretChange: () => {},
@@ -755,6 +761,7 @@ describe('T8 workspace 快速填入 — fillWorkspacePath 双键（workspacePath
     const renderPicker = client.renderWorkspacePicker as (react: unknown, opts: Record<string, unknown>) => StubElement | null
     const pickerOpts = (overrides: Record<string, unknown> = {}) => ({
       ui: stubUi,
+      t: stubT,
       loaded: true,
       available: true,
       workspaces: [
@@ -846,5 +853,62 @@ describe('0.10.0 设置页样式 — dsw token 对齐（页骨架/发丝分隔/�
     expect(CLIENT_SOURCE).not.toContain('obx-btn--pill')
     expect(CLIENT_SOURCE).not.toContain('obx-secret-badge')
     expect(CLIENT_SOURCE).not.toContain('obx-tab{')
+  })
+})
+
+describe('0.10.0 字段文案词典化 — 新键必须双词（zh 自动灌入 + EN 对照表护栏）', () => {
+  const localeEn = client.LOCALE_EN as Record<string, unknown>
+
+  it('69 键 zh label 全部自动灌入且为中文（zh 源 = GROUPS 内联常量，无双源漂移）', () => {
+    for (const field of allFields) {
+      const value = localeZh[`field.${field.key}.label`]
+      expect(typeof value).toBe('string')
+      expect(String(value)).toMatch(/\p{Script=Han}/u)
+    }
+    for (const group of groups) expect(typeof localeZh[`group.${group.id}.title`]).toBe('string')
+    for (const key of Object.keys(localeZh)) {
+      if (key.startsWith('notice.') && key.endsWith('.label')) expect(typeof localeZh[key]).toBe('string')
+    }
+  })
+
+  it('en 与 zh 键集逐键齐平（assertSameKeys 护栏口径）；en 文案均为字符串', () => {
+    for (const [key, value] of Object.entries(localeZh)) {
+      expect(key in localeEn).toBe(true)
+      if (typeof value === 'string') expect(typeof localeEn[key]).toBe('string')
+    }
+    for (const key of Object.keys(localeEn)) expect(key in localeZh).toBe(true)
+  })
+
+  it('en 组标题/分区/通知/字段 hint-option-placeholder 齐备；EN_MISSING 告警护栏源码在位', () => {
+    for (const group of groups) {
+      expect(typeof localeEn[`group.${group.id}.title`]).toBe('string')
+      for (const field of group.fields) {
+        if (field.hint) expect(typeof localeEn[`field.${field.key}.hint`]).toBe('string')
+        if (field.placeholder) expect(typeof localeEn[`field.${field.key}.placeholder`]).toBe('string')
+        if (field.optionLabels) {
+          for (const value of Object.keys(field.optionLabels)) {
+            expect(typeof localeEn[`field.${field.key}.option.${value}`]).toBe('string')
+          }
+        }
+      }
+    }
+    expect(typeof localeEn['group.permissions.section.dm']).toBe('string')
+    expect(typeof localeEn['group.permissions.section.group']).toBe('string')
+    expect(typeof localeEn['group.permissions.section.common']).toBe('string')
+    expect(typeof localeEn['notice.queue.label']).toBe('string')
+    expect(CLIENT_SOURCE).toContain('新键必须双词')
+    expect(CLIENT_SOURCE).toContain('exports.LOCALE_ZH = zh;')
+    expect(CLIENT_SOURCE).toContain('exports.LOCALE_EN = en;')
+  })
+
+  it('渲染走词条：renderGroup/picker 以 t 解析（桩 = LOCALE_ZH），zh 视觉与迁移前逐字一致', () => {
+    const rendered = JSON.stringify(walk(renderGroup('connection', { nonDefaultKeys: ['mode'] })))
+    expect(rendered).toContain('正向 WS 服务器地址') // label 经词典解析
+    expect(rendered).toContain('反向=它连我，正向=我连它') // hint 经词典解析
+    expect(rendered).toContain('非默认') // W6 徽标经词典解析
+    expect(rendered).toContain('与默认值不同') // 徽标 title 经词典解析
+    // picker 词条由 renderExtraRow 注入（面板层），此处不覆盖——picker 专测见 fillWorkspacePath 组
+    const segmented = walk(renderGroup('connection', {})).find((element) => element.type === stubUi.SegmentedControl)!
+    expect(JSON.stringify(segmented)).toContain('正向 WebSocket（插件连接 NapCat）') // optionLabels 经词典解析
   })
 })

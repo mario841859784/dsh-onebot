@@ -1008,3 +1008,17 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 
 - **改动**（src/client.ts 词条 + tests 注释，渲染/契约零改动）：zh 词条 `sidebar.panel`「QQ 机器人」→「QQ Bot」（en 本就是 QQ Bot）、`settings.title`「QQ Bot（OneBot）设置」→「QQ Bot 设置」（en 同步去 `(OneBot)`）；`sidebarEntryEnabled` 字段 hint 里的入口名同步「QQ Bot」。README 两图重截（侧边栏与标题均为新文案）。
 - **验证**：tsc 0 错误；client-settings + sidebar-entry 62/62 全绿；真机重启后侧边栏与面板标题生效，docs/ 两截图已更新。
+
+## 2026-11-10 字段文案词典化：「新键必须双词」纪律落地（用户拍板选项 2）
+
+- **背景**：设置页 69 键 label/hint/optionLabels/placeholder 此前是 T4 拍板的中文常量（不走词条），en 界面无法成立（上一轮讨论定为待办）。用户拍板做全量词条化迁移，并立纪律：**新增键必须 zh/en 双词**。
+- **机制（src/client.ts 单文件，host 契约零改动）**：
+  1. **zh 单一源自动化**——zh 词典的 `field.<key>.label/hint/placeholder`、`field.<key>.option.<value>`、`group.<id>.title`、`group.<id>.section.<id>`、`notice.<key>.label` 全部由 GROUPS/NOTICE_KEYS 在模块装载时自动灌入（无第二份 zh 手写表，无双源漂移）；`assertSameKeys` 移到灌入后调用，覆盖自动键。
+  2. **en 显式对照表**——新增 `EN_GROUPS`（69 键 label/hint/placeholder/options 全量人工译文）+ `EN_SECTIONS`（私聊/群聊/通用）+ `EN_NOTICES`（5 条通知标签）+ 面板自有 UI 串（非默认徽标、密文安全提示、workspace picker 四态、页签 aria、构建标记、notice.textAria）双词齐平。
+  3. **护栏双保险**——`assertSameKeys` 键集对齐告警 + `EN_MISSING` 显式点名（en 回落 zh 的键逐个告警「新键必须双词：…缺 en 词条」），启动即检、只告警不崩溃。
+  4. **渲染接线**——`renderGroup`/`renderWorkspacePicker` 经 `opts.t` 解析文案（回退值 = GROUPS 内联 zh 常量，纯函数无 t 仍可测）；面板传 `ctx.locale.bind` 的 `t`；分组/页签/密文占位/通知 aria 全部走词条。GROUPS 增 permissions sections 稳定 id（dm/group/common，客户端展示结构，host 不涉）。
+  5. **导出**——`LOCALE_ZH`/`LOCALE_EN`（测试桩 t 从 LOCALE_ZH 解析；en 覆盖率用例读 LOCALE_EN）。
+- **纪律的用法（后续新键 SOP）**：GROUPS 加字段（zh label/hint 内联，自动进 zh 词典）→ **必须**在 EN_GROUPS 对应组补 label（有 hint/placeholder/options 则同样补）→ 漏补时启动 console.warn 点名。面板自有 UI 串直接 zh/en 词典各一条。
+- **测试**：client-settings.spec 新增「字段文案词典化」4 用例（69 键 zh label 自动灌入且为中文、en/zh 键集逐键齐平、en 组/分区/通知/hint/option/placeholder 齐备 + 护栏源码在位、渲染经 t 解析 zh 视觉逐字一致）；渲染 helper 注入 stubT；徽标 title 源码断言改 tr 词条化口径。client-settings + sidebar-entry 66/66 全绿；全量 57 文件 1081 passed + 4 skipped（connection flake 本轮亦绿）。
+- **真机**：重启应用回归——面板 zh 渲染与迁移前逐字一致（标题/页签/字段/hint/徽标/picker 全对），无 en 缺失告警。
+- **边界**：notices 的 def 文案（机器人发给 QQ 的消息内容）不属 UI 文案，维持常量；workspace 选项尾缀「（N 会话）」仍 zh 格式化（path 为主体，低价值不做）；README 截图无变化（zh UI 零视觉差异）。

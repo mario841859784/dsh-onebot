@@ -146,11 +146,11 @@ window.__ModuleLoader__.load({
 			{
 				id: "permissions",
 				title: "权限",
-				// 本地加：权限分「私聊 / 群聊」两块展示。
+				// 本地加：权限分「私聊 / 群聊」两块展示（id = 分区词条键尾段；客户端展示结构，host 契约不涉）。
 				sections: [
-					{ title: "私聊", keys: ["dmPolicy", "allowFrom", "allowAllUsers", "adminUsers"] },
-					{ title: "群聊", keys: ["requireMention", "groupPolicy", "groupAllowFrom", "wakeNamesAdmin", "wakeNamesMember", "replyCountsAsMention", "atAllCountsAsMention", "faceStyle", "pokeEnabled", "restrictedMemberPrefix"] },
-					{ title: "通用", keys: ["sensitivePatterns"] },
+					{ id: "dm", title: "私聊", keys: ["dmPolicy", "allowFrom", "allowAllUsers", "adminUsers"] },
+					{ id: "group", title: "群聊", keys: ["requireMention", "groupPolicy", "groupAllowFrom", "wakeNamesAdmin", "wakeNamesMember", "replyCountsAsMention", "atAllCountsAsMention", "faceStyle", "pokeEnabled", "restrictedMemberPrefix"] },
+					{ id: "common", title: "通用", keys: ["sensitivePatterns"] },
 				],
 				fields: [
 					{ key: "requireMention", label: "群聊必须 @ 机器人", type: "boolean" },
@@ -671,7 +671,7 @@ window.__ModuleLoader__.load({
 
 		//#region 双语词条（zh 为 key 集真相源，en 逐 key 对齐；占位符用平台 {word} 形式。
 		//  分组标题与字段 label 是中文常量（T4 要求），不走词条。）
-		var zh = {
+		var zh: any = {
 			"settings.title": "QQ Bot 设置",
 			"settings.desc": "配置持久化为 profile 层 cordis.patch.yml 中 dsh-onebot 条目的 config 覆盖行，与手改 patch、宿主原生设置页同源。",
 			"settings.loading": "正在加载设置…",
@@ -715,8 +715,22 @@ window.__ModuleLoader__.load({
 			"field.remoteOverwritten": "已被其他来源修改，已同步为最新值",
 			// T11：首页左侧边栏入口词条（sidebar.panellist 的 label；en 同批齐平）。
 			"sidebar.panel": "QQ Bot",
+			// 0.10.0 字段文案词条化：面板自有 UI 串（非 GROUPS 内联的）双词齐平。
+			"settings.groupsLabel": "设置分组",
+			"settings.buildMarker": "面板构建标记",
+			"field.nonDefault": "非默认",
+			"field.nonDefaultTitle": "与默认值不同",
+			"field.accessToken.securityHint": "出于安全实际令牌不回传页面，只显占位圆点，输入新值即替换（令牌：NapCat 的 WebUI → 网络配置→Token）",
+			"workspace.pick": "快速填入 workspace",
+			"workspace.pickPlaceholder": "选择 workspace…",
+			"workspace.pickTitle": "列出宿主 workspace 注册表中的工作区；选中后点「填入」写入上方路径输入框（只填值，保存仍走「保存设置」按钮）",
+			"workspace.apply": "填入",
+			"workspace.pickHint": "选中后点「填入」仅写入上方输入框；需点「保存设置」才会保存（对新会话生效，已设 /workspace 覆盖的会话不受影响）。",
+			"workspace.emptyAvailable": "暂无 workspace 记录，可直接输入路径。",
+			"workspace.emptyUnavailable": "无法获取 workspace 列表（宿主未提供 workspace 注册表），可直接输入路径。",
+			"notice.textAria": "{label}文案",
 		};
-		var en = {
+		var en: any = {
 			"settings.title": "QQ Bot settings",
 			"settings.desc": "Settings persist as the config override row of the dsh-onebot entry in the profile-layer cordis.patch.yml — same source as hand-edited patches and the host's native settings page.",
 			"settings.loading": "Loading settings…",
@@ -755,8 +769,195 @@ window.__ModuleLoader__.load({
 			"field.numberInvalid": "Must be a finite number {range}",
 			"field.remoteOverwritten": "Changed by another source — synced to the latest value",
 			"sidebar.panel": "QQ Bot",
+			// 0.10.0 字段文案词条化：与 zh 同批的面板自有 UI 串。
+			"settings.groupsLabel": "Setting groups",
+			"settings.buildMarker": "Panel build marker",
+			"field.nonDefault": "Non-default",
+			"field.nonDefaultTitle": "Differs from the default value",
+			"field.accessToken.securityHint": "For security the actual token is never sent back to the page — only placeholder dots are shown; typing a new value replaces it (token: NapCat WebUI → Network → Token)",
+			"workspace.pick": "Quick fill from workspaces",
+			"workspace.pickPlaceholder": "Choose a workspace…",
+			"workspace.pickTitle": "Workspaces from the host registry; pick one and press Fill in to write it into the path field above (fills the value only — saving still goes through Save settings)",
+			"workspace.apply": "Fill in",
+			"workspace.pickHint": "Fill in only writes the field above; press Save settings to persist (applies to new sessions; sessions with a /workspace override are unaffected).",
+			"workspace.emptyAvailable": "No workspace records yet — type a path directly.",
+			"workspace.emptyUnavailable": "Workspace list unavailable (the host provides no workspace registry) — type a path directly.",
+			"notice.textAria": "{label} text",
 		};
-		/** 双语 key 集一致性自检：缺漏仅告警不致崩溃。 */
+		//#region 字段文案词条化（0.10.0）：zh 以 GROUPS/NOTICE_KEYS 为唯一源自动灌入，
+		// en 走下方显式对照表（EN_GROUPS/EN_SECTIONS/EN_NOTICES）。新键纪律「新键必须
+		// 双词」的机械护栏 = assertSameKeys（zh 自动含全部字段键，en 缺即逐键告警）
+		// + 下方 EN_MISSING 显式告警（en 回落 zh 时点名，防止静默英文缺失）。
+		for (var zg = 0; zg < GROUPS.length; zg++) {
+			var groupDef: any = GROUPS[zg];
+			zh["group." + groupDef.id + ".title"] = groupDef.title;
+			if (Array.isArray(groupDef.sections)) {
+				for (var sectionDef of groupDef.sections) {
+					zh["group." + groupDef.id + ".section." + sectionDef.id] = sectionDef.title;
+				}
+			}
+			for (var zf = 0; zf < groupDef.fields.length; zf++) {
+				var fieldDef: any = groupDef.fields[zf];
+				zh["field." + fieldDef.key + ".label"] = fieldDef.label;
+				if (typeof fieldDef.hint === "string" && fieldDef.hint !== "") zh["field." + fieldDef.key + ".hint"] = fieldDef.hint;
+				if (typeof fieldDef.placeholder === "string" && fieldDef.placeholder !== "") zh["field." + fieldDef.key + ".placeholder"] = fieldDef.placeholder;
+				if (fieldDef.optionLabels != null) {
+					for (var optionValue in fieldDef.optionLabels) {
+						zh["field." + fieldDef.key + ".option." + optionValue] = fieldDef.optionLabels[optionValue];
+					}
+				}
+			}
+		}
+		zh["field.stringArray.placeholder.default"] = "分割方式：逗号、顿号、换行";
+		for (var zn = 0; zn < NOTICE_KEYS.length; zn++) {
+			zh["notice." + NOTICE_KEYS[zn].key + ".label"] = NOTICE_KEYS[zn].label;
+		}
+		/** en 字段文案对照表（label/hint/placeholder/options；缺项回落 zh 并告警）。 */
+		var EN_GROUPS: any = {
+			connection: {
+				title: "Connection",
+				fields: {
+					mode: { label: "Connection mode", hint: "Reverse = it connects to us; forward = we connect to it", options: { reverse: "Reverse WebSocket (NapCat connects to this plugin)", forward: "Forward WebSocket (plugin connects to NapCat)" } },
+					host: { label: "Reverse WS listen address", hint: "Listen address in reverse mode" },
+					port: { label: "Reverse WS listen port", hint: "Listen port in reverse mode" },
+					url: { label: "Forward WS server address", hint: "Server address in forward mode" },
+					accessToken: { label: "Access token (AccessToken)" },
+					botQQ: { label: "Bot QQ id" },
+					workspacePath: { label: "Default DM workspace path", hint: "Default directory for new DM sessions" },
+					groupWorkspacePath: { label: "Default group workspace path", hint: "Default directory for new group sessions; empty = same as DM" },
+					forceSessionId: { label: "Force session id", hint: "When set, always use this session id (advanced; usually left empty)" },
+					dmPromptFile: { label: "DM prompt file (txt path)" },
+					groupPromptFile: { label: "Group prompt file (txt path)" },
+					allowPrivateHosts: { label: "Allow localhost/private-network downloads", hint: "Private-network links are blocked by default; enable when NapCat's file service runs locally" },
+					ignoreSelf: { label: "Ignore own messages", hint: "Do not process the bot's own echo messages" },
+					sidebarEntryEnabled: { label: "Home sidebar entry", hint: "Show a \"QQ Bot\" entry in the DSH home sidebar; changes apply after a page reload" },
+				},
+			},
+			permissions: {
+				title: "Permissions",
+				fields: {
+					requireMention: { label: "Require @ in group chats" },
+					adminUsers: { label: "Admin user list" },
+					dmPolicy: { label: "DM policy", options: { open: "Open", allowlist: "Allowlist", disabled: "Disabled" } },
+					groupPolicy: { label: "Group policy", options: { open: "Open", allowlist: "Allowlist", disabled: "Disabled" } },
+					allowAllUsers: { label: "Allow all users" },
+					allowFrom: { label: "DM allowlist" },
+					groupAllowFrom: { label: "Group allowlist" },
+					wakeNamesAdmin: { label: "User wake names" },
+					wakeNamesMember: { label: "Member wake names" },
+					replyCountsAsMention: { label: "Quoted-message wakes", hint: "Quoting someone else's message also wakes me" },
+					atAllCountsAsMention: { label: "@-all wakes", hint: "@-ing everyone also counts as a wake" },
+					faceStyle: { label: "QQ face rendering", hint: "Face names or emoji approximation", options: { name: "Official face table", emoji: "Emoji approximation (legacy look)" } },
+					pokeEnabled: { label: "Poke wakes" },
+					restrictedMemberPrefix: { label: "Restricted prefix for non-admins", hint: "When on, non-admin group messages carry a [restricted user: Q&A only] marker: answers questions only, may still request images and stickers; off = treat everyone the same" },
+					sensitivePatterns: { label: "Outbound sensitive-word regexes", placeholder: "One regex per line; empty = built-in list" },
+				},
+			},
+			behavior: {
+				title: "Behavior",
+				fields: {
+					interimMessages: { label: "Interim messages", hint: "Send interim messages during a turn" },
+					interimRecall: { label: "Auto-recall interim messages" },
+					interimRecallMs: { label: "Interim message retention (ms)" },
+					sendErrorNotice: { label: "Send error notices" },
+					unknownCommand: { label: "Unknown command handling", options: { intercept: "Intercept", passthrough: "Pass through" } },
+					rateLimitPerMinute: { label: "Per-minute message rate cap" },
+					newMessagePolicy: { label: "New messages while a task runs", options: { queue: "Queue", steer: "Steer" } },
+					autoSteerPolicy: { label: "Auto-steer eligibility", options: { admin: "Admins only", all: "All members" } },
+					deferredTimeoutMs: { label: "Model reply wait timeout (ms)" },
+					inboxQueueEnabled: { label: "Inbound burst merging", hint: "Merge several messages burst-sent to one session into a single delivery" },
+					inboxQueueDelayMs: { label: "Merge wait window (ms)", hint: "Each message waits one window before delivery; 0 = immediately" },
+					titleSyncEnabled: { label: "QQ session title sync", hint: "Let the host refresh session titles after each message (one small LLM call); titles you named manually in the host are never overwritten" },
+				},
+			},
+			session: {
+				title: "Session",
+				fields: {
+					newSessionGreeting: { label: "Greet on new sessions", hint: "After /new I say hello first" },
+					firstMessageAsUser: { label: "Inject first message as User", hint: "The host auto-names the session from the first message only when this is on (default off)" },
+					memoryFilesEnabled: { label: "Read memory files on new sessions" },
+					memoryFiles: { label: "Memory file paths", placeholder: "Absolute file paths; split by comma, enumeration comma, or newline" },
+					agentPreset: { label: "Agent preset for new sessions (preset id, e.g. standard; empty = host default)", placeholder: "standard" },
+				},
+			},
+			media: {
+				title: "Media",
+				fields: {
+					sttEnabled: { label: "Speech-to-text", hint: "Transcribe voice messages to text first" },
+					sttEngine: { label: "Speech-to-text engine", options: { auto: "Auto-detect", openai: "openai", "whisper-cpp": "whisper-cpp", custom: "Custom command" } },
+					sttCommand: { label: "Custom transcription program", hint: "Program name or absolute path" },
+					sttArgs: { label: "Transcription argument template", placeholder: "One per line; {file} and {out} are substituted" },
+					sttModel: { label: "Transcription model", hint: "openai: small/base/medium…; whisper.cpp: model name or .bin path" },
+					textImageEnabled: { label: "Long text as image card" },
+					textImageThreshold: { label: "Text-length threshold for cards", placeholder: "0–10000; 0 = never card" },
+					cardFooter: { label: "Card footer badge", placeholder: "OneBot" },
+					fontFiles: { label: "Card font files", placeholder: "One font file path (ttf/otf) per line; empty = system fonts" },
+					fontFamilies: { label: "Card font family names", placeholder: "One family name per line; empty = platform default" },
+					outboundImageMaxBytes: { label: "Outbound image size cap (bytes)", placeholder: "Default 8388608 (8MB); max 104857600 (100MB)" },
+					maxVoiceBytes: { label: "Outbound voice size cap (bytes)", placeholder: "Default 15728640 (15MB); max 52428800 (50MB)" },
+					maxFileBytes: { label: "Outbound file/video size cap (bytes)", placeholder: "Default 20971520 (20MB); max 4294967296 (4G)" },
+					inboundImageMaxPx: { label: "Inbound image max long edge (px)", placeholder: "Default 2048; 1440+ recommended" },
+					inboundFileMaxBytes: { label: "Inbound file size cap (bytes)", placeholder: "Default 20971520 (20MB); 0 = unlimited" },
+					gifFramesEnabled: { label: "GIF frame splitting", hint: "Split GIFs into frame sequences when sending (default off)" },
+				},
+			},
+			diagnostics: {
+				title: "Diagnostics",
+				fields: {
+					actionAuditEnabled: { label: "Action audit", hint: "Log one audit line per send action" },
+					traceEnabled: { label: "Decision trace (trace)", hint: "Write decision logs for troubleshooting" },
+					recordInbound: { label: "Record inbound events", hint: "Record received messages" },
+					inboxRedact: { label: "Redact recordings", hint: "Mask ids when recording" },
+					injectEnabled: { label: "Event injection (debug only)", hint: "Inject messages offline for debugging" },
+					injectDryRun: { label: "Injection dry-run", hint: "Injection does not really send; testing only" },
+					logLevel: { label: "Log level", options: { debug: "debug (full)", info: "info (normal)", warn: "warn (warnings)", error: "error (errors only)" } },
+				},
+			},
+		};
+		var EN_SECTIONS: any = {
+			permissions: { dm: "Direct messages", group: "Group chats", common: "Common" },
+		};
+		var EN_NOTICES: any = {
+			steerAccepted: "Steer notice",
+			queue: "Queue notice",
+			answerAccepted: "Answer receipt",
+			deferredTimeout: "Timeout notice",
+			rateLimited: "Rate-limit notice",
+		};
+		var enMissing: string[] = [];
+		for (var eg = 0; eg < GROUPS.length; eg++) {
+			var groupEn = EN_GROUPS[GROUPS[eg].id];
+			var groupSrc: any = GROUPS[eg];
+			en["group." + groupSrc.id + ".title"] = groupEn != null ? groupEn.title : groupSrc.title;
+			if (Array.isArray(groupSrc.sections)) {
+				for (var sectionEn of groupSrc.sections) {
+					var sectionTitleEn = groupEn != null && EN_SECTIONS[groupSrc.id] != null ? EN_SECTIONS[groupSrc.id][sectionEn.id] : null;
+					en["group." + groupSrc.id + ".section." + sectionEn.id] = sectionTitleEn != null ? sectionTitleEn : sectionEn.title;
+				}
+			}
+			for (var ef = 0; ef < groupSrc.fields.length; ef++) {
+				var fieldDef2: any = groupSrc.fields[ef];
+				var fieldEn = groupEn != null && groupEn.fields[fieldDef2.key] != null ? groupEn.fields[fieldDef2.key] : null;
+				if (fieldEn == null || typeof fieldEn.label !== "string" || fieldEn.label === "") enMissing.push(fieldDef2.key);
+				en["field." + fieldDef2.key + ".label"] = fieldEn != null && fieldEn.label != null ? fieldEn.label : fieldDef2.label;
+				if (zh["field." + fieldDef2.key + ".hint"] != null) en["field." + fieldDef2.key + ".hint"] = fieldEn != null && fieldEn.hint != null ? fieldEn.hint : fieldDef2.hint;
+				if (zh["field." + fieldDef2.key + ".placeholder"] != null) en["field." + fieldDef2.key + ".placeholder"] = fieldEn != null && fieldEn.placeholder != null ? fieldEn.placeholder : fieldDef2.placeholder;
+				if (fieldDef2.optionLabels != null) {
+					for (var optionValue2 in fieldDef2.optionLabels) {
+						var optionEn = fieldEn != null && fieldEn.options != null ? fieldEn.options[optionValue2] : null;
+						en["field." + fieldDef2.key + ".option." + optionValue2] = optionEn != null ? optionEn : fieldDef2.optionLabels[optionValue2];
+					}
+				}
+			}
+		}
+		en["field.stringArray.placeholder.default"] = "Split by commas or newlines";
+		for (var eni = 0; eni < NOTICE_KEYS.length; eni++) {
+			en["notice." + NOTICE_KEYS[eni].key + ".label"] = EN_NOTICES[NOTICE_KEYS[eni].key] != null ? EN_NOTICES[NOTICE_KEYS[eni].key] : NOTICE_KEYS[eni].label;
+		}
+		if (enMissing.length > 0) {
+			console.warn("[dsh-onebot] 新键必须双词：以下字段缺 en 词条（已回落 zh）：" + enMissing.join(","));
+		}
+		/** 双语 key 集一致性自检（0.10.0 起覆盖自动灌入的字段文案）：缺漏仅告警不致崩溃。 */
 		function assertSameKeys(a: any, b: any) {
 			var missing = Object.keys(a).filter((key) => !(key in b));
 			var extra = Object.keys(b).filter((key) => !(key in a));
@@ -1224,6 +1425,11 @@ window.__ModuleLoader__.load({
 			var onChange = typeof options.onChange === "function" ? options.onChange : function () {};
 			var onSecretChange = typeof options.onSecretChange === "function" ? options.onSecretChange : function () {};
 			var onClearSecretChange = typeof options.onClearSecretChange === "function" ? options.onClearSecretChange : function () {};
+			// 0.10.0 字段文案词条化：t 经 opts 注入（面板传 ctx.locale.bind 的 t；测试传
+			// LOCALE_ZH 解析桩）。回退值 = GROUPS/NOTICE_KEYS 内联 zh 常量（纯函数无 t 仍可测）。
+			var tr = function (key: any, fallback: any) {
+				return typeof options.t === "function" ? options.t(key) : fallback;
+			};
 			// hint 行组装：字段 hint（12px tertiary）+ mode 联动/冲突覆盖（warn 色）+
 			// 数字校验（error 色）内嵌彩色片段——同一行文案，不再有「短提示内联标题右侧」
 			// 与容器查询网格的布局分支（0.10.0 统一为 label 上/hint 下的纵向结构）。
@@ -1237,7 +1443,22 @@ window.__ModuleLoader__.load({
 			// 不同；title 挂在 children span 上——宿主 Tag 不透传多余 props）。
 			var nonDefaultBadge = function (fieldKey: any) {
 				if (nonDefaultKeys.indexOf(fieldKey) < 0) return null;
-				return h(ReactImpl, ui.Tag, { tone: "neutral", children: h(ReactImpl, "span", { title: "与默认值不同" }, "非默认") });
+				return h(ReactImpl, ui.Tag, { tone: "neutral", children: h(ReactImpl, "span", { title: tr("field.nonDefaultTitle", "与默认值不同") }, tr("field.nonDefault", "非默认")) });
+			};
+			// 字段 label/hint/占位符经词条解析（zh 源 = GROUPS 内联常量自动灌入的词典）。
+			var fieldLabelOf = function (field: any) {
+				return tr("field." + field.key + ".label", field.label);
+			};
+			var fieldHintOf = function (field: any) {
+				var hintKey = "field." + field.key + ".hint";
+				return zh[hintKey] != null ? tr(hintKey, field.hint) : null;
+			};
+			var fieldPlaceholderOf = function (field: any) {
+				var placeholderKey = "field." + field.key + ".placeholder";
+				if (zh[placeholderKey] != null) return tr(placeholderKey, field.placeholder);
+				// stringArray 无显式占位符时用共享默认句（分割方式说明）
+				if (field.type === "stringArray") return tr("field.stringArray.placeholder.default", "分割方式：逗号、顿号、换行");
+				return undefined;
 			};
 			var fieldNodes = group.fields.map(function (field: any) {
 				// 本地加（11.1）：showIf 条件不满足就整行不渲染（索引保持对齐，按 key 取节点仍有效）。
@@ -1253,8 +1474,10 @@ window.__ModuleLoader__.load({
 					? String(invalidNumbers[field.key])
 					: null;
 				var disabled = options.disabled === true || fieldInactive;
+				var fieldLabel = fieldLabelOf(field);
+				var hintText = fieldHintOf(field);
 				var hintChildren = [];
-				if (typeof field.hint === "string" && field.hint.trim() !== "") hintChildren.push(field.hint);
+				if (hintText != null && String(hintText).trim() !== "") hintChildren.push(hintText);
 				if (fieldInactive) {
 					if (hintChildren.length > 0) hintChildren.push("；");
 					hintChildren.push(warnSpan(modeInactiveText));
@@ -1272,7 +1495,7 @@ window.__ModuleLoader__.load({
 					: null;
 				var badge = nonDefaultBadge(field.key);
 				var headNode = h(ReactImpl, "div", { className: "obx-field-head" },
-					h(ReactImpl, "span", { className: "obx-label" }, field.label), badge);
+					h(ReactImpl, "span", { className: "obx-label" }, fieldLabel), badge);
 				// 布尔行：说明在左（label + hint 纵排）、原生 Switch 在右——DSH 设置页同款
 				//（不再整行可点：开关本身即命中区，与宿主原生行为一致）。
 				if (field.type === "boolean") {
@@ -1281,28 +1504,29 @@ window.__ModuleLoader__.load({
 						h(ReactImpl, ui.Switch, {
 							checked: value === true,
 							onChange: function (next: any) { onChange(field, next === true); },
-							label: field.label, disabled: disabled,
+							label: fieldLabel, disabled: disabled,
 						}));
 				}
 				var control: any;
 				if (field.type === "enum") {
 					// 0.10.0：下拉改原生 SegmentedControl——全部 9 个枚举 ≤4 档，分段控件
-					// 一屏可读，且即宿主原生选择控件（连接模式/策略档位同款）。
+					// 一屏可读，且即宿主原生选择控件（连接模式/策略档位同款）。档位文案走词条。
 					control = h(ReactImpl, ui.SegmentedControl, {
 						value: String(value == null ? "" : value),
 						options: field.options.map(function (option: any) {
-							return { value: option, label: field.optionLabels[option] != null ? field.optionLabels[option] : option };
+							var fallbackLabel = field.optionLabels[option] != null ? field.optionLabels[option] : option;
+							return { value: option, label: tr("field." + field.key + ".option." + option, fallbackLabel) };
 						}),
 						onChange: function (next: any) { onChange(field, next); },
-						label: field.label, disabled: disabled,
+						label: fieldLabel, disabled: disabled,
 					});
 				} else if (field.type === "stringArray") {
 					control = h(ReactImpl, "div", { className: "obx-control" },
 						h(ReactImpl, "textarea", {
 							className: "obx-textarea", rows: 2, value: String(value == null ? "" : value), disabled: disabled,
-							placeholder: field.placeholder != null ? field.placeholder : "分割方式：逗号、顿号、换行",
+							placeholder: fieldPlaceholderOf(field),
 							onChange: function (event: any) { onChange(field, event.target.value); },
-							"aria-label": field.label,
+							"aria-label": fieldLabel,
 						}));
 				} else if (field.type === "secret") {
 					// 密码型输入且不明文回显：value 恒为用户本次输入（初始 ''）；
@@ -1314,20 +1538,20 @@ window.__ModuleLoader__.load({
 					var secretStateText = clearActive && options.secretSet === true ? secretClearPendingText
 						: options.secretSet === true ? secretSetText : secretUnsetText;
 					var secretHintChildren = [
-						"出于安全实际令牌不回传页面，只显占位圆点，输入新值即替换（令牌：NapCat 的 WebUI → 网络配置→Token）",
+						tr("field.accessToken.securityHint", "出于安全实际令牌不回传页面，只显占位圆点，输入新值即替换（令牌：NapCat 的 WebUI → 网络配置→Token）"),
 					];
 					if (clearActive) secretHintChildren.push(warnSpan(secretClearHintText));
 					return [
 						h(ReactImpl, "div", { className: "obx-field", key: field.key },
 							h(ReactImpl, "div", { className: "obx-field-head" },
-								h(ReactImpl, "span", { className: "obx-label" }, field.label),
+								h(ReactImpl, "span", { className: "obx-label" }, fieldLabel),
 								h(ReactImpl, ui.Tag, { tone: options.secretSet === true ? "neutral" : "quiet", children: secretStateText })),
 							h(ReactImpl, "div", { className: "obx-control" },
 								h(ReactImpl, ui.Input, {
 									type: "password", autoComplete: "new-password",
 									value: String(value == null ? "" : value), disabled: disabled,
-									placeholder: (options.secretSet === true && !clearActive) ? "••••••••••••••••" : "留空 = 不修改",
-									"aria-label": field.label,
+									placeholder: (options.secretSet === true && !clearActive) ? "••••••••••••••••" : tr("secret.placeholder", "留空 = 不修改"),
+									"aria-label": fieldLabel,
 									onChange: function (event: any) { onSecretChange(event.target.value); },
 								})),
 							h.apply(null, [ReactImpl, "p", { className: "obx-hint" }].concat(secretHintChildren))),
@@ -1344,10 +1568,10 @@ window.__ModuleLoader__.load({
 						h(ReactImpl, ui.Input, {
 							type: "text",
 							value: String(value == null ? "" : value), disabled: disabled,
-							placeholder: field.placeholder != null ? field.placeholder : undefined,
+							placeholder: fieldPlaceholderOf(field),
 							onChange: function (event: any) { onChange(field, event.target.value); },
 							"aria-invalid": fieldInvalidMessage != null ? true : undefined,
-							"aria-label": field.label,
+							"aria-label": fieldLabel,
 						}));
 				}
 				var nodes = [
@@ -1383,6 +1607,7 @@ window.__ModuleLoader__.load({
 					var nOn = nState.on === true;
 					var notifyKey = "notices." + nk.key;
 					var defText = nk.def;
+					var noticeLabel = tr("notice." + nk.key + ".label", nk.label);
 					var setNoticeState = function (patchObj: any) {
 						if (typeof options.onNoticeChange !== "function") return;
 						options.onNoticeChange(notifyKey, function (cur: any) {
@@ -1394,9 +1619,9 @@ window.__ModuleLoader__.load({
 						h(ReactImpl, "div", { className: "obx-field obx-field--row", key: "nt-" + nk.key },
 							h(ReactImpl, "div", { className: "obx-field-text" },
 								h(ReactImpl, "div", { className: "obx-field-head" },
-									h(ReactImpl, "span", { className: "obx-label" }, nk.label))),
+									h(ReactImpl, "span", { className: "obx-label" }, noticeLabel))),
 							h(ReactImpl, ui.Switch, {
-								checked: nOn, label: nk.label, disabled: options.disabled === true,
+								checked: nOn, label: noticeLabel, disabled: options.disabled === true,
 								onChange: function () { if (options.disabled !== true) setNoticeState({ on: !nOn }); },
 							})),
 					];
@@ -1408,7 +1633,7 @@ window.__ModuleLoader__.load({
 								disabled: options.disabled === true,
 								placeholder: nk.def,
 								onChange: function (event: any) { setNoticeState({ text: event.target.value }); },
-								"aria-label": nk.label + "文案",
+								"aria-label": format(tr("notice.textAria", "{label}文案"), { label: noticeLabel }),
 							})));
 					}
 					rows = rows.concat(rowNodes);
@@ -1417,24 +1642,24 @@ window.__ModuleLoader__.load({
 			};
 			fieldNodes = fieldNodes.concat(renderNoticeRows(group));
 			// 本地加：组内分区（如权限的私聊/群聊）——按 keys 顺序取已渲染的字段节点，
-			// 每块前面插一个小标题。
+			// 每块前面插一个小标题（标题走词条，zh 源 = GROUPS.sections.title 自动灌入）。
 			if (Array.isArray(group.sections) && group.sections.length > 0) {
 				var byKey: any = {};
 				group.fields.forEach(function (field: any, index: any) { byKey[field.key] = fieldNodes[index]; });
 				var sectioned = [];
 				for (var section of group.sections) {
-					sectioned.push(h(ReactImpl, "h4", { className: "obx-subgroup-title", key: "sec-" + section.title }, section.title));
+					sectioned.push(h(ReactImpl, "h4", { className: "obx-subgroup-title", key: "sec-" + section.id },
+						tr("group." + group.id + ".section." + section.id, section.title)));
 					for (var sectionKey of section.keys) {
 						if (byKey[sectionKey] != null) sectioned.push(byKey[sectionKey]);
 					}
 				}
 				fieldNodes = sectioned;
 			}
-			// 组标题 + 一句人话描述（经 opts.groupDesc 传入；缺省不渲染）。
-			// 0.10.0：诊断组折叠（details/summary + sessionStorage 记忆）随页签式导航
-			// 移除——组本身即页签内容，折叠失去意义。
+			// 组标题 + 一句人话描述（经 opts.groupDesc 传入；缺省不渲染）。标题走词条
+			//（zh 源 = GROUPS.title 自动灌入）。
 			var sectionChildren = [h(ReactImpl, "div", { className: "obx-group-head" },
-				h(ReactImpl, "h3", { className: "obx-group-title" }, group.title),
+				h(ReactImpl, "h3", { className: "obx-group-title" }, tr("group." + group.id + ".title", group.title)),
 				groupDesc != null ? h(ReactImpl, "span", { className: "obx-group-desc" }, groupDesc) : null)];
 			return h.apply(null, [ReactImpl, "section", { className: "obx-group", "data-group": group.id }]
 				.concat(sectionChildren, [fieldNodes]));
@@ -1465,6 +1690,10 @@ window.__ModuleLoader__.load({
 		function renderWorkspacePicker(ReactImpl: any, opts: any) {
 			var options = opts == null ? {} : opts;
 			var ui = options.ui;
+			// 0.10.0：文案走词条（t 经 opts 注入；回退 = 内联 zh 常量，纯函数可测不变）。
+			var tr = function (key: any, fallback: any) {
+				return typeof options.t === "function" ? options.t(key) : fallback;
+			};
 			if (options.loaded !== true) return null;
 			var workspaces = Array.isArray(options.workspaces) ? options.workspaces : [];
 			if (options.available !== true || workspaces.length === 0) {
@@ -1484,8 +1713,8 @@ window.__ModuleLoader__.load({
 				}
 				return h(ReactImpl, "p", { className: "obx-hint obx-workspace-empty" },
 					options.available === true
-						? "暂无 workspace 记录，可直接输入路径。"
-						: "无法获取 workspace 列表（宿主未提供 workspace 注册表），可直接输入路径。");
+						? tr("workspace.emptyAvailable", "暂无 workspace 记录，可直接输入路径。")
+						: tr("workspace.emptyUnavailable", "无法获取 workspace 列表（宿主未提供 workspace 注册表），可直接输入路径。"));
 			}
 			var selectedId = typeof options.selectedId === "string" ? options.selectedId : "";
 			var selected: any = null;
@@ -1493,18 +1722,19 @@ window.__ModuleLoader__.load({
 				if (workspace != null && String(workspace.id) === selectedId) selected = workspace;
 			}
 			var disabled = options.disabled === true;
+			var pickLabel = tr("workspace.pick", "快速填入 workspace");
 			return h(ReactImpl, "div", { className: "obx-workspace-row", "data-role": "workspace-picker" },
-				h(ReactImpl, "span", { className: "obx-label" }, "快速填入 workspace"),
+				h(ReactImpl, "span", { className: "obx-label" }, pickLabel),
 				h(ReactImpl, "select", {
 					className: "obx-select", value: selectedId, disabled: disabled,
-					"aria-label": "快速填入 workspace",
-					title: "列出宿主 workspace 注册表中的工作区；选中后点「填入」写入上方路径输入框（只填值，保存仍走「保存设置」按钮）",
+					"aria-label": pickLabel,
+					title: tr("workspace.pickTitle", "列出宿主 workspace 注册表中的工作区；选中后点「填入」写入上方路径输入框（只填值，保存仍走「保存设置」按钮）"),
 					onChange: function (event: any) {
 						var onSelectedChange = options.onSelectedChange;
 						if (typeof onSelectedChange === "function") onSelectedChange(event.target.value);
 					},
 				},
-					h(ReactImpl, "option", { key: "", value: "" }, "选择 workspace…"),
+					h(ReactImpl, "option", { key: "", value: "" }, tr("workspace.pickPlaceholder", "选择 workspace…")),
 					workspaces.map(function (workspace: any) {
 						var label = String(workspace.path == null ? "" : workspace.path) + "（" + String(workspace.sessionCount == null ? 0 : workspace.sessionCount) + " 会话）";
 						return h(ReactImpl, "option", { key: String(workspace.id), value: String(workspace.id) }, label);
@@ -1515,8 +1745,8 @@ window.__ModuleLoader__.load({
 						var onApply = options.onApply;
 						if (selected != null && typeof onApply === "function") onApply(selected.path);
 					},
-				}, "填入"),
-				h(ReactImpl, "span", { className: "obx-hint" }, "选中后点「填入」仅写入上方输入框；需点「保存设置」才会保存（对新会话生效，已设 /workspace 覆盖的会话不受影响）。"));
+				}, tr("workspace.apply", "填入")),
+				h(ReactImpl, "span", { className: "obx-hint" }, tr("workspace.pickHint", "选中后点「填入」仅写入上方输入框；需点「保存设置」才会保存（对新会话生效，已设 /workspace 覆盖的会话不受影响）。")));
 		}
 
 		//#region 面板组件
@@ -1887,6 +2117,7 @@ window.__ModuleLoader__.load({
 			var invalidNumberCount = Object.keys(invalidNumbers).length;
 
 			var changeHandlers = {
+				t: t,
 				disabled: busy,
 				secretSet: secretSet,
 				clearSecret: clearSecret,
@@ -1902,6 +2133,7 @@ window.__ModuleLoader__.load({
 					if (field.key !== "workspacePath" && field.key !== "groupWorkspacePath") return null;
 					return renderWorkspacePicker(React, {
 						ui: UI,
+						t: t,
 						loaded: workspace.loaded,
 						available: workspace.available,
 						workspaces: workspace.workspaces,
@@ -1966,13 +2198,13 @@ window.__ModuleLoader__.load({
 						h(React, UI.Button, { variant: "ghost", disabled: busy, onClick: handleReload }, t("settings.reload"))),
 					h(React, "div", { className: "obx-head-row" },
 						h(React, UI.SegmentedTabs, {
-							items: GROUPS.map(function (group: any) { return { value: group.id, label: group.title }; }),
+							items: GROUPS.map(function (group: any) { return { value: group.id, label: t("group." + group.id + ".title", group.title) }; }),
 							value: activeTab,
 							onChange: function (next: any) { setActiveTab(next); },
-							label: "设置分组",
+							label: t("settings.groupsLabel", "设置分组"),
 						}),
 						h(React, "span", { className: "obx-head-spacer" }),
-						h(React, "span", { className: "obx-meta", title: "面板构建标记" }, "ui-native"),
+						h(React, "span", { className: "obx-meta", title: t("settings.buildMarker", "面板构建标记") }, "ui-native"),
 						h(React, "span", { className: "obx-meta" }, t("revision.label") + " " + String(snapshot.revision)))),
 				h(React, "div", { className: "obx-body" },
 					(error !== null || notice !== "") ? h(React, "div", { className: "obx-toast-wrap", "aria-live": "polite" },
@@ -2104,6 +2336,9 @@ window.__ModuleLoader__.load({
 		exports.OnebotSettingsPanel = OnebotSettingsPanel;
 		exports.OnebotSidebarIcon = OnebotSidebarIcon;
 		exports.SIDEBAR_PANEL_ID = SIDEBAR_PANEL_ID;
+		// 0.10.0：词条表导出（测试桩 t 从 LOCALE_ZH 解析；en 覆盖率用例读 LOCALE_EN）。
+		exports.LOCALE_ZH = zh;
+		exports.LOCALE_EN = en;
 		// 批 3（UX §5.4/§5.6）：冲突合并保留 + 数字行内校验（纯函数，单测护航）
 		exports.NUMBER_RANGE = NUMBER_RANGE;
 		exports.numberRangeInvalid = numberRangeInvalid;
