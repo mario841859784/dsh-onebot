@@ -60,7 +60,7 @@ export interface CommandContext {
   getChat(chatId: ChatId): CommandChatView | undefined
   hasChat(chatId: ChatId): boolean
   /** Registry capabilities the commands legitimately trigger. */
-  resetChat(chatId: ChatId): Promise<void>
+  resetChat(chatId: ChatId, options?: { withTail?: boolean }): Promise<void>
   dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string): Promise<void>
   /** T3 (P2): /stop — 显式终止该聊天的超时补发跟踪（pending 条目转
    * cancelled，其他聊天不受影响）。无补发条目时为 no-op。 */
@@ -178,7 +178,9 @@ export interface CommandDefinition {
 export const COMMANDS: CommandDefinition[] = [
   { name: 'new', adminOnly: true, group: '会话', help: '开启新会话（清空上下文）', handler: async (ctx, chatId) => {
     ctx.log('info', 'slash /new for ' + chatId)
-    await ctx.resetChat(chatId)
+    // T4 (PR port 上下文尾巴)：确属用户主动 /new 才注入上一会话尾巴（开关
+    // 默认关；bridge 侧再按 chatTailsEnabled 复核）。
+    await ctx.resetChat(chatId, { withTail: true })
   } },
   { name: 'stop', adminOnly: true, group: '操作', help: '停止当前生成', handler: (ctx, chatId) => handleStopCommand(ctx, chatId) },
   { name: 'steer', adminOnly: true, group: '操作', help: '<补充内容> 向运行中的任务补充指令', handler: (ctx, chatId, arg, sender) => handleSteerCommand(ctx, chatId, arg, sender) },

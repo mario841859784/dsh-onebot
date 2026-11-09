@@ -81,7 +81,7 @@ export function makeFakeAgents(
             captured.agentListeners?.push({ event, listener })
             return () => undefined
           },
-          systemPrompt: { section: (s: { name: string }) => { captured.channelSections?.push(s.name); return () => undefined } },
+          systemPrompt: { section: (s: { name: string }) => { captured.channelSections?.push(s.name); captured.channelSectionTexts?.push(s as never); return () => undefined } },
           tools: { register: (t: { name: string }) => { captured.channelTools?.push(t.name); return () => undefined } },
           userQuestions: { askTimed: async () => ({ answers: [] }), answer: async () => false },
         }
@@ -118,10 +118,10 @@ export function makeFakeAgents(
 }
 
 /** Full bridge + WS harness: inbound via real WebSocket, outbound captured. */
-export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; log?: (level: string, message: string) => void; notices?: NoticeTexts; monoFamilies?: readonly string[]; allowPrivateHosts?: boolean; respond?: Record<string, (params: Record<string, unknown>) => unknown>; userQuestions?: unknown; wakeNamesAdmin?: string[]; wakeNamesMember?: string[]; replyCountsAsMention?: boolean; atAllCountsAsMention?: boolean; pokeEnabled?: boolean; outboundDefenseEnabled?: boolean; asideOnlySilentEnabled?: boolean }) {
+export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; log?: (level: string, message: string) => void; notices?: NoticeTexts; monoFamilies?: readonly string[]; allowPrivateHosts?: boolean; respond?: Record<string, (params: Record<string, unknown>) => unknown>; userQuestions?: unknown; wakeNamesAdmin?: string[]; wakeNamesMember?: string[]; replyCountsAsMention?: boolean; atAllCountsAsMention?: boolean; pokeEnabled?: boolean; outboundDefenseEnabled?: boolean; asideOnlySilentEnabled?: boolean; dmPromptFile?: string; groupPromptFile?: string; memoryFilesEnabled?: boolean; memoryFiles?: readonly string[]; chatTailsEnabled?: boolean }) {
   const ctx = new Context()
   const sessionIds: string[] = []
-  const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[], agentListeners: [] as Array<{ event: string; listener: (request: unknown, next: () => Promise<unknown>) => unknown }> }
+  const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[], agentListeners: [] as Array<{ event: string; listener: (request: unknown, next: () => Promise<unknown>) => unknown }>, channelSectionTexts: [] as Array<{ name: string; text: string }> }
   const agents = makeFakeAgents(sessionIds, captured, opts)
   const sessions = { flush: vi.fn(async () => undefined) }
   const mediaDir = opts?.mediaDir ?? mkdtempSync(join(tmpdir(), 'onebot-test-'))
@@ -169,6 +169,12 @@ export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: st
       // T2 (PR port): 出站防御 / 旁白静默开关透传（absent = 关闭，与上游一致）。
       ...(opts?.outboundDefenseEnabled !== undefined ? { outboundDefenseEnabled: opts.outboundDefenseEnabled } : {}),
       ...(opts?.asideOnlySilentEnabled !== undefined ? { asideOnlySilentEnabled: opts.asideOnlySilentEnabled } : {}),
+      // T4 (PR port): 提示词文件/记忆文件/上下文尾巴透传（absent = 默认关）。
+      ...(opts?.dmPromptFile !== undefined ? { dmPromptFile: opts.dmPromptFile } : {}),
+      ...(opts?.groupPromptFile !== undefined ? { groupPromptFile: opts.groupPromptFile } : {}),
+      ...(opts?.memoryFilesEnabled !== undefined ? { memoryFilesEnabled: opts.memoryFilesEnabled } : {}),
+      ...(opts?.memoryFiles !== undefined ? { memoryFiles: opts.memoryFiles } : {}),
+      ...(opts?.chatTailsEnabled !== undefined ? { chatTailsEnabled: opts.chatTailsEnabled } : {}),
     },
     policy: {
       dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
@@ -280,13 +286,19 @@ export async function makeCmdHarness(opts?: {
   /** T8: auto-receipt notice override (absent = both on). */
   notices?: NoticeTexts
   monoFamilies?: readonly string[]
+  /** T4 (PR port): 提示词文件/记忆文件/上下文尾巴透传（absent = 默认关）。 */
+  dmPromptFile?: string
+  groupPromptFile?: string
+  memoryFilesEnabled?: boolean
+  memoryFiles?: readonly string[]
+  chatTailsEnabled?: boolean
 }) {
   const ctx = new Context()
   const sessionIds: string[] = []
   const capturedMeta: Array<{ cwd?: string; agentPreset?: string }> = []
   // T2 (P1): steers are captured alongside followups so the /steer and
   // 'steer'-policy tests can assert the exact steered text.
-  const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, createdMeta: capturedMeta, agentListeners: [] as Array<{ event: string; listener: (request: unknown, next: () => Promise<unknown>) => unknown }> }
+  const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, createdMeta: capturedMeta, agentListeners: [] as Array<{ event: string; listener: (request: unknown, next: () => Promise<unknown>) => unknown }>, channelSectionTexts: [] as Array<{ name: string; text: string }> }
   const agents = makeFakeAgents(sessionIds, captured)
   const sessions = { flush: vi.fn(async () => undefined) }
   const mediaDir = opts?.mediaDir ?? mkdtempSync(join(tmpdir(), 'onebot-test-'))
@@ -338,6 +350,12 @@ export async function makeCmdHarness(opts?: {
       textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
       agentPreset: 'standard', workspacePath: mediaDir,
       ...(opts?.trace !== undefined ? { trace: opts.trace } : {}),
+      // T4 (PR port): 提示词文件/记忆文件/上下文尾巴透传（absent = 默认关）。
+      ...(opts?.dmPromptFile !== undefined ? { dmPromptFile: opts.dmPromptFile } : {}),
+      ...(opts?.groupPromptFile !== undefined ? { groupPromptFile: opts.groupPromptFile } : {}),
+      ...(opts?.memoryFilesEnabled !== undefined ? { memoryFilesEnabled: opts.memoryFilesEnabled } : {}),
+      ...(opts?.memoryFiles !== undefined ? { memoryFiles: opts.memoryFiles } : {}),
+      ...(opts?.chatTailsEnabled !== undefined ? { chatTailsEnabled: opts.chatTailsEnabled } : {}),
     },
     policy: {
       dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],

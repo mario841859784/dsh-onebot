@@ -25,6 +25,9 @@ import type { ChatId, UserRole } from './chat.js'
 import { buildChatId, classifyUserRole, splitChatId } from './chat.js'
 import type { AccessPolicyConfig } from './chat.js'
 import { buildPlatformPrompt } from './prompt.js'
+import { PromptLoader } from './prompt-setup.js'
+import { ChatTails, buildGreetingPrompt } from './chat-tails.js'
+import { isSilenceText } from './interim.js'
 import { registerTools } from './tools.js'
 import { tryHandleCommand as routeCommand, STEER_ACCEPTED_NOTICE, type CommandContext } from './commands.js'
 import { resolveNoticeText, type NoticeTexts } from './notices.js'
@@ -148,6 +151,19 @@ export interface BridgeConfig {
    * 最终文字（「（超时补发）」前缀，走既有 outbound 管线）；absent →
    * 600000（保守 10 分钟），0 = 关闭超时补发。 */
   deferredTimeoutMs?: number
+  /** T4 (PR port 提示词文件)：私聊（dm:）会话的附加设定文件路径（~/ 展开；
+   * 内容进 system prompt 的「本会话附加设定」段）；absent/空 = 不注入。 */
+  dmPromptFile?: string
+  /** T4 (PR port 提示词文件)：群聊（group:）会话的附加设定文件路径；absent/空 = 不注入。 */
+  groupPromptFile?: string
+  /** T4 (PR port 记忆文件)：记忆文件开关（默认关，裁定口径）；只对私聊生效。 */
+  memoryFilesEnabled?: boolean
+  /** T4 (PR port 记忆文件)：记忆文件路径列表（~/ 展开；单文件 8000 字符、
+   * 总量 12000 字符截断）。 */
+  memoryFiles?: readonly string[]
+  /** T4 (PR port 上下文尾巴)：/new 把上一会话最后几句带进新会话（默认关，
+   * 裁定口径；落盘 mediaDir/chat-tails.json）。 */
+  chatTailsEnabled?: boolean
 }
 
 /** W1 trace/config extensions: the observability knobs ride as optional
@@ -312,6 +328,12 @@ export class ChatBridge {
   /** T3 (P2): the deferred-delivery tracker (超时补发) — timeout timers, the
    * JSONL registry, bounded send retries and restart recovery. */
   private readonly deferred: DeferredDelivery
+  /** T4 (PR port 提示词文件/记忆文件)：dm/group 提示词文件与记忆文件的
+   * 读取与组装（mtime 失效缓存；记忆只喂私聊）。 */
+  private readonly prompts: PromptLoader
+  /** T4 (PR port 上下文尾巴)：/new 前的上一会话尾巴（防抖落盘 mediaDir/
+   * chat-tails.json；默认关）。 */
+  private readonly tails: ChatTails
   /** T4 (P3): the bounded registry of recent fault references — every minted
    * QQ-CONN-/MF- number is recorded here for the /healthcheck report and the
    * diagnostics archive file name. */
@@ -370,6 +392,9 @@ export class ChatBridge {
 
   constructor(deps: BridgeDeps) {
     this.deps = deps
+    // T4 (PR port 提示词文件/上下文尾巴)：两个新域对象（都不碰网络行为）。
+    this.prompts = new PromptLoader({ log: (level, message) => deps.log(level, message) })
+    this.tails = new ChatTails({ mediaDir: deps.config.mediaDir, log: (level, message) => deps.log(level, message) })
     this.registry = new ChatRegistry({
       agents: deps.agents,
       sessions: deps.sessions,
@@ -394,7 +419,7 @@ export class ChatBridge {
         // to the pending path).
         this.abandonForegroundWaits(chat.chatId)
       },
-      installChannelScope: agentCtx => this.installChannelScope(agentCtx),
+      installChannelScope: (agentCtx, chatId) => this.installChannelScope(agentCtx, chatId),
     })
     this.outbound = new OutboundPipeline({
       getChat: chatId => this.chats.get(chatId),
@@ -486,6 +511,9 @@ export class ChatBridge {
   /** Start listening: wire connection handlers and the session event feed. */
   start(): void {
     const { connection, ctx: sessionEvents } = this.deps
+    // T4 (PR port 上下文尾巴)：预热落盘缓存——不预热的话第一条 push 因缓存
+    // 未加载被静默丢掉，首个 /new 必空尾（贡献者版本的移植缺陷，评审修正）。
+    if (this.deps.config.chatTailsEnabled === true) this.tails.preload()
     connection.selfId = this.deps.config.botQQ
     this.sessionEventOff = sessionEvents.on('session/event', (session: Session, event: SessionEvent) => {
       this.onSessionEvent(session, event)
@@ -529,6 +557,8 @@ export class ChatBridge {
     // T3 (P2): disarm the deferred silent-wait timers（pending 条目已落盘，
     // 重启后 loadPersisted 恢复跟踪续投）。
     this.deferred.stopAll()
+    // T4 (PR port 上下文尾巴)：强制落盘最后的尾巴（清防抖定时器，别吞最后几句）。
+    await this.tails.stop()
     // T3-board: release every foreground wait claim; the listeners fall
     // through (next() → NO_PROVIDER) and the host wait closes on its own
     // deadline → pending, the pre-T3 path. No claim may outlive the bridge.
@@ -707,7 +737,7 @@ export class ChatBridge {
   /** Feed one user message into a chat's agent (create on demand). Records
    * the base text for /retry, queues the initiator's turn role, and applies
    * per-chat /goal + /plan prefixes. */
-  private async dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string): Promise<void> {
+  private async dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string, options?: { recordTail?: boolean }): Promise<void> {
     const final = this.prefixTurn(chatId, text)
     const fallback = this.chats.get(chatId)?.lastNickname ?? ''
     const chat = await this.ensureChat(chatId, nickname ?? fallback)
@@ -721,6 +751,11 @@ export class ChatBridge {
     // the running turn's role (M1-A2). Push and followup happen synchronously,
     // so the role cannot interleave with another dispatch.
     chat.pendingTurnRoles.push(role)
+    // T4 (PR port 上下文尾巴)：记一条用户消息进尾巴（开关开启时）。问候回合
+    // 的合成首轮用 recordTail:false 不记（否则问候会顶掉真正的尾巴）。
+    if (options?.recordTail !== false && this.deps.config.chatTailsEnabled === true) {
+      this.tails.push(chatId, 'user', text)
+    }
     this.deps.log('info', 'followup from ' + chatId + ': ' + final.slice(0, 120))
     // Plugin-originated user message: the session log attributes QQ inbound
     // messages to this plugin's own producer-owned source kind, keeping them
@@ -999,7 +1034,7 @@ export class ChatBridge {
       isAdmin: userId => classifyUserRole(userId, bridge.deps.policy.adminUsers) === 'admin',
       getChat: chatId => bridge.chats.get(chatId),
       hasChat: chatId => bridge.chats.has(chatId),
-      resetChat: chatId => bridge.resetChat(chatId),
+      resetChat: (chatId, options) => bridge.resetChat(chatId, options),
       dispatchFollowup: (chatId, text, role, nickname) => bridge.dispatchFollowup(chatId, text, role, nickname),
       // T3 (P2): /stop 也显式终止该聊天的超时补发跟踪（其他聊天不受影响）。
       stopDeferredTracking: chatId => bridge.deferred.cancelChat(chatId),
@@ -1364,6 +1399,16 @@ export class ChatBridge {
       return
     }
     if (event.type === 'assistant/message') {
+      // T4 (PR port 上下文尾巴)：模型输出也记进尾巴（开关开启时；沉默哨兵
+      // 回合模型没公开说什么，不记）。放在 deferred 判断前——超时补发跟踪的
+      // 消息同样是真实模型输出，尾巴照记。
+      if (this.deps.config.chatTailsEnabled === true) {
+        const tailText = event.data.message.content
+          .filter(block => block.type === 'text')
+          .map(block => block.text)
+          .join('')
+        if (tailText !== '' && !isSilenceText(tailText)) this.tails.push(chatId, 'assistant', tailText)
+      }
       // T3 (P2): a deferred-registered (timed-out) turn is muted — its text
       // messages are captured for the final补发 only（不插播 interim、不转
       // 审批/提问卡：超时后只补最终文字与终态通知）。
@@ -1529,8 +1574,24 @@ export class ChatBridge {
    * conversation stays on disk). The confirmation is sent directly through
    * the outbound pipeline since no agent is left to reply.
    */
-  private async resetChat(chatId: ChatId): Promise<void> {
+  private async resetChat(chatId: ChatId, options?: { withTail?: boolean }): Promise<void> {
+    // T4 (PR port 上下文尾巴)：只有确属用户主动 /new（withTail）且开关开启
+    // 才抓尾巴——/workspace、/preset 等切档退役不带尾巴（窄化口径）。问候
+    // 回合走 dispatchFollowup 的默认 source.kind 'plugin:dsh-onebot'（不冒充
+    // user，评审修正②），档位降为 member（不硬编码 admin，评审修正①）。
+    const withTail = options?.withTail === true && this.deps.config.chatTailsEnabled === true
+    const tail = withTail ? await this.tails.read(chatId) : []
     await this.registry.resetChat(chatId)
+    if (withTail) {
+      this.tails.drop(chatId)
+      // 评审修正：不裸 void——dispatchFollowup 内 await ensureChat（agent
+      // 创建）可能抛错，此刻用户已收到「已开启新会话」确认；异常逃逸会成为
+      // unhandled rejection 且问候回合静默丢失。捕获后 warn 可见，不静默也不崩。
+      this.dispatchFollowup(chatId, buildGreetingPrompt(tail), 'member', undefined, { recordTail: false })
+        .catch((error: unknown) => {
+          this.deps.log('warn', '问候回合分发失败: ' + describeError(error))
+        })
+    }
     this.sendToChat(chatId, '✅ 已开启新会话，下一条消息将进入全新会话，旧对话历史保留在之前的会话中。').catch((error: unknown) => {
       this.deps.log('warn', 'reset notice send failed: ' + String(error))
     })
@@ -1543,11 +1604,14 @@ export class ChatBridge {
    * the channel instructions or the media tools — they cannot (and should
    * not) push messages to QQ.
    */
-  private installChannelScope(agentCtx: Context): void {
+  private installChannelScope(agentCtx: Context, chatId: ChatId): void {
+    // T4 (PR port 提示词文件/记忆文件)：按 chat 类型组装附加设定（dm/group
+    // 提示词文件）与记忆文本（只喂私聊），注入平台提示词段。
+    const { extra, memoryText } = this.prompts.build(chatId, this.deps.config)
     agentCtx.systemPrompt.section({
       name: 'channel:dsh-onebot',
       order: 90,
-      text: buildPlatformPrompt(this.deps.config.restrictedMemberPrefix),
+      text: buildPlatformPrompt(this.deps.config.restrictedMemberPrefix, extra, memoryText),
     })
     registerTools(agentCtx, this, this.deps.connection, {
       maxImageBytes: this.deps.config.maxImageBytes,

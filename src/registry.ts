@@ -237,7 +237,7 @@ export interface RegistryDeps {
   onChatRemoved(chat: ChatAgent): void
   /** Register the QQ platform prompt section + qq_* tools on a new agent's
    * own scope — bridge-owned because the tools call back into the bridge. */
-  installChannelScope(agentCtx: Context): void
+  installChannelScope(agentCtx: Context, chatId: ChatId): void
 }
 
 /**
@@ -377,9 +377,9 @@ export class ChatRegistry {
    * paths. The only difference between the callers is the preset: a resumed
    * session rejoins the preset it recorded itself; a fresh create reuses the
    * config/default resolution already recorded in its header meta. */
-  private buildSetup(recordedPreset?: string): AgentSetup {
+  private buildSetup(chatId: ChatId, recordedPreset?: string): AgentSetup {
     return async agentCtx => {
-      this.deps.installChannelScope(agentCtx)
+      this.deps.installChannelScope(agentCtx, chatId)
       await this.joinPreset(agentCtx, recordedPreset)
       // Dual-host arity compat (#18): dsh 0.2.2 removed the ModelSelectionRef
       // type export and the second parameter (host-style single-arg install —
@@ -511,7 +511,7 @@ export class ChatRegistry {
     const presetId = await this.resolvePresetId(chatId)
     const meta: { cwd: string; agentPreset?: string } = { cwd }
     if (presetId !== undefined) meta.agentPreset = presetId
-    const setup = this.buildSetup()
+    const setup = this.buildSetup(chatId)
     let handle: { agent: Agent; dispose(): Promise<void> }
     try {
       handle = await this.deps.agents.create({
@@ -735,7 +735,7 @@ export class ChatRegistry {
     const handle = await this.deps.agents.resume({
       resumeSessionId: makeSessionId(sessionId),
       agentOptions,
-      setup: this.buildSetup(recordedPreset),
+      setup: this.buildSetup(chatId, recordedPreset),
     })
     await this.attachToWorkspace(handle.agent.session.id, handle.agent.session.header?.cwd, chatId)
     // /workspace persistence across restarts: the per-chat override map is

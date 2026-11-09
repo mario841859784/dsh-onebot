@@ -187,6 +187,17 @@ export interface Config {
   groupWorkspacePath: string
   /** T3 (PR port 退休会话自动恢复)：退休会话自动重绑开关；false=默认关。 */
   sessionAutoRecover: boolean
+  /** T4 (PR port 提示词文件)：私聊（dm:）会话的附加设定文件路径（~/ 展开）；
+   * 空 = 不注入（默认）。 */
+  dmPromptFile: string
+  /** T4 (PR port 提示词文件)：群聊（group:）会话的附加设定文件路径；空 = 不注入（默认）。 */
+  groupPromptFile: string
+  /** T4 (PR port 记忆文件)：记忆文件开关（默认关；只喂私聊）。 */
+  memoryFilesEnabled: boolean
+  /** T4 (PR port 记忆文件)：记忆文件路径列表。 */
+  memoryFiles: string[]
+  /** T4 (PR port 上下文尾巴)：/new 带上一会话最后几句（默认关）。 */
+  chatTailsEnabled: boolean
   inboundFileMaxBytes: number
   /** @deprecated D4a alias of inboundFileMaxBytes; honored for one release. */
   maxInboundFileBytes?: number
@@ -388,6 +399,16 @@ export const Config: Z<Config> = z.object({
     .description('群工作区目录（T3 PR 移植）：设置后群聊会话默认落在该独立目录（自动归入该工作区），私聊不受影响；单聊 /workspace 覆盖仍最优先；留空 = 群聊与私聊同源 workspacePath（默认，维持现行为）'),
   sessionAutoRecover: z.boolean().default(false)
     .description('退休会话自动恢复（T3 PR 移植）：chat 绑定的会话在宿主侧已退休/不存在时，启动加载扫描宿主 sessions 目录，找该 chat 可用的最新会话自动重绑；扫描失败/无候选时静默降级为原行为（保持退休跳过或重新建会话）；默认关（不改变现行为）'),
+  dmPromptFile: z.string().default('')
+    .description('私聊附加设定文件路径（T4 PR 移植）：支持 ~/ 展开；文件内容（剥行首尾空白）注入私聊会话 system prompt 的「本会话附加设定」段，文件编辑后即时生效（mtime 缓存失效）；留空 = 不注入（默认）'),
+  groupPromptFile: z.string().default('')
+    .description('群聊附加设定文件路径（T4 PR 移植）：同 dmPromptFile，只对群聊（group:）会话生效；留空 = 不注入（默认）'),
+  memoryFilesEnabled: z.boolean().default(false)
+    .description('记忆文件开关（T4 PR 移植）：开启后把 memoryFiles 列表里的文件内容注入私聊会话 system prompt 的「我的记忆」段（单文件 8000 字符、总量 12000 字符截断；群聊不喂记忆）；默认关'),
+  memoryFiles: z.array(z.string()).default([])
+    .description('记忆文件路径列表（T4 PR 移植）：支持 ~/ 展开；仅在 memoryFilesEnabled 开启且私聊会话生效'),
+  chatTailsEnabled: z.boolean().default(false)
+    .description('上下文尾巴开关（T4 PR 移植）：开启后 /new 把上一会话最后几句（最多 8 条、每条 300 字符，落盘 mediaDir/chat-tails.json）带进新会话，模型开场先接上一段话头；默认关（/new 维持纯新会话）'),
   inboundFileMaxBytes: z.number().default(INBOUND_FILE_MAX_BYTES)
     .description('QQ 入站文件最大字节数（直链/base64 拉取，0 = 不限制）'),
   maxInboundFileBytes: z.number().deprecated()
@@ -659,6 +680,11 @@ export function apply(ctx: Context, config: Config): void {
       workspacePath: config.workspacePath,
       groupWorkspacePath: config.groupWorkspacePath,
       sessionAutoRecover: config.sessionAutoRecover,
+      dmPromptFile: config.dmPromptFile,
+      groupPromptFile: config.groupPromptFile,
+      memoryFilesEnabled: config.memoryFilesEnabled,
+      memoryFiles: config.memoryFiles,
+      chatTailsEnabled: config.chatTailsEnabled,
       maxInboundFileBytes: config.inboundFileMaxBytes,
       chatIdleEvictDays: config.chatIdleEvictDays,
       ...gateConfig,

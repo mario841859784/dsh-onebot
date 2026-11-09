@@ -29,6 +29,17 @@ import { describeError } from './errors.js'
  * them pushes borderline-late recalls over the server timeout). */
 const RECALL_SPACING_MS = 60
 
+/** T4 (PR port 沉默哨兵)：模型只输出沉默哨兵 = 本回合不出站。
+ * 判定要求整段文本只含哨兵（允许空白/全角空格/包裹的引号），
+ * 免得正常回复里提到这个词被误吞。 */
+export const SILENCE_TOKEN = '[[不回]]'
+
+/** T4 (PR port 沉默哨兵)：整段文本剥掉空白与各类包裹引号后是否恰好只含哨兵。 */
+export function isSilenceText(text: string): boolean {
+  const stripped = text.replace(/[\s\u3000"'\u0060\u201c\u201d\u2018\u2019\u300c\u300d\uff3b\uff3d]/g, '')
+  return stripped !== '' && stripped === SILENCE_TOKEN
+}
+
 /** Narrow view of a live chat the interim tracker may touch — the structural
  * subset of the bridge's ChatAgent carrying the interim state. The storage
  * itself stays on ChatAgent: the inbound pipeline's residue reset, the /stop
@@ -174,6 +185,16 @@ export class InterimTracker {
       .map(block => block.text)
       .join('')
     if (text === '') return
+    // T4 (PR port 沉默哨兵)：整段只有沉默哨兵 → 哨兵本身不进入出站。
+    // 评审修正：不无条件清 loopPending——同回合「先发言后沉默」时已排队的
+    // deferred 文本（模型公开说过的话）不能被吞：保留给 turn/end（interim
+    // 模式经 settleLoop 作终稿发出，instant 模式经 onTurnEnd 终稿路径发出）；
+    // 若哨兵之后还有真实消息，它照正常路径先 flush 为插播。哨兵本身从不写入
+    // loopPending，两条终稿路径已有的 isSilenceText 守卫兜底不发。
+    if (isSilenceText(text)) {
+      this.ctx.log('info', 'silenced turn for ' + chatId)
+      return
+    }
     this.cycle(chat).state = 'accumulating'
     if (this.ctx.effectiveInterim(chatId)) {
       // The arriving message proves the previously deferred text interim —
@@ -217,6 +238,11 @@ export class InterimTracker {
       const final = chat.loopPending
       if (final !== null) {
         chat.loopPending = null
+        // T4 (PR port 沉默哨兵)：整段只有哨兵 → 只记日志，不发送。
+        if (isSilenceText(final)) {
+          this.ctx.log('info', 'silenced turn for ' + chatId)
+          return
+        }
         this.ctx.sendToChat(chatId, final, { queuable: true }).catch(error => {
           this.ctx.log('warn', 'final send failed: ' + describeError(error))
         })
@@ -390,10 +416,15 @@ export class InterimTracker {
     if (chat.loopPending !== null) {
       const final = chat.loopPending
       chat.loopPending = null
-      try {
-        await this.ctx.sendToChat(chatId, final, { queuable: true })
-      } catch (error) {
-        this.ctx.log('warn', 'final send failed: ' + describeError(error))
+      // T4 (PR port 沉默哨兵)：整段只有哨兵 → 只记日志，不发送。
+      if (isSilenceText(final)) {
+        this.ctx.log('info', 'silenced turn for ' + chatId)
+      } else {
+        try {
+          await this.ctx.sendToChat(chatId, final, { queuable: true })
+        } catch (error) {
+          this.ctx.log('warn', 'final send failed: ' + describeError(error))
+        }
       }
     }
     // The settlement owns 'settling' only until it completes; a user turn or

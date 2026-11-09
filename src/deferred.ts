@@ -26,6 +26,8 @@ import { join } from 'node:path'
 import type { TraceStage } from './trace.js'
 import { TRACE_REASONS } from './trace.js'
 import { OneBotActionError, OneBotNotConnectedError } from './connection.js'
+// T4 (PR port 沉默哨兵)：补发路径同过哨兵判定（评审修正②）。
+import { isSilenceText } from './interim.js'
 import { describeError } from './errors.js'
 import { failureRefSuffix } from './ref.js'
 import { resolveNoticeText, type NoticeTexts } from './notices.js'
@@ -153,7 +155,10 @@ export function buildDeferredText(entry: DeferredEntry, reason: DeferredTurnReas
     return DEFERRED_PREFIX + '任务已结束：运行出错：' + (reason.error?.message ?? '未知错误') + failureRefSuffix(entry.ref)
   }
   const text = (entry.resultText ?? '').trim()
-  if (text === '') return DEFERRED_PREFIX + '任务已完成，但没有产生文字结果。'
+  // T4 (PR port 沉默哨兵)：纯哨兵终稿与空结果同路——不把「[[不回]]」字面
+  // 补发给用户，只发终态通知（评审修正②；也兜底旧版本注册表里已落盘的
+  // 哨兵 resultText）。哨兵前的真实文字已在捕获处保留（见 onAssistantMessage）。
+  if (text === '' || isSilenceText(text)) return DEFERRED_PREFIX + '任务已完成，但没有产生文字结果。'
   return DEFERRED_PREFIX + text
 }
 
@@ -231,7 +236,9 @@ export class DeferredDelivery {
     const entry = this.entries.get(sessionId)
     if (entry !== undefined && entry.state === 'pending') {
       const text = textOnly(message).trim()
-      if (text !== '') entry.resultText = text
+      // T4 (PR port 沉默哨兵)：纯哨兵消息不覆写本回合已捕获的真实文字
+      // （评审修正②）——模型先说 A 后补 [[不回]] 时，补发的应是 A。
+      if (text !== '' && !isSilenceText(text)) entry.resultText = text
       return true
     }
     if (this.ctx.timeoutMs > 0 && this.timers.has(sessionId)) {

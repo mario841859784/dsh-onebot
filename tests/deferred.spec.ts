@@ -35,6 +35,7 @@ import {
   DEFERRED_REGISTRY_FILE,
   DEFERRED_RETRY_BACKOFF_MS,
   DeferredDelivery,
+  buildDeferredText,
 } from '../src/deferred.js'
 import type { DeferredContext, DeferredEntry } from '../src/deferred.js'
 import { makeCmdHarness, makeEvent, makeHarness, sentTexts } from './helpers/bridge-harness.js'
@@ -383,6 +384,37 @@ describe('deferred 单元 — 计时器与静音语义', () => {
     registerUnit(scheduler, delivery)
     expect(delivery.snapshot()[0].resultText).toBe('超时前已生成的文字')
     expect(pending).toBeNull()
+  })
+
+  it('T4 评审修正②：哨兵终稿不走补发出站——捕获不覆写先前真实文字；纯哨兵降级为「无文字结果」终态通知', async () => {
+    // 场景 A：超时登记后模型先说真话、终稿是纯哨兵 → 捕获处哨兵不覆写，
+    // 补发的是真实文字（修复前：哨兵覆写 resultText，字面补发 [[不回]]）。
+    const scheduler = new FakeScheduler()
+    const { ctx, sends } = makeUnitCtx()
+    const delivery = new DeferredDelivery(ctx, { now: () => 1_000, schedule: scheduler.schedule, cancel: scheduler.cancel })
+    registerUnit(scheduler, delivery)
+    delivery.onAssistantMessage('private:10001', 's-1', { id: 'm1', content: [{ type: 'text', text: '先算出的答案' }] })
+    delivery.onAssistantMessage('private:10001', 's-1', { id: 'm2', content: [{ type: 'text', text: ' [[不回]] ' }] })
+    delivery.onTurnEnd('private:10001', 's-1', { kind: 'completed' })
+    await flush()
+    const deferred = sends.filter(send => send.text.startsWith(DEFERRED_PREFIX))
+    expect(deferred).toHaveLength(1)
+    expect(deferred[0].text).toContain('先算出的答案')
+    expect(deferred[0].text).not.toContain('[[不回]]')
+    // 场景 B：整回合只有哨兵（无任何真实文字）→ 出口降级为「无文字结果」，
+    // 哨兵绝不字面出站（也兜底旧版本注册表里已落盘的哨兵 resultText）。
+    const scheduler2 = new FakeScheduler()
+    const { ctx: ctx2, sends: sends2 } = makeUnitCtx()
+    const delivery2 = new DeferredDelivery(ctx2, { now: () => 1_000, schedule: scheduler2.schedule, cancel: scheduler2.cancel })
+    registerUnit(scheduler2, delivery2)
+    delivery2.onAssistantMessage('private:10001', 's-1', { id: 'm1', content: [{ type: 'text', text: '[[不回]]' }] })
+    delivery2.onTurnEnd('private:10001', 's-1', { kind: 'completed' })
+    await flush()
+    const deferred2 = sends2.filter(send => send.text.startsWith(DEFERRED_PREFIX))
+    expect(deferred2).toHaveLength(1)
+    expect(deferred2[0].text).not.toContain('[[不回]]')
+    expect(deferred2[0].text).toContain('没有产生文字结果')
+    expect(buildDeferredText({ chatId: 'private:10001', sessionId: 's-1', registeredAt: 0, updatedAt: 0, attempts: 0, state: 'pending', resultText: '[[不回]]' }, undefined)).not.toContain('[[不回]]')
   })
 
   it('回合已不在运行（/stop 后无 turn/end 等情形）：只解除计时、不登记', () => {
