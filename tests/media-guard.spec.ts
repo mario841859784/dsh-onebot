@@ -10,7 +10,7 @@
  * escape hatch to exercise genuine body streaming. Nothing hits the network.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, realpathSync } from 'node:fs'
 import { mkdir, readdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -218,8 +218,11 @@ describe('MediaStore.downloadUrl SSRF guards (M1-A5)', () => {
 })
 
 describe('resolveContainedPath fence (M1-A3a)', () => {
-  const fence = mkdtempSync(join(tmpdir(), 'media-fence-'))
-  const outside = mkdtempSync(join(tmpdir(), 'media-fence-out-'))
+  // resolveContainedPath returns realpath-normalized paths; normalize the fence
+  // roots up front so the expected values match on macOS, where /var is a
+  // symlink to /private/var and TMPDIR paths get resolved one level deeper.
+  const fence = realpathSync(mkdtempSync(join(tmpdir(), 'media-fence-')))
+  const outside = realpathSync(mkdtempSync(join(tmpdir(), 'media-fence-out-')))
 
   it('accepts contained paths and returns their realpath', async () => {
     await writeFile(join(fence, 'a.txt'), 'x')
