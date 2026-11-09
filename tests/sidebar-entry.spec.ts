@@ -108,7 +108,7 @@ describe('T11 侧边栏入口 — 成对注册（开关开，默认）', () => {
     const result = await runApply({ ...SCHEMA_DEFAULTS })
     const sidebarSlot = registeredOf(result, 'sidebar.panellist')[0]
     expect(sidebarSlot.descriptor.order).toBe(20)
-    expect((sidebarSlot.descriptor.label as () => string)()).toBe('t:sidebar.panel') // 中文词条经 locale（源码 zh="QQ 机器人"）
+    expect((sidebarSlot.descriptor.label as () => string)()).toBe('t:sidebar.panel') // 中文词条经 locale（源码 zh="QQ Bot"）
 
     const icon = (sidebarSlot.render as (props: Record<string, unknown>) => StubElement)({ size: 16 })
     expect(icon.type).toBe('svg')

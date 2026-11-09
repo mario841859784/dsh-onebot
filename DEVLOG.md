@@ -1003,3 +1003,8 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 
 - **改动**：docs/ 新增 `settings-ui-connection.jpg` / `settings-ui-behavior.jpg`（0.10.0 原生风格真机截图，DeepSeek Harness 桌面应用 1280×820 实拍）；README.md / README.en.md「设置页」一节嵌入两图，并把过时的「三组 19 键」口径更新为「六组 69 键（+5 条通知文案）」——分组覆盖表替代旧键列法，非面板键口径同步为 `chatIdleEvictDays` 等。仓库此前并无 UI 截图（仅架构图），本次为新增而非替换。
 - **同步**：与 08dcf5f 同分支；截图为 JPEG（~70KB/张）按现状直存 docs/。
+
+## 2026-11-09 命名收口：侧边栏入口「QQ Bot」+ 面板标题「QQ Bot 设置」
+
+- **改动**（src/client.ts 词条 + tests 注释，渲染/契约零改动）：zh 词条 `sidebar.panel`「QQ 机器人」→「QQ Bot」（en 本就是 QQ Bot）、`settings.title`「QQ Bot（OneBot）设置」→「QQ Bot 设置」（en 同步去 `(OneBot)`）；`sidebarEntryEnabled` 字段 hint 里的入口名同步「QQ Bot」。README 两图重截（侧边栏与标题均为新文案）。
+- **验证**：tsc 0 错误；client-settings + sidebar-entry 62/62 全绿；真机重启后侧边栏与面板标题生效，docs/ 两截图已更新。

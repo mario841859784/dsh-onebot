@@ -43,7 +43,7 @@ declare const document: any;
  *      （dmPromptFile/groupPromptFile/memoryFilesEnabled 关）；
  *   4. notices 面板改 5 真键（本仓 schema 无 newSession）；
  *   5. patchSchema/configSchema 覆盖全部 71 键（防网关按 schema 剥键丢编辑）；
- *   6. T11：首页左侧边栏「QQ 机器人」入口（sidebarEntryEnabled 开关，main 与
+ *   6. T11：首页左侧边栏「QQ Bot」入口（sidebarEntryEnabled 开关，main 与
  *      sidebar.panellist 同 id "qq-bot" 成对注册；false 时两者均不注册）。
  * 任一侧变更 descriptor/分组/键集/默认值时，必须同步本文件并在 DEVLOG 记录。
  *
@@ -140,7 +140,7 @@ window.__ModuleLoader__.load({
 					{ key: "ignoreSelf", label: "忽略自己发的消息", type: "boolean", hint: "机器人自己的回声不处理" },
 					// T11：DSH 首页左侧边栏入口开关（关=不注册侧边栏入口与配对面板；
 					// 插件菜单下的设置页入口保留。客户端按启动时快照决定，改完刷新生效）。
-					{ key: "sidebarEntryEnabled", label: "首页侧边栏入口", type: "boolean", hint: "在 DSH 首页左侧边栏显示「QQ 机器人」入口；改动需刷新页面生效" },
+					{ key: "sidebarEntryEnabled", label: "首页侧边栏入口", type: "boolean", hint: "在 DSH 首页左侧边栏显示「QQ Bot」入口；改动需刷新页面生效" },
 				],
 			},
 			{
@@ -672,7 +672,7 @@ window.__ModuleLoader__.load({
 		//#region 双语词条（zh 为 key 集真相源，en 逐 key 对齐；占位符用平台 {word} 形式。
 		//  分组标题与字段 label 是中文常量（T4 要求），不走词条。）
 		var zh = {
-			"settings.title": "QQ Bot（OneBot）设置",
+			"settings.title": "QQ Bot 设置",
 			"settings.desc": "配置持久化为 profile 层 cordis.patch.yml 中 dsh-onebot 条目的 config 覆盖行，与手改 patch、宿主原生设置页同源。",
 			"settings.loading": "正在加载设置…",
 			"settings.reload": "重新加载",
@@ -714,10 +714,10 @@ window.__ModuleLoader__.load({
 			"field.numberInvalid": "必须是 {range} 的有限数字",
 			"field.remoteOverwritten": "已被其他来源修改，已同步为最新值",
 			// T11：首页左侧边栏入口词条（sidebar.panellist 的 label；en 同批齐平）。
-			"sidebar.panel": "QQ 机器人",
+			"sidebar.panel": "QQ Bot",
 		};
 		var en = {
-			"settings.title": "QQ Bot (OneBot) settings",
+			"settings.title": "QQ Bot settings",
 			"settings.desc": "Settings persist as the config override row of the dsh-onebot entry in the profile-layer cordis.patch.yml — same source as hand-edited patches and the host's native settings page.",
 			"settings.loading": "Loading settings…",
 			"settings.reload": "Reload",
@@ -2054,7 +2054,7 @@ window.__ModuleLoader__.load({
 				function (props: any) { if (props && props.view === "summary") return t("settings.desc"); return React.createElement(OnebotSettingsPanel, Object.assign({}, props, { remote: remote })); },
 			); });
 
-			// T11：首页左侧边栏「QQ 机器人」入口（可开关）。宿主合同：main keyed slot
+			// T11：首页左侧边栏「QQ Bot」入口（可开关）。宿主合同：main keyed slot
 			// 与 sidebar.panellist 列表条目必须同 id 成对注册（宿主 dsh-client-ui-layout
 			// selectPanel 校验 main key 缺失即抛错；先例 dsh-client-ui-plugin-manager /
 			// dsh-client-ui-schedule 同款）。开关按当前快照一次读取：false 时两侧都不
