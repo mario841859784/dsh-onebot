@@ -263,7 +263,7 @@ const OUTBOUND_IMAGE_MAX_BYTES = IMAGE_MAX_BYTES
 const INBOUND_FILE_MAX_BYTES = 20 * 1024 * 1024
 
 export const Config: Z<Config> = z.object({
-  mode: z.union([z.const('reverse'), z.const('forward')]).default('reverse')
+  mode: z.union([z.const('reverse'), z.const('forward')]).default('forward')
     .description('连接模式：reverse = NapCat ws-reverse 拨入（本插件监听端口）；forward = 本插件主动连接 NapCat 的 ws 服务'),
   host: z.string().default('127.0.0.1')
     .description('reverse 模式监听地址；跨机部署（NapCat 从其他机器拨入）需显式改为 0.0.0.0'),
@@ -291,8 +291,8 @@ export const Config: Z<Config> = z.object({
     .description('成员唤醒词（T1 PR port）：群聊消息以任一唤醒词开头即视为 @机器人（仅对成员生效）；留空=不启用'),
   unknownCommand: z.union([z.const('intercept'), z.const('passthrough')]).default('intercept')
     .description('未知斜杠命令处理：intercept（默认）=拦截并提示相近命令或 /help；passthrough=透传给模型（旧行为）'),
-  newMessagePolicy: z.union([z.const('queue'), z.const('steer')]).default('queue')
-    .description('任务运行中的新消息处理策略（P1）：queue（默认）=排队——新消息在当前任务结束后按序处理为后续回合，等待期间至多提示一次；steer=插话——运行中收到的新普通纯文字消息作为补充指令加入当前任务（模型在下一步读取）并回复提交提示；图片/文件/语音/带引用消息与 [受限用户:仅问答] 消息两种模式下都按排队处理，/steer 命令两种模式下均可用'),
+  newMessagePolicy: z.union([z.const('queue'), z.const('steer')]).default('steer')
+    .description('任务运行中的新消息处理策略（P1）：steer（默认）=插话——运行中收到的新普通纯文字消息作为补充指令加入当前任务（模型在下一步读取）并回复提交提示；queue=排队——新消息在当前任务结束后按序处理为后续回合，等待期间至多提示一次；图片/文件/语音/带引用消息与 [受限用户:仅问答] 消息两种模式下都按排队处理，/steer 命令两种模式下均可用'),
   autoSteerPolicy: z.union([z.const('admin'), z.const('all')]).default('admin')
     .description('steer 模式下自动插话的发送者资格（T9-B 用户裁决 2026-10-12）：admin（默认）=仅管理员可自动插话；all=所有非受限发送者均可。不具备资格的消息按排队处理；/steer 命令始终仅管理员、不受本项影响；queue 模式行为不变'),
   deferredTimeoutMs: z.number().default(600_000)
@@ -315,9 +315,9 @@ export const Config: Z<Config> = z.object({
     .description('是否把模型每步（含工具调用之间的中间回复）的文本立即发出；false 则只发最终回复。true 时：中间消息实时可见、每条在 interimRecallMs 后自动单独撤回、回合结束先发一张整轮 t2i 小结卡再发最终回复'),
   interimRecallMs: z.number().default(90_000)
     .description('中间消息各自发送完成后多久自动单独撤回（毫秒；QQ 撤回时限约 2 分钟，建议 ≤110000）'),
-  interimRecall: z.boolean().default(true)
-    .description('中间消息撤回开关：true（默认）=每条中间消息在 interimRecallMs 后自动撤回，回合结束先发整轮 t2i 小结卡再立即撤回原消息；false=只发不撤——中间消息照常实时发出但保留在聊天里：不排自动撤回定时器、回合结束不发小结卡也不撤回原消息，只发最终回复'),
-  sendErrorNotice: z.boolean().default(true)
+  interimRecall: z.boolean().default(false)
+    .description('中间消息撤回开关：false（默认）=只发不撤——中间消息照常实时发出但保留在聊天里：不排自动撤回定时器、回合结束不发小结卡也不撤回原消息，只发最终回复；true=每条中间消息在 interimRecallMs 后自动撤回，回合结束先发整轮 t2i 小结卡再立即撤回原消息'),
+  sendErrorNotice: z.boolean().default(false)
     .description('一轮运行出错时向用户发送 ⚠️ 错误提示'),
   notices: z.object({
     // T1 (#27)：各键语义统一——false=不发；true/缺省=默认文案（0.9.x 行为不变）；
@@ -375,9 +375,9 @@ export const Config: Z<Config> = z.object({
     .description('whisper 模型（openai: small/base/medium...；whisper.cpp: 模型名或 .bin 绝对路径）'),
   sttTimeoutMs: z.number().default(60_000)
     .description('单次转写超时（毫秒，默认 60000）；超时后占位即终态，不追加转写'),
-  textImageThreshold: z.number().default(150)
+  textImageThreshold: z.number().default(350)
     .description('回复正文超过该长度（字符数）时渲染为文字图卡片发送；<=0 禁用卡片路径'),
-  cardFooter: z.string().default('dsh')
+  cardFooter: z.string().default('OneBot')
     .description('文字图卡片页脚品牌文字（"Powered by <brand>"）'),
   fontFiles: z.array(z.string()).default([])
     .description('t2i 渲染器注册的字体文件路径（Linux/自定义字体；macOS 自动用系统字体）'),
@@ -413,8 +413,8 @@ export const Config: Z<Config> = z.object({
     .description('QQ 入站文件最大字节数（直链/base64 拉取，0 = 不限制）'),
   maxInboundFileBytes: z.number().deprecated()
     .description('[deprecated] 旧名别名（现 inboundFileMaxBytes）：QQ 入站文件最大字节数；本版兼容读取，新配置请用新名'),
-  allowPrivateHosts: z.boolean().default(false)
-    .description('下载 SSRF 防护逃生门：默认拒绝解析到私网/环回/链路本地地址的下载目标（协议仅 http/https、重定向逐跳复检仍生效）；NapCat 文件服务器或反代部署在本机/内网时置 true 跳过私网检查'),
+  allowPrivateHosts: z.boolean().default(true)
+    .description('下载 SSRF 防护逃生门：true（默认）=允许解析到私网/环回/链路本地地址的下载目标（NapCat 文件服务器或反代部署在本机/内网的场景）；false=拒绝私网/环回/链路本地目标（协议仅 http/https、重定向逐跳复检仍生效）'),
   fileRefRoots: z.array(z.string()).default([])
     .description('允许复制的 file:// 源根目录列表；空数组（默认）拒绝所有入站 file:// ref；路径按 realpath 校验，必须在这些根目录内'),
   allowCidrs: z.array(z.string()).default([])
@@ -439,12 +439,12 @@ export const Config: Z<Config> = z.object({
     .description('追踪事件级别（W1）：debug=记录全部决策事件；warn=仅记录 ok:false（被拒/失败/丢弃）事件'),
   recordInbound: z.boolean().default(false)
     .description('入站录制（W1）：把收到的每条入站事件（含被门控跳过的，附当时决策 reason）按可回放形状逐行 JSON 追加写 mediaDir/qq-inbox.jsonl（2MiB 改名轮转，保留 qq-inbox.1/2.jsonl；注入的帧不会被二次录制）；纯旁路：写失败仅 warn 限频，绝不影响回复管线；默认关闭——零文件零开销'),
-  inboxRedact: z.boolean().default(false)
-    .description('录制脱敏（W1）：落盘前把帧中 6 位以上的数字串（QQ 号/群号等）脱敏为前 3 位+****（数字型 id 字段一并处理），便于把录制文件发给别人离线回放；默认关闭'),
-  injectEnabled: z.boolean().default(false)
-    .description('事件注入通道（W1，仅调试用——信任边界：注入是调试通道，默认全关，勿在生产开启）：开启后按 injectIntervalMs 轮询 mediaDir/qq-inject.jsonl，把新行喂进真实入站管线（trace 事件标 stage=inject）；启动时已存在的历史行跳过并记一条说明；默认关闭'),
-  injectDryRun: z.boolean().default(true)
-    .description('注入干跑（W1）：true（默认，强烈建议保持）=注入回合触发的全部出站写操作（发消息/撤回等，含异步模型回合的最终回复——拦截点在出站动作层）被拦截计数、原文进 trace 事件、绝不真发 QQ；false=注入内容会真实发送，仅限隔离环境实验'),
+  inboxRedact: z.boolean().default(true)
+    .description('录制脱敏（W1）：落盘前把帧中 6 位以上的数字串（QQ 号/群号等）脱敏为前 3 位+****（数字型 id 字段一并处理），便于把录制文件发给别人离线回放；默认开启'),
+  injectEnabled: z.boolean().default(true)
+    .description('事件注入通道（W1，仅调试用——信任边界：注入是调试通道，勿在生产开启）：开启后按 injectIntervalMs 轮询 mediaDir/qq-inject.jsonl，把新行喂进真实入站管线（trace 事件标 stage=inject）；启动时已存在的历史行跳过并记一条说明；默认开启'),
+  injectDryRun: z.boolean().default(false)
+    .description('注入干跑（W1）：false（默认）=注入内容会真实发送，仅限隔离环境实验；true=注入回合触发的全部出站写操作（发消息/撤回等，含异步模型回合的最终回复——拦截点在出站动作层）被拦截计数、原文进 trace 事件、绝不真发 QQ'),
   injectIntervalMs: z.number().default(2000)
     .description('注入队列轮询间隔（毫秒，W1；最小 500）'),
   logLevel: z.union([z.const('debug'), z.const('info'), z.const('warn'), z.const('error')]).default('info')

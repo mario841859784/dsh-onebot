@@ -56,26 +56,33 @@ import type { WorkspaceRegistryLike } from './bridge.js'
 export const ENTRY_ID = 'dsh-onebot'
 /** Typert Remote 命名空间 = cordis 服务键（T1 §4）。 */
 export const NAMESPACE = 'onebotSettings'
-/** 快照固定值：29 键均为插件级热重启生效（T1 §5；W1/W2 新增 6 布尔键同粒度）。 */
+/** 快照固定值：全部键均为插件级热重启生效（T1 §5；T5 扩到 66 键同粒度）。 */
 export const REMOTE_EFFECT = 'restart'
 
-/** 设置页 UI 四组 29 键（T1 §4 + T9 autoSteerPolicy + T3 deferredTimeoutMs；与 src/index.ts Config schema 一一对应）。
- *  W6：permissions/behavior 三组 19 键保持不动，W1/W2 的 6 个布尔键独立成
- *  「diagnostics（诊断）」组——它们全部默认关（除 actionAuditEnabled 默认开）、
- *  属观测/调试面，与连接权限行为组的使用频率与风险等级都不同，独立分组让
- *  「默认全关的调试开关」一眼可辨（对齐竞品 v0.6.0 面板的开关分组话术）。
- *  W7：connection 组追加 workspacePath（会话默认工作区；schema 已有该键
- *  src/index.ts:287，本批次起入面板白名单，键序追加在组尾）。 */
+/** 设置页 UI 六组 66 键（T5：键表对齐贡献者 0.9.19 版——connection 13 /
+ *  permissions 15 / behavior 9 / session 5 / media 15 / diagnostics 7；与
+ *  src/index.ts Config schema 一一对应，未入库功能的键先行进表、schema 定义
+ *  随后批接上，见 PENDING_SCHEMA_KEYS）。T1 四组 29 键仍为前四组前缀，旧面板
+ *  （lib/client.js 手写真相源，T8 重写）继续可渲染。
+ *  分组沿用 W6 取舍：diagnostics 组 = 观测/调试面开关；session/media 两组来自
+ *  贡献者键表（T4 提示词/记忆文件、T5 媒体限额键的 UI 归属）。 */
 export const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>> = {
-  connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath'],
-  permissions: ['requireMention', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom'],
+  connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath', 'groupWorkspacePath', 'forceSessionId', 'dmPromptFile', 'groupPromptFile', 'allowPrivateHosts', 'ignoreSelf'],
+  permissions: ['requireMention', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'replyCountsAsMention', 'atAllCountsAsMention', 'faceStyle', 'pokeEnabled', 'restrictedMemberPrefix', 'sensitivePatterns'],
   behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs'],
-  diagnostics: ['actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun'],
+  session: ['newSessionGreeting', 'firstMessageAsUser', 'memoryFilesEnabled', 'memoryFiles', 'agentPreset'],
+  media: ['sttEnabled', 'sttEngine', 'sttCommand', 'sttArgs', 'sttModel', 'textImageEnabled', 'textImageThreshold', 'cardFooter', 'fontFiles', 'fontFamilies', 'outboundImageMaxBytes', 'maxVoiceBytes', 'maxFileBytes', 'inboundImageMaxPx', 'inboundFileMaxBytes'],
+  diagnostics: ['actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun', 'logLevel'],
 }
 
-/** schema 默认值（T1 §4 表；摘自 src/index.ts:171-245），快照生效值的底层。 */
+/** schema 默认值（摘自 src/index.ts Config schema 默认值），快照生效值的底层。
+ *  T5：默认值翻转 10 处（用户裁定①，含安全面项 allowPrivateHosts/injectEnabled/
+ *  injectDryRun）+ 键表扩到 66 键（贡献者 0.9.19 批次）。
+ *  与贡献者取值的偏差（本仓已拍板事实优先）：dmPromptFile/groupPromptFile 默认
+ *  ''（T4 拍板默认关，贡献者为 ~/.dsh 路径）、memoryFilesEnabled 默认 false
+ *  （同 T4，贡献者 true）、notices 无 newSession 键（我们 schema 无该键）。 */
 export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
-  mode: 'reverse',
+  mode: 'forward',
   host: '127.0.0.1',
   port: 8643,
   url: 'ws://127.0.0.1:3001',
@@ -83,6 +90,16 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   botQQ: '',
   // W7：会话默认工作区路径（schema 默认 ''，src/index.ts:287——留空 = 宿主进程 cwd）。
   workspacePath: '',
+  // T3：群聊会话默认工作区路径（schema 默认 ''，留空 = 跟随 workspacePath）。
+  groupWorkspacePath: '',
+  // PENDING（未入库功能键）：强制会话 id（schema 定义后批接上；贡献者组内列出但缺默认，此处补 ''）。
+  forceSessionId: '',
+  // PENDING：私聊/群聊提示词文件（贡献者默认 ~/.dsh 路径；本仓 T4 拍板默认关 = ''）。
+  dmPromptFile: '',
+  groupPromptFile: '',
+  // T5 翻转：下载 SSRF 防护逃生门（原 false）。
+  allowPrivateHosts: true,
+  ignoreSelf: true,
   requireMention: true,
   adminUsers: [],
   dmPolicy: 'open',
@@ -90,26 +107,71 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   allowAllUsers: false,
   allowFrom: [],
   groupAllowFrom: [],
+  wakeNamesAdmin: [],
+  wakeNamesMember: [],
+  replyCountsAsMention: false,
+  atAllCountsAsMention: false,
+  // PENDING：@ 消息样式（name=显示名字，emoji=仅表情）。
+  faceStyle: 'name',
+  pokeEnabled: true,
+  restrictedMemberPrefix: true,
+  sensitivePatterns: [],
   interimMessages: true,
-  interimRecall: true,
+  interimRecall: false,
   interimRecallMs: 90_000,
-  sendErrorNotice: true,
+  sendErrorNotice: false,
   unknownCommand: 'intercept',
   rateLimitPerMinute: 30,
-  // T2 (P1)：任务运行中的新消息处理策略（queue=排队默认；steer=插话）。
-  newMessagePolicy: 'queue',
+  // T2 (P1)：任务运行中的新消息处理策略（steer=插话默认；queue=排队）。
+  newMessagePolicy: 'steer',
   // T9-B (用户裁决 2026-10-12)：自动插话资格档位（admin=仅管理员默认；all=不限）。
   autoSteerPolicy: 'admin',
   // T3 (P2)：等待模型回复超时阈值（毫秒；0=关闭超时补发）。
   deferredTimeoutMs: 600_000,
-  // W6：W1/W2 可观测/调试布尔键（schema 默认值摘自 src/index.ts:297-317）。
+  // PENDING：新会话欢迎语/首条消息按用户身份发送。
+  newSessionGreeting: true,
+  firstMessageAsUser: true,
+  // T4：会话记忆文件（本仓 T4 拍板默认关；贡献者 true）。
+  memoryFilesEnabled: false,
+  memoryFiles: [],
+  agentPreset: '',
+  sttEnabled: true,
+  sttEngine: 'auto',
+  sttCommand: '',
+  sttArgs: [],
+  sttModel: 'small',
+  // PENDING：正文渲染文字图卡片开关（textImageThreshold 已翻转，开关键后批接上）。
+  textImageEnabled: true,
+  // T5 翻转：正文超 350 字符（原 150）渲染文字图卡片。
+  textImageThreshold: 350,
+  // T5 翻转：文字图卡片页脚品牌文字（原 'dsh'）。
+  cardFooter: 'OneBot',
+  fontFiles: [],
+  fontFamilies: [],
+  // 媒体限额（与 src/media.ts 常量及 schema 默认一致）。
+  outboundImageMaxBytes: 8 * 1024 * 1024,
+  maxVoiceBytes: 15 * 1024 * 1024,
+  maxFileBytes: 20 * 1024 * 1024,
+  inboundImageMaxPx: 2048,
+  inboundFileMaxBytes: 20 * 1024 * 1024,
+  chatIdleEvictDays: 7,
+  // W6：W1/W2 可观测/调试布尔键 + T5 翻转（inboxRedact/injectEnabled/injectDryRun）。
   actionAuditEnabled: true,
   traceEnabled: false,
   recordInbound: false,
-  inboxRedact: false,
-  injectEnabled: false,
-  injectDryRun: true,
+  inboxRedact: true,
+  injectEnabled: true,
+  injectDryRun: false,
+  logLevel: 'info',
+  // 通知开关（schema 默认全 true；单独校验通道见 validatePatch）。
+  notices: { steerAccepted: true, queue: true, answerAccepted: true, deferredTimeout: true, rateLimited: true },
 }
+
+/** notices 对象的合法子键（我们 schema 无贡献者的 newSession，故 5 键）。 */
+export const NOTICE_KEYS: readonly string[] = ['steerAccepted', 'queue', 'answerAccepted', 'deferredTimeout', 'rateLimited']
+
+/** T5 键表先行、schema 定义后批接上的键（T6/T7 功能落地前，完整性测试豁免）。 */
+export const PENDING_SCHEMA_KEYS: readonly string[] = ['forceSessionId', 'newSessionGreeting', 'firstMessageAsUser', 'textImageEnabled', 'faceStyle']
 
 /** 快照返回侧脱敏的键（T1 §3 敏感字段行；写入侧明文落盘属宿主既有行为）。 */
 export const SECRET_KEYS: readonly string[] = ['accessToken']
@@ -119,32 +181,44 @@ const ENUM_KEYS: Readonly<Record<string, readonly string[]>> = {
   dmPolicy: ['open', 'allowlist', 'disabled'],
   groupPolicy: ['open', 'allowlist', 'disabled'],
   unknownCommand: ['intercept', 'passthrough'],
-  // T2 (P1)：queue=排队（默认）；steer=插话进运行中任务。
+  // T2 (P1)：steer=插话（默认）；queue=排队。
   newMessagePolicy: ['queue', 'steer'],
   // T9-B (用户裁决 2026-10-12)：admin=仅管理员（默认）；all=不限。
   autoSteerPolicy: ['admin', 'all'],
+  // T5 键表新增：@ 样式 / 日志级别 / 语音转写引擎。
+  faceStyle: ['name', 'emoji'],
+  logLevel: ['debug', 'info', 'warn', 'error'],
+  sttEngine: ['auto', 'openai', 'whisper-cpp', 'custom'],
 }
-const NUMBER_KEYS: readonly string[] = ['port', 'interimRecallMs', 'rateLimitPerMinute', 'deferredTimeoutMs']
+const NUMBER_KEYS: readonly string[] = ['port', 'interimRecallMs', 'rateLimitPerMinute', 'deferredTimeoutMs', 'textImageThreshold', 'chatIdleEvictDays', 'outboundImageMaxBytes', 'maxVoiceBytes', 'maxFileBytes', 'inboundImageMaxPx', 'inboundFileMaxBytes']
 /** 数字键取值范围（评审 B4：port 1–65535、时长/频控 ≥0；越界在 Remote 层拒绝，不再只依赖宿主回滚兜底）。 */
 const NUMBER_RANGE: Readonly<Record<string, readonly [number, number | undefined]>> = {
   port: [1, 65535],
   interimRecallMs: [0, undefined],
   rateLimitPerMinute: [0, undefined],
   deferredTimeoutMs: [0, undefined],
+  textImageThreshold: [0, undefined],
+  chatIdleEvictDays: [0, undefined],
+  outboundImageMaxBytes: [1, 104857600],
+  maxVoiceBytes: [1, 52428800],
+  maxFileBytes: [1, 4294967296],
+  inboundImageMaxPx: [0, undefined],
+  inboundFileMaxBytes: [0, undefined],
 }
-/** 布尔键白名单（T1 §4 + W6 扩展：W1/W2 观测/调试 6 键入列；顺序与
- *  SETTINGS_GROUPS.diagnostics 一致。数值键 dedupWindowSeconds/actionRatePerMinute/
- *  actionRatePerDay/injectIntervalMs 与枚举键 traceLevel 本期不入 UI 白名单——
- *  面板仅布尔开关与既有 19 键，调优键仍走 patch config 手改，取舍见 DEVLOG W6）。 */
+/** 布尔键白名单（T1 §4 + W6 + T5 键表：22 键，对齐贡献者 0.9.19）。 */
 const BOOLEAN_KEYS: readonly string[] = [
   'requireMention', 'allowAllUsers', 'interimMessages', 'interimRecall', 'sendErrorNotice',
+  'newSessionGreeting', 'replyCountsAsMention', 'atAllCountsAsMention',
   'actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun',
+  'textImageEnabled', 'pokeEnabled', 'firstMessageAsUser', 'memoryFilesEnabled', 'ignoreSelf',
+  'sttEnabled', 'restrictedMemberPrefix', 'allowPrivateHosts',
 ]
-const STRING_KEYS: readonly string[] = ['host', 'url', 'accessToken', 'botQQ', 'workspacePath']
-const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupAllowFrom']
-/** 全部 29 键（校验与快照的唯一键集；6 枚举 + 4 数字 + 11 布尔 + 5 字符串 + 3 字符串数组）。 */
+const STRING_KEYS: readonly string[] = ['host', 'url', 'accessToken', 'botQQ', 'workspacePath', 'groupWorkspacePath', 'forceSessionId', 'dmPromptFile', 'groupPromptFile', 'cardFooter', 'agentPreset', 'sttCommand', 'sttModel']
+const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'memoryFiles', 'sensitivePatterns', 'sttArgs', 'fontFiles', 'fontFamilies']
+/** 全部 66 键（校验与快照的唯一键集；9 枚举 + 11 数字 + 22 布尔 + 13 字符串 +
+ *  10 字符串数组 + notices 单独通道）。 */
 export const ALL_KEYS: readonly string[] = [
-  ...Object.keys(ENUM_KEYS), ...NUMBER_KEYS, ...BOOLEAN_KEYS, ...STRING_KEYS, ...STRING_ARRAY_KEYS,
+  ...Object.keys(ENUM_KEYS), ...NUMBER_KEYS, ...BOOLEAN_KEYS, ...STRING_KEYS, ...STRING_ARRAY_KEYS, 'notices',
 ]
 
 /** OnebotSettingsSnapshot（T1 §3 快照结构）。 */
@@ -153,7 +227,7 @@ export interface OnebotSettingsSnapshot {
   revision: number
   /** dsh-onebot 条目 fiber 是否 active（fiber.state === 2，同 configEditor.edit 的活性判据）。 */
   entryActive: boolean
-  /** 28 键生效值；accessToken 脱敏为 ''。 */
+  /** 66 键生效值；accessToken 脱敏为 ''。 */
   config: Record<string, unknown>
   /** 脱敏键标记：明文是否已配置。 */
   secrets: Array<{ path: string[]; set: boolean }>
@@ -303,7 +377,7 @@ function resolveWorkspaceRegistry(ctx: { get(key: string): unknown } | undefined
   return registry !== undefined && registry !== null && typeof registry.list === 'function' ? registry : undefined
 }
 
-/** 28 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
+/** 66 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
 export function effectiveConfig(raw: Record<string, unknown>): Record<string, unknown> {
   const effective: Record<string, unknown> = {}
   for (const key of ALL_KEYS) {
@@ -332,9 +406,11 @@ function buildSnapshot(entry: ConfigEditorEntry, state: RevisionState): OnebotSe
   }
 }
 
-/** updateSettings 入参校验（T1 §4：28 键的任意子集，扁平 JSON）。未知键整单
- *  拒绝（不静默丢弃）；类型/枚举不符拒绝；具体取值合法性交由宿主 schemastery
- *  校验 + reconcile 失败自动回滚兜底（T1 §5）。 */
+/** updateSettings 入参校验（T1 §4：ALL_KEYS 任意子集，扁平 JSON）。未知键整单
+ *  拒绝（不静默丢弃）；类型/枚举不符拒绝；notices 走单独白名单通道（T5 对齐
+ *  贡献者 0.9.19：子键须在 NOTICE_KEYS 内、值须 boolean|string，通过后作为
+ *  增量对象原样入 clean——未提及的子键由宿主 schemastery 按默认值补齐）；具体
+ *  取值合法性交由宿主 schemastery 校验 + reconcile 失败自动回滚兜底（T1 §5）。 */
 export function validatePatch(patch: unknown): Record<string, unknown> {
   if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
     throw new RemoteError('onebot-settings/bad-request', 'patch must be a flat JSON object keyed by setting names', {
@@ -361,6 +437,22 @@ export function validatePatch(patch: unknown): Record<string, unknown> {
     } else if (STRING_ARRAY_KEYS.includes(key)) {
       if (Array.isArray(value) && value.every((item) => typeof item === 'string')) clean[key] = value
       else issues.push(`${key} 必须是字符串数组`)
+    } else if (key === 'notices') {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        issues.push('notices 必须是对象')
+      } else {
+        const cleanNotices: Record<string, unknown> = {}
+        for (const [noticeKey, noticeValue] of Object.entries(value as Record<string, unknown>)) {
+          if (!NOTICE_KEYS.includes(noticeKey)) {
+            issues.push(`未知 notice 键 "${noticeKey}"（仅支持 ${NOTICE_KEYS.join(', ')}）`)
+          } else if (typeof noticeValue !== 'boolean' && typeof noticeValue !== 'string') {
+            issues.push(`notices.${noticeKey} 必须是布尔值或字符串`)
+          } else {
+            cleanNotices[noticeKey] = noticeValue
+          }
+        }
+        if (issues.length === 0) clean[key] = { ...cleanNotices }
+      }
     } else {
       issues.push(`未知设置键 "${key}"（仅支持 ${ALL_KEYS.length} 键：${ALL_KEYS.join(', ')}）`)
     }

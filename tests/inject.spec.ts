@@ -35,13 +35,13 @@ const readTraceLines = (dir: string): TraceEvent[] => {
 }
 
 describe('inject config defaults (schema)', () => {
-  it('injectEnabled defaults false, injectDryRun defaults true, interval defaults 2000', () => {
+  it('T5 默认翻转：injectEnabled defaults true, injectDryRun defaults false, interval defaults 2000', () => {
     const config = Config({ mediaDir: join(tmpdir(), 'onebot-inject-defaults') } as never)
-    expect(config.injectEnabled).toBe(false)
-    expect(config.injectDryRun).toBe(true)
+    expect(config.injectEnabled).toBe(true) // T5 翻转（原 false）
+    expect(config.injectDryRun).toBe(false) // T5 翻转（原 true）
     expect(config.injectIntervalMs).toBe(2000)
     expect(config.recordInbound).toBe(false)
-    expect(config.inboxRedact).toBe(false)
+    expect(config.inboxRedact).toBe(true) // T5 翻转（原 false）
   })
 
   it('the poll interval floor is 500ms', () => {

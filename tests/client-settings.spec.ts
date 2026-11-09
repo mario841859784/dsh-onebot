@@ -169,16 +169,29 @@ describe('T4 客户端 bundle — descriptor 契约核对（与 T3 src/settings-
   })
 })
 
-describe('T4 客户端 bundle — 四组 29 键（分组/键集/默认值 = T1 §4 表 + W6 诊断组 + W7 workspacePath + T2 newMessagePolicy + T9 autoSteerPolicy + T3 deferredTimeoutMs = T3 常量）', () => {
-  it('分组与键序逐字对齐 host SETTINGS_GROUPS', () => {
-    expect(client.GROUP_KEYS).toEqual(SETTINGS_GROUPS)
+describe('T4 客户端 bundle — 四组 29 键（T5 后改子集契约：client 仍是 29 键世界，T8 重写设置页时恢复逐字一致）', () => {
+  it('分组与键序对齐 host SETTINGS_GROUPS（T5 子集契约：client 各组键 ⊆ host 同名组，组集仍为 4 组）', () => {
+    const hostGroups = SETTINGS_GROUPS as Record<string, string[]>
+    for (const [groupId, keys] of Object.entries(client.GROUP_KEYS as Record<string, string[]>)) {
+      expect(Object.keys(hostGroups)).toContain(groupId)
+      for (const key of keys) expect(hostGroups[groupId]).toContain(key)
+    }
     expect(groups.map((group) => group.id)).toEqual(['connection', 'permissions', 'behavior', 'diagnostics'])
-    expect(allFields.map((field) => field.key).sort()).toEqual([...ALL_KEYS].sort())
-    expect(allFields).toHaveLength(29) // T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）
+    // client 字段键全部存在于 host 键表（无孤儿键）；host 新增键待 T8 进面板
+    const clientKeys = allFields.map((field) => field.key)
+    for (const key of clientKeys) expect([...ALL_KEYS]).toContain(key)
+    expect(allFields).toHaveLength(29) // T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）；T5 后 host 扩到 66，client 待 T8
   })
 
-  it('默认值逐字对齐 host SCHEMA_DEFAULTS（重置按钮唯一来源）', () => {
-    expect(client.DEFAULTS).toEqual(SCHEMA_DEFAULTS)
+  it('默认值对齐 host SCHEMA_DEFAULTS（T5 后为子集契约：10 个翻转键豁免，待 T8 对齐）', () => {
+    // T5 翻转的 10 个默认值：host 已按贡献者值收（用户 m00132 裁定①），client bundle
+    // 仍持 T4 前默认，T8 重写设置页时统一——在此之前逐键豁免比对。
+    const T5_FLIPPED = new Set(['allowPrivateHosts', 'injectEnabled', 'injectDryRun', 'inboxRedact', 'mode', 'newMessagePolicy', 'interimRecall', 'sendErrorNotice', 'textImageThreshold', 'cardFooter'])
+    const hostDefaults = SCHEMA_DEFAULTS as Record<string, unknown>
+    for (const [key, value] of Object.entries(client.DEFAULTS as Record<string, unknown>)) {
+      expect(key in hostDefaults).toBe(true) // 无孤儿键
+      if (!T5_FLIPPED.has(key)) expect(value).toEqual(hostDefaults[key])
+    }
   })
 
   it('字段类型与 host 默认值形态一致；枚举字段选项覆盖默认值', () => {
@@ -279,11 +292,11 @@ describe('T4 客户端 bundle — 保存语义（updateSettings(patch, expectedR
   it('仅下发与生效值有差异的键（29 键任意子集）', () => {
     const values = draft({ config: SCHEMA_DEFAULTS })
     values.port = '9999'
-    values.mode = 'forward'
+    values.mode = 'reverse' // T5 后 host 默认 'forward'，改写 'reverse' 才构成差异
     values.groupAllowFrom = '111\n222'
     const { patch, invalidKeys } = compute(values, SCHEMA_DEFAULTS)
     expect(invalidKeys).toEqual([])
-    expect(patch).toEqual({ port: 9999, mode: 'forward', groupAllowFrom: ['111', '222'] })
+    expect(patch).toEqual({ port: 9999, mode: 'reverse', groupAllowFrom: ['111', '222'] })
   })
 
   it('无差异时 patch 为空对象（no-op 短路，host 不递增 revision）', () => {
@@ -344,22 +357,29 @@ describe('W6 诊断组 — 6 个观测/调试布尔键的文案契约（中文�
     ])
   })
 
-  it('诊断组默认值与 host SCHEMA_DEFAULTS 一致（actionAuditEnabled/injectDryRun 开，其余关）', () => {
+  it('诊断组默认值与 host SCHEMA_DEFAULTS 一致（T5 前 host 值：actionAuditEnabled/injectDryRun 开，其余关；T5 翻转键豁免待 T8）', () => {
     const defaults = client.DEFAULTS as Record<string, unknown>
     expect(defaults.actionAuditEnabled).toBe(true)
-    expect(defaults.injectDryRun).toBe(true)
+    expect(defaults.injectDryRun).toBe(true) // client 仍持 T4 值；host 已翻转为 false（T5），T8 对齐
     for (const key of ['traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled']) {
-      expect(defaults[key]).toBe(false)
+      expect(defaults[key]).toBe(false) // client 侧；host 已翻转 inboxRedact/injectEnabled（T5）
     }
-    expect(client.DEFAULTS).toEqual(SCHEMA_DEFAULTS) // 整表逐字一致（含 6 新键）
+    // T5 后 host 扩到 66 键且翻转 10 处默认值，逐字一致契约待 T8 重写设置页恢复；
+    // 此处只断言 client 29 键 ⊆ host 且非豁免键值一致。
+    const T5_FLIPPED = new Set(['allowPrivateHosts', 'injectEnabled', 'injectDryRun', 'inboxRedact', 'mode', 'newMessagePolicy', 'interimRecall', 'sendErrorNotice', 'textImageThreshold', 'cardFooter'])
+    const hostDefaults = SCHEMA_DEFAULTS as Record<string, unknown>
+    for (const [key, value] of Object.entries(defaults)) {
+      expect(key in hostDefaults).toBe(true)
+      if (!T5_FLIPPED.has(key)) expect(value).toEqual(hostDefaults[key])
+    }
   })
 
   it('诊断组渲染为 6 个布尔勾选行；patchCodec 接受 6 新键、拒绝非布尔', () => {
     const values = draft({ config: SCHEMA_DEFAULTS }) as Record<string, unknown>
     values.traceEnabled = true
-    values.injectEnabled = true
+    values.injectEnabled = false // T5 后 host 默认已翻转为 true，改写 false 才构成差异
     const compute = client.computePatch as (draftValues: Record<string, unknown>, config: Record<string, unknown>) => { patch: Record<string, unknown> }
-    expect(compute(values, SCHEMA_DEFAULTS).patch).toEqual({ traceEnabled: true, injectEnabled: true })
+    expect(compute(values, SCHEMA_DEFAULTS).patch).toEqual({ traceEnabled: true, injectEnabled: false })
     const updateSettings = descriptors[1] as { parameters: Array<{ codec: { schema: { parse(value: unknown): unknown } } }> }
     const patchCodec = updateSettings.parameters[0].codec.schema
     expect(patchCodec.parse({ actionAuditEnabled: false, injectDryRun: false })).toEqual({ actionAuditEnabled: false, injectDryRun: false })
@@ -391,8 +411,9 @@ describe('W6 「非默认」徽标 — 快照生效值 vs schema 默认值（纯
   })
 
   it('徽标数据源是快照生效值（DEFAULTS 对照）：默认快照无任何徽标，改值后对应键出现徽标', () => {
-    // 默认快照 → 无键与 DEFAULTS 不同 → 面板不传任何 nonDefaultKeys 时不打徽标
-    const snapshot: Record<string, unknown> = { config: { ...SCHEMA_DEFAULTS }, secrets: [] }
+    // 徽标是纯客户端计算（client.DEFAULTS 对照）。T5 后 host SCHEMA_DEFAULTS 与
+    // client.DEFAULTS 在 10 个翻转键上暂时分叉（T8 对齐），故默认快照取 client.DEFAULTS 自洽断言。
+    const snapshot: Record<string, unknown> = { config: { ...client.DEFAULTS as Record<string, unknown> }, secrets: [] }
     const panelKeys = (config: Record<string, unknown>) => {
       const allFields = client.ALL_FIELDS as Array<{ key: string }>
       const valueEquals = (a: unknown, b: unknown) => JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b)
@@ -400,7 +421,7 @@ describe('W6 「非默认」徽标 — 快照生效值 vs schema 默认值（纯
       return allFields.filter((field) => !valueEquals(config[field.key], defaults[field.key])).map((field) => field.key)
     }
     expect(panelKeys(snapshot.config as Record<string, unknown>)).toEqual([])
-    expect(panelKeys({ ...SCHEMA_DEFAULTS, traceEnabled: true, rateLimitPerMinute: 60 })).toEqual(['rateLimitPerMinute', 'traceEnabled'])
+    expect(panelKeys({ ...client.DEFAULTS, traceEnabled: true, rateLimitPerMinute: 60 })).toEqual(['rateLimitPerMinute', 'traceEnabled'])
   })
 })
 
@@ -667,7 +688,7 @@ describe('T6 批 3 — 冲突合并保留 mergeOnConflict（UX §5.4：远端未
     expect(merged.draft).toEqual(before) // 未编辑键逐键保留
     expect(merged.draft).not.toBe(before)
     expect(JSON.stringify(before)).toBe(beforeJson) // 纯函数：不 mutate 入参
-    expect(Object.keys(merged.draft)).toHaveLength(ALL_KEYS.length) // 合并不丢键
+    expect(Object.keys(merged.draft)).toHaveLength(Object.keys(client.DEFAULTS as Record<string, unknown>).length) // 合并不丢键（client 29 键世界；host 66 键待 T8 进面板）
   })
 
   it('部分冲突：远端已变的脏键跟随新快照并入 conflictKeys，其余编辑保留；合并后 computeDirtyKeys 与「N 项未保存」badge 同口径', () => {

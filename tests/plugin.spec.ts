@@ -34,12 +34,16 @@ vi.mock('../src/bridge.js', () => ({
  * a gate, letting the test unload the plugin while start is still in flight.
  * startCompleted mirrors the real channel's invariant that arming the poll
  * timer happens only after the awaited history skip (inject.ts start()).
+ * T5 后 injectEnabled 默认翻转为 true：闸门只在用例显式置 holdStart 时挂起
+ * （T3/T2-board 持闸），其余用例（如 applies，吃 T5 默认）start() 直接完成，
+ * 不再被无人释放的闸门拖到超时。
  */
 const injectLifecycle = vi.hoisted(() => ({
   startCalls: 0,
   stopCalls: 0,
   startCompleted: false,
   stopAfterStartCompleted: false,
+  holdStart: false,
   releaseStart: null as null | (() => void),
 }))
 vi.mock('../src/inject.js', () => ({
@@ -47,9 +51,11 @@ vi.mock('../src/inject.js', () => ({
     async start(): Promise<void> {
       injectLifecycle.startCalls++
       injectLifecycle.startCompleted = false
-      await new Promise<void>(resolve => {
-        injectLifecycle.releaseStart = resolve
-      })
+      if (injectLifecycle.holdStart) {
+        await new Promise<void>(resolve => {
+          injectLifecycle.releaseStart = resolve
+        })
+      }
       injectLifecycle.startCompleted = true
     }
     async stop(): Promise<void> {
@@ -112,7 +118,7 @@ function makeCtx() {
 describe('plugin entry', () => {
   it('validates config defaults', () => {
     const config = Config({})
-    expect(config.mode).toBe('reverse')
+    expect(config.mode).toBe('forward') // T5 翻转：连接模式默认 forward（原 reverse）
     expect(config.port).toBe(8643)
     expect(config.requireMention).toBe(true)
     expect(config.unknownCommand).toBe('intercept')
@@ -125,6 +131,9 @@ describe('plugin entry', () => {
     const config = Config({
       mediaDir,
       port: 0,
+      // T5 后 mode 默认 forward 会真发起出站连接；本用例只测注册/卸载生命周期，
+      // 显式钉回 reverse（port 0 不监听）保持离线确定性。
+      mode: 'reverse',
       accessToken: 'test-token',
       botQQ: '10002',
       sttEnabled: false,
@@ -177,9 +186,9 @@ describe('plugin entry', () => {
     bridgeLifecycle.stopCalls = 0
     try {
       const effectSpy = vi.spyOn(ctx as { effect: (cb: () => unknown, label?: string) => unknown }, 'effect')
-      // Default mode is reverse; an empty accessToken makes connection.start()
-      // throw synchronously inside the async effect.
-      apply(ctx as never, Config({ mediaDir, port: 0, accessToken: '', botQQ: '10002', sttEnabled: false, sensitivePatterns: [] }))
+      // Reverse mode (T5 前默认) + 空 accessToken 使 connection.start() 在
+      // async effect 内同步抛错；T5 默认翻转为 forward 后显式钉回该失败路径。
+      apply(ctx as never, Config({ mediaDir, port: 0, mode: 'reverse', accessToken: '', botQQ: '10002', sttEnabled: false, sensitivePatterns: [] }))
       const effect = effectSpy.mock.results[0]?.value as { then: (onFulfilled?: unknown, onRejected?: (error: unknown) => unknown) => unknown }
       await expect(new Promise((resolve, reject) => {
         effect.then(resolve, reject)
@@ -228,6 +237,7 @@ describe('plugin entry', () => {
     injectLifecycle.stopCalls = 0
     injectLifecycle.startCompleted = false
     injectLifecycle.stopAfterStartCompleted = false
+    injectLifecycle.holdStart = true
     const effectSpy = vi.spyOn(ctx as { effect: (cb: () => unknown, label?: string) => unknown }, 'effect')
     apply(ctx as never, Config({
       mediaDir,
@@ -262,6 +272,7 @@ describe('plugin entry', () => {
     const { ctx } = makeCtx()
     injectLifecycle.startCalls = 0
     injectLifecycle.startCompleted = false
+    injectLifecycle.holdStart = true
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
     try {
       const effectSpy = vi.spyOn(ctx as { effect: (cb: () => unknown, label?: string) => unknown }, 'effect')
@@ -285,6 +296,7 @@ describe('plugin entry', () => {
       const disposer = effectSpy.mock.results[0].value as () => Promise<void>
       await disposer()
     } finally {
+      injectLifecycle.holdStart = false
       log.mockRestore()
     }
   })

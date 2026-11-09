@@ -1,0 +1,113 @@
+import { describe, expect, it } from 'vitest'
+import { Config } from '../src/index.js'
+import {
+  ALL_KEYS, NOTICE_KEYS, PENDING_SCHEMA_KEYS, SCHEMA_DEFAULTS, SETTINGS_GROUPS, validatePatch,
+} from '../src/settings-remote.js'
+
+/** T5（PR port 配置默认值翻转 + SCHEMA_DEFAULTS 键表）：
+ *  1) 10 处默认值翻转——schema 解析默认值与 SCHEMA_DEFAULTS 逐字一致；
+ *  2) 键表完整性——SCHEMA_DEFAULTS 每键在 schema 有定义（PENDING 豁免）、
+ *     无孤儿键（每组键都有类型通道，notices 单独通道）。 */
+
+/** 用户裁定①（含安全面项，风险已提示仍拍板）：10 处默认值按贡献者值翻转。 */
+const T5_FLIPPED: ReadonlyArray<readonly [string, unknown]> = [
+  ['mode', 'forward'],
+  ['allowPrivateHosts', true],
+  ['injectEnabled', true],
+  ['injectDryRun', false],
+  ['inboxRedact', true],
+  ['newMessagePolicy', 'steer'],
+  ['interimRecall', false],
+  ['sendErrorNotice', false],
+  ['textImageThreshold', 350],
+  ['cardFooter', 'OneBot'],
+]
+
+describe('T5 默认值翻转（schema 与 SCHEMA_DEFAULTS 两处一致）', () => {
+  const resolved = Config({}) as Record<string, unknown>
+  for (const [key, expected] of T5_FLIPPED) {
+    it(`${key} 默认翻转为 ${JSON.stringify(expected)}`, () => {
+      expect(SCHEMA_DEFAULTS[key]).toEqual(expected)
+      expect(resolved[key]).toEqual(expected)
+      expect(resolved[key]).toEqual(SCHEMA_DEFAULTS[key])
+    })
+  }
+})
+
+describe('T5 键表完整性（SCHEMA_DEFAULTS 与 schema 无孤儿键）', () => {
+  const resolved = Config({}) as Record<string, unknown>
+  const groupKeys = Object.values(SETTINGS_GROUPS).flat()
+
+  it('六组结构对齐贡献者 0.9.19：connection 13 / permissions 15 / behavior 9 / session 5 / media 15 / diagnostics 7', () => {
+    expect(Object.keys(SETTINGS_GROUPS)).toEqual(['connection', 'permissions', 'behavior', 'session', 'media', 'diagnostics'])
+    expect(SETTINGS_GROUPS.connection).toHaveLength(13)
+    expect(SETTINGS_GROUPS.permissions).toHaveLength(15)
+    expect(SETTINGS_GROUPS.behavior).toHaveLength(9)
+    expect(SETTINGS_GROUPS.session).toHaveLength(5)
+    expect(SETTINGS_GROUPS.media).toHaveLength(15)
+    expect(SETTINGS_GROUPS.diagnostics).toHaveLength(7)
+  })
+
+  it('SCHEMA_DEFAULTS 键集 == ALL_KEYS 键集（不多不少）', () => {
+    expect(Object.keys(SCHEMA_DEFAULTS).sort()).toEqual([...ALL_KEYS].sort())
+  })
+
+  it('每组键都在 ALL_KEYS 内（无组外孤儿键）', () => {
+    for (const key of groupKeys) expect(ALL_KEYS).toContain(key)
+  })
+
+  it('除 PENDING 豁免键外，SCHEMA_DEFAULTS 每键在 schema 有定义且默认值一致', () => {
+    for (const key of ALL_KEYS) {
+      if (PENDING_SCHEMA_KEYS.includes(key)) continue
+      expect(Object.hasOwn(resolved, key)).toBe(true)
+      expect(resolved[key]).toEqual(SCHEMA_DEFAULTS[key])
+    }
+  })
+
+  it('PENDING 键已进表但 schema 尚未定义（T6/T7 功能落地后豁免名单应清空）', () => {
+    expect(PENDING_SCHEMA_KEYS.sort()).toEqual(['faceStyle', 'firstMessageAsUser', 'forceSessionId', 'newSessionGreeting', 'textImageEnabled'])
+    for (const key of PENDING_SCHEMA_KEYS) {
+      expect(ALL_KEYS).toContain(key)
+      expect(Object.hasOwn(resolved, key)).toBe(false)
+    }
+  })
+
+  it('notices 默认值与 schema 一致（我们无贡献者的 newSession 键）', () => {
+    expect(NOTICE_KEYS).toEqual(['steerAccepted', 'queue', 'answerAccepted', 'deferredTimeout', 'rateLimited'])
+    expect(resolved.notices).toEqual(SCHEMA_DEFAULTS.notices)
+  })
+})
+
+describe('T5 validatePatch 新键通道与 notices 白名单', () => {
+  it('notices 增量子集通过并原样保留', () => {
+    expect(validatePatch({ notices: { queue: false } })).toEqual({ notices: { queue: false } })
+    expect(validatePatch({ notices: { steerAccepted: true, rateLimited: '静音' } }))
+      .toEqual({ notices: { steerAccepted: true, rateLimited: '静音' } })
+  })
+
+  it('notices 未知子键/非法值整单拒绝', () => {
+    expect(() => validatePatch({ notices: { newSession: true } })).toThrow(/未知 notice 键/)
+    expect(() => validatePatch({ notices: { queue: 1 } })).toThrow(/必须是布尔值或字符串/)
+    expect(() => validatePatch({ notices: [true] })).toThrow(/notices 必须是对象/)
+  })
+
+  it('新键走既有类型通道（枚举/数字范围/布尔/字符串/字符串数组）', () => {
+    expect(validatePatch({ faceStyle: 'emoji', logLevel: 'debug', sttEngine: 'whisper-cpp' }))
+      .toEqual({ faceStyle: 'emoji', logLevel: 'debug', sttEngine: 'whisper-cpp' })
+    expect(validatePatch({ textImageThreshold: 0, maxFileBytes: 4294967296, chatIdleEvictDays: 30 }))
+      .toEqual({ textImageThreshold: 0, maxFileBytes: 4294967296, chatIdleEvictDays: 30 })
+    expect(validatePatch({ forceSessionId: 'abc', cardFooter: 'X' }))
+      .toEqual({ forceSessionId: 'abc', cardFooter: 'X' })
+    expect(validatePatch({ wakeNamesAdmin: ['a'], sttArgs: ['--x'] }))
+      .toEqual({ wakeNamesAdmin: ['a'], sttArgs: ['--x'] })
+    expect(validatePatch({ allowPrivateHosts: false, memoryFilesEnabled: true }))
+      .toEqual({ allowPrivateHosts: false, memoryFilesEnabled: true })
+  })
+
+  it('新键越界/类型不符拒绝', () => {
+    expect(() => validatePatch({ textImageThreshold: -1 })).toThrow(/≥0/)
+    expect(() => validatePatch({ maxFileBytes: 0 })).toThrow(/1–4294967296/)
+    expect(() => validatePatch({ faceStyle: 'gif' })).toThrow(/faceStyle 必须是/)
+    expect(() => validatePatch({ logLevel: 'verbose' })).toThrow(/logLevel 必须是/)
+  })
+})
