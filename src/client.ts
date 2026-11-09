@@ -221,7 +221,7 @@ window.__ModuleLoader__.load({
 					{ key: "inboundImageMaxPx", label: "入站图片长边上限（像素）", type: "number", placeholder: "默认 2048；推荐 1440 以上" },
 					{ key: "inboundFileMaxBytes", label: "入站文件大小上限（字节）", type: "number", placeholder: "默认 20971520（20MB）；0 = 不限" },
 					// T6 转正：GIF 分帧（默认关；关闭时不装依赖也不触碰 FS）。
-					{ key: "gifFramesEnabled", label: "GIF 动图分帧", type: "boolean", hint: "发送 GIF 时拆成多帧序列（默认关）" },
+					{ key: "gifFramesEnabled", label: "GIF 动图分帧", type: "boolean", hint: "收到 GIF 时在消息旁附一张抽 4 帧的纵向长图，让模型看懂动画过程（默认关）" },
 				],
 			},
 			{
@@ -898,7 +898,7 @@ window.__ModuleLoader__.load({
 					maxFileBytes: { label: "Outbound file/video size cap (bytes)", placeholder: "Default 20971520 (20MB); max 4294967296 (4G)" },
 					inboundImageMaxPx: { label: "Inbound image max long edge (px)", placeholder: "Default 2048; 1440+ recommended" },
 					inboundFileMaxBytes: { label: "Inbound file size cap (bytes)", placeholder: "Default 20971520 (20MB); 0 = unlimited" },
-					gifFramesEnabled: { label: "GIF frame splitting", hint: "Split GIFs into frame sequences when sending (default off)" },
+					gifFramesEnabled: { label: "GIF frame splitting", hint: "Attach a 4-frame vertical strip next to received GIFs so the model can follow the motion (default off)" },
 				},
 			},
 			diagnostics: {

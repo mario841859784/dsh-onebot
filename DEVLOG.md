@@ -1022,3 +1022,9 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **测试**：client-settings.spec 新增「字段文案词典化」4 用例（69 键 zh label 自动灌入且为中文、en/zh 键集逐键齐平、en 组/分区/通知/hint/option/placeholder 齐备 + 护栏源码在位、渲染经 t 解析 zh 视觉逐字一致）；渲染 helper 注入 stubT；徽标 title 源码断言改 tr 词条化口径。client-settings + sidebar-entry 66/66 全绿；全量 57 文件 1081 passed + 4 skipped（connection flake 本轮亦绿）。
 - **真机**：重启应用回归——面板 zh 渲染与迁移前逐字一致（标题/页签/字段/hint/徽标/picker 全对），无 en 缺失告警。
 - **边界**：notices 的 def 文案（机器人发给 QQ 的消息内容）不属 UI 文案，维持常量；workspace 选项尾缀「（N 会话）」仍 zh 格式化（path 为主体，低价值不做）；README 截图无变化（zh UI 零视觉差异）。
+
+## 2026-11-10 修正 GIF 分帧 hint 方向错误（用户提问揪出）
+
+- **问题**：`gifFramesEnabled` 的面板 hint 写「发送 GIF 时拆成多帧序列（默认关）」（en "when sending"）——描述成出站方向；实现实际在**入站**（src/inbound.ts:620/692）：QQ 侧 GIF 落地后抽 4 帧拼纵向长图 `<原名>-frames.png`，消息注入 `[动图分帧:<路径>]`，让只看得到静帧的视觉模型看懂动画过程；GIF 本身不改动。用户「应该是接收到 gif 进行拆分吧」的提问暴露了这处文案与实现相反。
+- **修正**：zh hint →「收到 GIF 时在消息旁附一张抽 4 帧的纵向长图，让模型看懂动画过程（默认关）」；en 同步（"Attach a 4-frame vertical strip next to received GIFs…"）。en 词条随 EN_GROUPS 一起改（zh 自动灌入机制下单点改动生效）。
+- **逻辑确认记录**：分帧 = 接收端辅助视图；开关默认关（关=不装 gifuct-js、不碰 FS）；上限 ≤8MB/≤1024px/≤150 帧；任何失败静默空串不挡消息；帧合成遵守 disposal 清除/恢复规则。
