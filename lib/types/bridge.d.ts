@@ -79,10 +79,11 @@ export interface BridgeConfig {
      * 仍用 agentPreset）；absent/空串 = 现行为（群私同源 agentPreset）。 */
     agentPresetGroup?: string;
     /** 权限分档 A2: 成员档位工具权限。'none'（缺省）= 成员（非管理员）回合
-     * 内全部 qq_* 工具在 execute 前被硬拦截；'all' = 不限。fail-closed：
-     * 字段缺失按 'none' 处理。 */
+     * 内全部 qq_* 工具在 execute 前被硬拦截；'send' = 仅放行发往当前会话的
+     * 内容类工具（qq_send_text / qq_send_segments / qq_send_image）；'all' =
+     * 不限。fail-closed：字段缺失按 'none' 处理。 */
     permissions?: {
-        memberTools?: 'none' | 'all';
+        memberTools?: 'none' | 'send' | 'all';
     };
     workspacePath: string;
     /** T3 (PR port 群工作区)：群聊 chat 的会话默认工作区目录——配置后 group:
@@ -416,23 +417,24 @@ export declare class ChatBridge {
      * as member. */
     canEditFiles(sessionId: string): boolean;
     /**
-     * 权限分档 A2（工具硬防线）：one tool-call's permission decision. Reuses the
-     * M1-A2 turn-level role (frozen at turn/start, fail-closed member) via
-     * canEditFiles; a caller with no QQ session mapping (Web/other channels) is
-     * outside the tier semantics and stays allowed; permissions.memberTools
-     * === 'all' disables the gate entirely. Absent config fails closed to
-     * 'none' (members blocked).
+     * 权限分档 A2（工具硬防线）：one tool-call's permission tier. Reuses the
+     * M1-A2 turn-level role (frozen at turn/start, fail-closed member); a caller
+     * with no QQ session mapping (Web/other channels) is outside the tier
+     * semantics and gets 'all' (A1 scoping); admin turns always get 'all'.
+     * Member turns get the configured permissions.memberTools tier, absent
+     * config fails closed to 'none' (members blocked).
      */
-    memberToolsAllowed(sessionId: string | undefined): boolean;
+    memberToolTier(sessionId: string | undefined): 'none' | 'send' | 'all';
     /**
      * Outbound media fence roots for one agent session's current turn (M1-A3b):
      * the plugin media dir always, plus the chat's workspace directory when the
-     * running turn's initiator is an admin. The role reuses the M1-A2 turn-level
-     * semantics (canEditFiles: frozen at turn/start, fail-closed member); a
-     * session with no known chat stays mediaDir-only even though canEditFiles
-     * would trust it — the media gate itself fails closed. Roots are
-     * realpath-normalized here; the MediaStore fence re-checks containment
-     * (the double check is harmless).
+     * turn may actually send media — admin turns always (#59: member turns with
+     * permissions.memberTools 'send'/'all' get it too, so a workspace gallery is
+     * reachable exactly when the send tools are). The role reuses the M1-A2
+     * turn-level semantics (canEditFiles: frozen at turn/start, fail-closed
+     * member); a session with no known chat stays mediaDir-only — the media gate
+     * itself fails closed. Roots are realpath-normalized here; the MediaStore
+     * fence re-checks containment (the double check is harmless).
      */
     mediaSendRoots(sessionId: string | undefined): Promise<{
         roots: string[];

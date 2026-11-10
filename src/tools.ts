@@ -65,7 +65,8 @@ function resolveChat(bridge: ChatBridge, exec: ToolRunContext, chatIdArg: unknow
 /**
  * Outbound media fence roots for the calling session's current turn
  * (M1-A3b): the plugin media dir always, plus the chat workspace on admin
- * turns. An unknown caller session degrades to mediaDir-only inside the
+ * turns and on member turns whose memberTools tier allows send tools (#59).
+ * An unknown caller session degrades to mediaDir-only inside the
  * bridge — fail-closed.
  */
 async function mediaRoots(bridge: ChatBridge, exec: ToolRunContext): Promise<string[]> {
@@ -83,7 +84,7 @@ async function fencedMediaFile(path: string, maxBytes: number, allowedRoots: str
     return await fileToBase64(path, maxBytes, allowedRoots)
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('path not allowed or does not exist')) {
-      throw new Error('本地路径不在允许的媒体目录内（管理员回合可另读会话工作区），或文件不存在：' + path)
+      throw new Error('本地路径不在允许的媒体目录内（管理员回合可另读会话工作区；成员回合需 permissions.memberTools 为 send/all），或文件不存在：' + path)
     }
     throw error
   }
@@ -130,15 +131,24 @@ function wait(ms: number): Promise<void> {
 
 /**
  * 权限分档 A2（硬防线）：成员档位回合（非管理员）默认禁用全部 qq_* 工具。
- * 判定在 bridge.memberToolsAllowed：发言人角色复用 M1-A2 的 turn-level 语义
+ * 判定在 bridge.memberToolTier：发言人角色复用 M1-A2 的 turn-level 语义
  * （dispatchFollowup 把 role 压入 pendingTurnRoles，turn/start 冻结到
  * activeTurnRole，未知状态 fail-closed member）；无 QQ 会话映射的调用方
  * （Web 等其他通道）不受限；permissions.memberTools === 'all' 时整体放行
  * （fail-open 只发生在显式配置下）。
  */
-function toolAllowed(bridge: ChatBridge, exec: ToolRunContext | undefined): boolean {
-  return bridge.memberToolsAllowed(exec?.agent?.session?.id)
+function toolTier(bridge: ChatBridge, exec: ToolRunContext | undefined): 'none' | 'send' | 'all' {
+  return bridge.memberToolTier(exec?.agent?.session?.id)
 }
+
+/**
+ * memberTools='send' 档放行的工具白名单（#59）：只放行「往当前会话发内容」
+ * 的工具，让成员回合也能分条、发图（含会话工作区图库）。qq_send_forward
+ * （合并转发可借机器人发出显示名/内容均可自定的卡片，有伪造聊天记录风险）、
+ * qq_send_file / qq_send_voice / qq_send_video（携带任意本地文件出站）、
+ * qq_napcat_api、qq_group_history 仍仅管理员回合可用。
+ */
+const SEND_TIER_TOOLS = new Set(['qq_send_text', 'qq_send_segments', 'qq_send_image'])
 
 /**
  * Register all qq_* tools on the context. Registration is effect-based: the
@@ -163,10 +173,13 @@ export function registerTools(
     const gated = {
       ...tool,
       execute: async (args: Parameters<typeof execute>[0], exec: Parameters<typeof execute>[1]) => {
-        if (!toolAllowed(bridge, exec)) {
-          throw new Error('当前发言人为成员档位，无工具权限：qq_* 工具仅管理员回合可用')
+        const tier = toolTier(bridge, exec)
+        if (tier === 'all' || (tier === 'send' && SEND_TIER_TOOLS.has(tool.name))) {
+          return execute(args, exec)
         }
-        return execute(args, exec)
+        throw new Error(tier === 'send'
+          ? `当前发言人为成员档位（memberTools=send）：${tool.name} 不在放行清单（仅 qq_send_text / qq_send_segments / qq_send_image），其余 qq_* 工具仅管理员回合可用`
+          : '当前发言人为成员档位，无工具权限：qq_* 工具仅管理员回合可用')
       },
     }
     disposers.push(ctx.tools.register(gated as typeof tool))

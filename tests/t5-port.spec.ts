@@ -38,10 +38,10 @@ describe('T5 键表完整性（SCHEMA_DEFAULTS 与 schema 无孤儿键）', () =
   const resolved = Config({}) as Record<string, unknown>
   const groupKeys = Object.values(SETTINGS_GROUPS).flat()
 
-  it('六组结构（T8/T11/T24 增键 + 0.10.0 重排方案 A）：connection 6 / permissions 15 / behavior 12+2 / session 5+5 / media 16+1 / diagnostics 7', () => {
+  it('六组结构（T8/T11/T24 增键 + 0.10.0 重排方案 A + #59 memberTools）：connection 6 / permissions 16 / behavior 12+2 / session 5+5 / media 16+1 / diagnostics 7', () => {
     expect(Object.keys(SETTINGS_GROUPS)).toEqual(['connection', 'permissions', 'behavior', 'session', 'media', 'diagnostics'])
     expect(SETTINGS_GROUPS.connection).toHaveLength(6) // 0.10.0 重排：连接=通道配置（-8 键）
-    expect(SETTINGS_GROUPS.permissions).toHaveLength(15)
+    expect(SETTINGS_GROUPS.permissions).toHaveLength(16) // #59：+memberTools
     expect(SETTINGS_GROUPS.behavior).toHaveLength(14) // T24：+titleSyncEnabled；0.10.0：+ignoreSelf/sidebarEntryEnabled
     expect(SETTINGS_GROUPS.behavior).toEqual(expect.arrayContaining(['inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled']))
     expect(SETTINGS_GROUPS.session).toHaveLength(10) // 0.10.0：5→10（+工作区×2/强制会话/提示词文件×2）
@@ -61,9 +61,13 @@ describe('T5 键表完整性（SCHEMA_DEFAULTS 与 schema 无孤儿键）', () =
   it('除 PENDING 豁免键外，SCHEMA_DEFAULTS 每键在 schema 有定义且默认值一致', () => {
     for (const key of ALL_KEYS) {
       if (PENDING_SCHEMA_KEYS.includes(key)) continue
+      if (key === 'memberTools') continue // #59：宿主配置嵌套在 permissions 下，扁平 resolved 无此键（下方单独断言）
       expect(Object.hasOwn(resolved, key)).toBe(true)
       expect(resolved[key]).toEqual(SCHEMA_DEFAULTS[key])
     }
+    // #59：memberTools 是「面板扁平键 ↔ 宿主嵌套对象」特例（notices 先例）——
+    // schema 定义在 permissions.memberTools，默认值与面板 SCHEMA_DEFAULTS 一致。
+    expect((resolved.permissions as Record<string, unknown>).memberTools).toEqual(SCHEMA_DEFAULTS.memberTools)
   })
 
   it('PENDING 键已进表但 schema 尚未定义（T7 落地后豁免名单应清空；faceStyle 已随 T6 转正）', () => {

@@ -134,11 +134,12 @@ window.__ModuleLoader__.load({
 				// 本地加：权限分「私聊 / 群聊」两块展示（id = 分区词条键尾段；客户端展示结构，host 契约不涉）。
 				sections: [
 					{ id: "dm", title: "私聊", keys: ["dmPolicy", "allowFrom", "allowAllUsers", "adminUsers"] },
-					{ id: "group", title: "群聊", keys: ["requireMention", "groupPolicy", "groupAllowFrom", "wakeNamesAdmin", "wakeNamesMember", "replyCountsAsMention", "atAllCountsAsMention", "faceStyle", "pokeEnabled", "restrictedMemberPrefix"] },
+					{ id: "group", title: "群聊", keys: ["requireMention", "memberTools", "groupPolicy", "groupAllowFrom", "wakeNamesAdmin", "wakeNamesMember", "replyCountsAsMention", "atAllCountsAsMention", "faceStyle", "pokeEnabled", "restrictedMemberPrefix"] },
 					{ id: "common", title: "通用", keys: ["sensitivePatterns"] },
 				],
 				fields: [
 					{ key: "requireMention", label: "群聊必须 @ 机器人", type: "boolean" },
+					{ key: "memberTools", label: "成员工具权限", type: "enum", options: ["none", "send", "all"], optionLabels: { none: "禁用全部", send: "仅发送类", all: "不限" }, hint: "非管理员回合可用的 qq_* 工具：仅发送类=可分条/发图（含工作区图库）" },
 					{ key: "adminUsers", label: "管理员用户列表", type: "stringArray" },
 					{ key: "dmPolicy", label: "私聊策略", type: "enum", options: ["open", "allowlist", "disabled"], optionLabels: { open: "开放", allowlist: "白名单", disabled: "禁用" } },
 					{ key: "groupPolicy", label: "群聊策略", type: "enum", options: ["open", "allowlist", "disabled"], optionLabels: { open: "开放", allowlist: "白名单", disabled: "禁用" } },
@@ -262,6 +263,7 @@ window.__ModuleLoader__.load({
 			dmPromptFile: "", // T4 拍板默认关（贡献者默认 ~/.dsh 路径不收）
 			groupPromptFile: "", // 同上
 			requireMention: true,
+			memberTools: "none",
 			adminUsers: [],
 			dmPolicy: "open",
 			groupPolicy: "open",
@@ -465,6 +467,7 @@ window.__ModuleLoader__.load({
 			dmPromptFile: vString(0, 1024),
 			groupPromptFile: vString(0, 1024),
 			requireMention: vBoolean(),
+			memberTools: vEnum(["none", "send", "all"]),
 			adminUsers: vArray(vString(0, 64)),
 			dmPolicy: vEnum(["open", "allowlist", "disabled"]),
 			groupPolicy: vEnum(["open", "allowlist", "disabled"]),
@@ -567,6 +570,7 @@ window.__ModuleLoader__.load({
 			ignoreSelf: vOptional(vBoolean()),
 			sidebarEntryEnabled: vOptional(vBoolean()),
 			requireMention: vOptional(vBoolean()),
+			memberTools: vOptional(vEnum(["none", "send", "all"])),
 			adminUsers: vOptional(vArray(vString(0, 64))),
 			dmPolicy: vOptional(vEnum(["open", "allowlist", "disabled"])),
 			groupPolicy: vOptional(vEnum(["open", "allowlist", "disabled"])),
@@ -843,7 +847,8 @@ window.__ModuleLoader__.load({
 				title: "Permissions",
 				fields: {
 					requireMention: { label: "Require @ in group chats" },
-					adminUsers: { label: "Admin user list" },
+				memberTools: { label: "Member tool access", options: { none: "All disabled", send: "Send-only", all: "Unrestricted" }, hint: "Which qq_* tools non-admin turns may use: send-only = split messages / send images (workspace galleries included)" },
+				adminUsers: { label: "Admin user list" },
 					dmPolicy: { label: "DM policy", options: { open: "Open", allowlist: "Allowlist", disabled: "Disabled" } },
 					groupPolicy: { label: "Group policy", options: { open: "Open", allowlist: "Allowlist", disabled: "Disabled" } },
 					allowAllUsers: { label: "Allow all users" },

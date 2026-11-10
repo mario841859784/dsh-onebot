@@ -6,3 +6,4 @@ profiles/
 .expert-bus/
 lib/*.bak-*
 
+.zcode/

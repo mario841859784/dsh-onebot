@@ -138,6 +138,24 @@ describe('onebotSettings remote — 三步主链路（写设置 → revision 递
     expect(getSettings(editor, state).revision).toBe(1)
   })
 
+  it('#59: memberTools 扁平面板键 ↔ 宿主嵌套 permissions.memberTools 读写往返', async () => {
+    // 读：宿主配置里嵌套的 permissions.memberTools 在快照里以扁平键呈现。
+    const editor = new FakeConfigEditor({ permissions: { memberTools: 'send' } })
+    const state = createRevisionState()
+    const snapshot = getSettings(editor, state)
+    expect(snapshot.config.memberTools).toBe('send')
+
+    // 写：扁平 patch 重组进嵌套 permissions 对象，原嵌套键保留。
+    const written = await updateSettings(editor, state, { memberTools: 'all' })
+    expect(written.config.memberTools).toBe('all')
+    expect(editor.rows[0].config.permissions).toEqual({ memberTools: 'all' })
+
+    // 再写别的键：permissions 对象不被后续 patch 误删。
+    await updateSettings(editor, state, { port: 20001 })
+    expect(editor.rows[0].config.permissions).toEqual({ memberTools: 'all' })
+    expect(editor.rows[0].config.port).toBe(20001)
+  })
+
   it('step 2: 非法 expectedRevision 拒写（conflict，不落盘、revision 不变），正确 revision 可重放', async () => {
     const editor = new FakeConfigEditor()
     const state = createRevisionState()
@@ -289,7 +307,7 @@ describe('onebotSettings remote — W6 白名单扩展（W1/W2 观测/调试 6 �
   it('6 个新键入快照：默认值正确、落在 diagnostics 组、计入 ALL_KEYS', () => {
     const editor = new FakeConfigEditor()
     const snapshot = getSettings(editor, createRevisionState())
-    expect(ALL_KEYS).toHaveLength(71) // W6 19→25、W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）、T6 66→67（gifFramesEnabled）、T7 67→69（inboxQueueEnabled/inboxQueueDelayMs）、T11 69→70（sidebarEntryEnabled）、T24 70→71（titleSyncEnabled）
+    expect(ALL_KEYS).toHaveLength(72) // W6 19→25、W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）、T6 66→67（gifFramesEnabled）、T7 67→69（inboxQueueEnabled/inboxQueueDelayMs）、T11 69→70（sidebarEntryEnabled）、T24 70→71（titleSyncEnabled）、#59 71→72（memberTools 入 permissions 组）
     expect(snapshot.groups.diagnostics).toEqual([...NEW_BOOLEAN_KEYS, 'logLevel']) // T5：diagnostics 组 6→7 键（+logLevel）
     for (const key of NEW_BOOLEAN_KEYS) {
       expect(snapshot.config[key]).toBe(NEW_DEFAULTS[key])
@@ -383,7 +401,7 @@ describe('onebotSettings remote — W6 失败守卫（configEditor 失败场景�
 describe('onebotSettings remote — W7 workspacePath 白名单扩展（connection 组 26 键）', () => {
   it('workspacePath 入快照：默认值 \'\'、connection 组键序追加、ALL_KEYS 25→26', () => {
     const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
-    expect(ALL_KEYS).toHaveLength(71) // T5：键表对齐贡献者 0.9.19（W7 25→26（workspacePath）、T2 26→27（newMessagePolicy 入 behavior 组）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs））、T6 66→67（gifFramesEnabled）、T7 67→69（inboxQueueEnabled/inboxQueueDelayMs）、T11 69→70（sidebarEntryEnabled）、T24 70→71（titleSyncEnabled）
+    expect(ALL_KEYS).toHaveLength(72) // T5：键表对齐贡献者 0.9.19（W7 25→26（workspacePath）、T2 26→27（newMessagePolicy 入 behavior 组）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs））、T6 66→67（gifFramesEnabled）、T7 67→69（inboxQueueEnabled/inboxQueueDelayMs）、T11 69→70（sidebarEntryEnabled）、T24 70→71（titleSyncEnabled）、#59 71→72（memberTools 入 permissions 组）
     expect(SCHEMA_DEFAULTS.workspacePath).toBe('')
     expect(SETTINGS_GROUPS.connection).toEqual(['mode', 'host', 'port', 'url', 'accessToken', 'botQQ']) // 0.10.0 重排：连接=通道配置（工作区/提示词文件归 session，allowPrivateHosts 归 media，ignoreSelf/sidebarEntryEnabled 归 behavior）
     expect(snapshot.groups.connection).toEqual(SETTINGS_GROUPS.connection)
@@ -489,7 +507,7 @@ describe('onebotSettings remote — W7 listWorkspaces（workspace 注册表只�
 describe('onebotSettings remote — P1/T2 newMessagePolicy 白名单扩展（behavior 组 28 键）', () => {
   it('newMessagePolicy 入快照：T5 翻转后默认 \'steer\'、behavior 组尾追加、ALL_KEYS 29→66', () => {
     const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
-    expect(ALL_KEYS).toHaveLength(71) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）、T6 66→67（gifFramesEnabled）、T7 67→69（inboxQueueEnabled/inboxQueueDelayMs）、T11 69→70（sidebarEntryEnabled）、T24 70→71（titleSyncEnabled）
+    expect(ALL_KEYS).toHaveLength(72) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）、T6 66→67（gifFramesEnabled）、T7 67→69（inboxQueueEnabled/inboxQueueDelayMs）、T11 69→70（sidebarEntryEnabled）、T24 70→71（titleSyncEnabled）、#59 71→72（memberTools 入 permissions 组）
     expect(SCHEMA_DEFAULTS.newMessagePolicy).toBe('steer')
     expect(SETTINGS_GROUPS.behavior).toEqual([
       'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled', 'ignoreSelf', 'sidebarEntryEnabled', // 0.10.0 重排组尾追加
@@ -532,7 +550,7 @@ describe('onebotSettings remote — P1/T2 newMessagePolicy 白名单扩展（beh
 describe('onebotSettings remote — T9 autoSteerPolicy 白名单扩展（behavior 组 27→28 键，用户裁决 2026-10-12）', () => {
   it('autoSteerPolicy 入快照：默认 \'admin\'、behavior 组尾追加（newMessagePolicy 之后）、ALL_KEYS 27→28', () => {
     const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
-    expect(ALL_KEYS).toHaveLength(71) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）、T6 66→67（gifFramesEnabled）、T7 67→69（inboxQueueEnabled/inboxQueueDelayMs）、T11 69→70（sidebarEntryEnabled）、T24 70→71（titleSyncEnabled）
+    expect(ALL_KEYS).toHaveLength(72) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）、T6 66→67（gifFramesEnabled）、T7 67→69（inboxQueueEnabled/inboxQueueDelayMs）、T11 69→70（sidebarEntryEnabled）、T24 70→71（titleSyncEnabled）、#59 71→72（memberTools 入 permissions 组）
     expect(SCHEMA_DEFAULTS.autoSteerPolicy).toBe('admin')
     expect(SETTINGS_GROUPS.behavior).toEqual([
       'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled', 'ignoreSelf', 'sidebarEntryEnabled', // 0.10.0 重排组尾追加
@@ -575,7 +593,7 @@ describe('onebotSettings remote — T9 autoSteerPolicy 白名单扩展（behavio
 describe('onebotSettings remote — T3 deferredTimeoutMs 白名单扩展（behavior 组 28→29 键）', () => {
   it('deferredTimeoutMs 入快照：默认 600000、behavior 组尾追加（autoSteerPolicy 之后）、ALL_KEYS 28→29', () => {
     const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
-    expect(ALL_KEYS).toHaveLength(71) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）、T6 66→67（gifFramesEnabled）、T7 67→69（inboxQueueEnabled/inboxQueueDelayMs）、T11 69→70（sidebarEntryEnabled）、T24 70→71（titleSyncEnabled）
+    expect(ALL_KEYS).toHaveLength(72) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T5 29→66（键表对齐贡献者 0.9.19）、T6 66→67（gifFramesEnabled）、T7 67→69（inboxQueueEnabled/inboxQueueDelayMs）、T11 69→70（sidebarEntryEnabled）、T24 70→71（titleSyncEnabled）、#59 71→72（memberTools 入 permissions 组）
     expect(SCHEMA_DEFAULTS.deferredTimeoutMs).toBe(600_000)
     expect(SETTINGS_GROUPS.behavior).toEqual([
       'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled', 'ignoreSelf', 'sidebarEntryEnabled', // 0.10.0 重排组尾追加

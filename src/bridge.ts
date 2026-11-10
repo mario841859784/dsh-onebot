@@ -116,9 +116,10 @@ export interface BridgeConfig {
    * 仍用 agentPreset）；absent/空串 = 现行为（群私同源 agentPreset）。 */
   agentPresetGroup?: string
   /** 权限分档 A2: 成员档位工具权限。'none'（缺省）= 成员（非管理员）回合
-   * 内全部 qq_* 工具在 execute 前被硬拦截；'all' = 不限。fail-closed：
-   * 字段缺失按 'none' 处理。 */
-  permissions?: { memberTools?: 'none' | 'all' }
+   * 内全部 qq_* 工具在 execute 前被硬拦截；'send' = 仅放行发往当前会话的
+   * 内容类工具（qq_send_text / qq_send_segments / qq_send_image）；'all' =
+   * 不限。fail-closed：字段缺失按 'none' 处理。 */
+  permissions?: { memberTools?: 'none' | 'send' | 'all' }
   workspacePath: string
   /** T3 (PR port 群工作区)：群聊 chat 的会话默认工作区目录——配置后 group:
    * 前缀 chat 的会话落在群独立目录（per-chat /workspace override 仍最优先，
@@ -636,34 +637,39 @@ export class ChatBridge {
   }
 
   /**
-   * 权限分档 A2（工具硬防线）：one tool-call's permission decision. Reuses the
-   * M1-A2 turn-level role (frozen at turn/start, fail-closed member) via
-   * canEditFiles; a caller with no QQ session mapping (Web/other channels) is
-   * outside the tier semantics and stays allowed; permissions.memberTools
-   * === 'all' disables the gate entirely. Absent config fails closed to
-   * 'none' (members blocked).
+   * 权限分档 A2（工具硬防线）：one tool-call's permission tier. Reuses the
+   * M1-A2 turn-level role (frozen at turn/start, fail-closed member); a caller
+   * with no QQ session mapping (Web/other channels) is outside the tier
+   * semantics and gets 'all' (A1 scoping); admin turns always get 'all'.
+   * Member turns get the configured permissions.memberTools tier, absent
+   * config fails closed to 'none' (members blocked).
    */
-  memberToolsAllowed(sessionId: string | undefined): boolean {
-    if ((this.deps.config.permissions?.memberTools ?? 'none') === 'all') return true
-    if (sessionId === undefined) return true
-    return this.canEditFiles(sessionId)
+  memberToolTier(sessionId: string | undefined): 'none' | 'send' | 'all' {
+    const configured = this.deps.config.permissions?.memberTools ?? 'none'
+    if (configured === 'all') return 'all'
+    const chatId = sessionId !== undefined ? this.bySession.get(sessionId) : undefined
+    if (sessionId === undefined || chatId === undefined) return 'all'
+    return this.chats.get(chatId)?.activeTurnRole === 'admin' ? 'all' : configured
   }
 
   /**
    * Outbound media fence roots for one agent session's current turn (M1-A3b):
    * the plugin media dir always, plus the chat's workspace directory when the
-   * running turn's initiator is an admin. The role reuses the M1-A2 turn-level
-   * semantics (canEditFiles: frozen at turn/start, fail-closed member); a
-   * session with no known chat stays mediaDir-only even though canEditFiles
-   * would trust it — the media gate itself fails closed. Roots are
-   * realpath-normalized here; the MediaStore fence re-checks containment
-   * (the double check is harmless).
+   * turn may actually send media — admin turns always (#59: member turns with
+   * permissions.memberTools 'send'/'all' get it too, so a workspace gallery is
+   * reachable exactly when the send tools are). The role reuses the M1-A2
+   * turn-level semantics (canEditFiles: frozen at turn/start, fail-closed
+   * member); a session with no known chat stays mediaDir-only — the media gate
+   * itself fails closed. Roots are realpath-normalized here; the MediaStore
+   * fence re-checks containment (the double check is harmless).
    */
   async mediaSendRoots(sessionId: string | undefined): Promise<{ roots: string[]; isTurnAdmin: boolean }> {
     const isTurnAdmin = sessionId !== undefined && this.canEditFiles(sessionId)
     const chatId = sessionId !== undefined ? this.bySession.get(sessionId) : undefined
     const candidates = [this.deps.config.mediaDir]
-    if (chatId !== undefined && isTurnAdmin) candidates.push(this.effectiveCwd(chatId))
+    if (chatId !== undefined && (isTurnAdmin || this.memberToolTier(sessionId) !== 'none')) {
+      candidates.push(this.effectiveCwd(chatId))
+    }
     const roots: string[] = []
     for (const root of candidates) {
       try {
@@ -1698,7 +1704,13 @@ export class ChatBridge {
     agentCtx.systemPrompt.section({
       name: 'channel:dsh-onebot',
       order: 90,
-      text: buildPlatformPrompt(this.deps.config.restrictedMemberPrefix, extra, memoryText),
+      text: buildPlatformPrompt(
+        this.deps.config.restrictedMemberPrefix,
+        extra,
+        memoryText,
+        // 权限分档 A2 (#59): 成员档位工具权限档决定「·成员」段文案。
+        this.deps.config.permissions?.memberTools ?? 'none',
+      ),
     })
     registerTools(agentCtx, this, this.deps.connection, {
       maxImageBytes: this.deps.config.maxImageBytes,

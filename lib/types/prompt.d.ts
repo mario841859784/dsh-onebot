@@ -28,6 +28,8 @@ export declare function readMemoryFiles(files: readonly string[], log?: ChannelL
  * @param extra - T4 (PR port 提示词文件)：本会话附加设定（人设文案，来自
  *   dm/group 提示词文件；空 = 不注入该段，旧调用不传即保持原行为）。
  * @param memoryText - T4 (PR port 记忆文件)：记忆文件内容（仅私聊；空 = 不注入）。
+ * @param memberTools - 权限分档 A2：成员档位工具权限档（缺省 'none'，与旧
+ *   调用保持一致）——决定「·成员」段如何描述工具可用性（#59）。
  * @returns the section text.
  */
-export declare function buildPlatformPrompt(restrictedMembers: boolean, extra?: string, memoryText?: string): string;
+export declare function buildPlatformPrompt(restrictedMembers: boolean, extra?: string, memoryText?: string, memberTools?: 'none' | 'send' | 'all'): string;

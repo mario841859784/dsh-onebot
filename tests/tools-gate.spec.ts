@@ -29,11 +29,13 @@ interface SendTool {
  * get_group_msg_history).
  * 权限分档 A2: `memberTools` defaults to 'all' here so the media-fence tests
  * below stay purely about the fence; the member-tier gate itself is exercised
- * in its own describe with the production default 'none'. */
+ * in its own describe with the production default 'none'. #59: the fence now
+ * follows the tier too (member + send/all gets the workspace root), so
+ * fence-vs-tier coupling is covered in the roots-口径 describe. */
 async function makeHarness(opts: {
   segments?: { enabled: boolean; intervalMs: number }
   respond?: Record<string, (params: Record<string, unknown>) => unknown>
-  memberTools?: 'none' | 'all'
+  memberTools?: 'none' | 'send' | 'all'
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'tools-gate-'))
   const mediaDir = join(root, 'media')
@@ -131,14 +133,26 @@ async function makeHarness(opts: {
 }
 
 describe('qq_send_* local-path outbound gate (M1-A3b)', () => {
-  it('refuses a workspace file on a member turn without reading or sending it', async () => {
-    const h = await makeHarness()
+  it('sends a workspace file on a member turn when memberTools=all (#59: fence follows the tier)', async () => {
+    // #59 修复的回归：以前成员回合即使工具放行（all），mediaSendRoots 仍只给
+    // mediaDir，工作区图库（如 qqbot/recivememe）必然被围栏拦死。
+    const h = await makeHarness({ memberTools: 'all' })
     const sessionId = 'sess-member'
     h.seed(sessionId, 'member')
-    const target = join(h.workspace, 'report.txt')
-    await writeFile(target, 'member-must-not-send')
-    // The file exists inside the admin-only workspace root: a refusal here
-    // proves the gate ran BEFORE the read (an unfenced read would succeed).
+    const target = join(h.workspace, 'gallery.png')
+    await writeFile(target, 'member-gallery-data')
+    const result = await h.tool('qq_send_image').execute({ sources: [target] }, h.exec(sessionId)) as { sent: boolean }
+    expect(result.sent).toBe(true)
+    expect(h.sentSegment()).toMatchObject({ type: 'image', data: { file: 'base64://' + Buffer.from('member-gallery-data').toString('base64') } })
+  })
+
+  it('still refuses a member-turn file outside mediaDir and the workspace (fence stays)', async () => {
+    // 档位放开 ≠ 围栏放开：roots 之外的路径（other-ws）照样拒绝，且拒绝发生在读取之前。
+    const h = await makeHarness({ memberTools: 'all' })
+    const sessionId = 'sess-member'
+    h.seed(sessionId, 'member')
+    const target = join(h.otherDir, 'outside-roots.txt')
+    await writeFile(target, 'not-in-roots')
     await expect(h.tool('qq_send_file').execute({ path: target, chat_id: 'group:20002' }, h.exec(sessionId)))
       .rejects.toThrow(/不在允许的媒体目录内/)
     expect(h.calls).toHaveLength(0)
@@ -203,16 +217,23 @@ describe('qq_send_* local-path outbound gate (M1-A3b)', () => {
 })
 
 describe('ChatBridge.mediaSendRoots (M1-A3b roots口径)', () => {
-  it('derives roots from the turn-level role: member → mediaDir, admin → mediaDir + workspace', async () => {
+  it('derives roots from the turn-level role AND the memberTools tier (#59)', async () => {
+    // none：成员回合 mediaDir-only（与旧口径一致）；send/all：追加工作区
+    // （图库可达性精确跟随发送类工具的可用性）；admin：始终追加。
+    for (const tier of ['none', 'send', 'all'] as const) {
+      const h = await makeHarness({ memberTools: tier })
+      const member = 'acc-member-' + tier
+      h.seed(member, 'member')
+      expect(await h.bridge.mediaSendRoots(member)).toEqual({
+        roots: tier === 'none'
+          ? [realpathSync(h.mediaDir)]
+          : [realpathSync(h.mediaDir), realpathSync(h.workspace)],
+        isTurnAdmin: false,
+      })
+    }
     const h = await makeHarness()
-    const member = 'acc-member'
     const admin = 'acc-admin'
-    h.seed(member, 'member')
     h.seed(admin, 'admin')
-    expect(await h.bridge.mediaSendRoots(member)).toEqual({
-      roots: [realpathSync(h.mediaDir)],
-      isTurnAdmin: false,
-    })
     expect(await h.bridge.mediaSendRoots(admin)).toEqual({
       roots: [realpathSync(h.mediaDir), realpathSync(h.workspace)],
       isTurnAdmin: true,
@@ -314,6 +335,64 @@ describe('qq_* member-tier tool gate (权限分档 A2)', () => {
     await expect(h.tool('qq_send_image').execute({ sources: ['https://example.com/pic.jpg'] }, h.exec(sessionId)))
       .rejects.toThrow('当前发言人为成员档位')
     expect(h.calls).toHaveLength(0)
+  })
+})
+
+/**
+ * memberTools='send' 中间档（#59）：成员回合只放行「往当前会话发内容」的
+ * 三个工具（qq_send_text / qq_send_segments / qq_send_image），让机器人对
+ * 成员也能分条、发图（工作区图库）；qq_send_forward（合并转发卡片可伪造
+ * 显示名/内容）、qq_send_file / qq_send_voice / qq_send_video（携带任意
+ * 本地文件出站）、qq_napcat_api、qq_group_history 仍仅管理员回合可用。
+ */
+describe('qq_send_* memberTools=send 中间档 (#59)', () => {
+  it('allows the three send tools on a member turn', async () => {
+    const h = await makeHarness({ memberTools: 'send' })
+    const sessionId = 'sess-send-member'
+    h.seed(sessionId, 'member')
+    // qq_send_text：走完整出站管线（桩连不上 WS），守卫放行的证据 = 越过
+    // 档位门后抛的是 NotConnected 而不是成员档位错误。
+    await expect(h.tool('qq_send_text').execute({ text: '分条回答' }, h.exec(sessionId)))
+      .rejects.toThrow(/WebSocket not connected/)
+    expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(0)
+    // qq_send_segments：放行（两段两条气泡，经 connection.call 桩记录）。
+    const segs = await h.tool('qq_send_segments').execute({ segments: ['一段', '二段'] }, h.exec(sessionId)) as { sent: boolean }
+    expect(segs.sent).toBe(true)
+    expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(2)
+    // qq_send_image（URL 源，不碰围栏）：放行。
+    const img = await h.tool('qq_send_image').execute({ sources: ['https://example.com/pic.jpg'] }, h.exec(sessionId)) as { sent: boolean }
+    expect(img.sent).toBe(true)
+    const imgSend = [...h.calls].reverse().find(c => c.action === 'send_msg')!
+    expect((imgSend.params.message as Array<Record<string, unknown>>)[0]).toMatchObject({ type: 'image', data: { url: 'https://example.com/pic.jpg' } })
+  })
+
+  it('still rejects admin-only tools with the send-tier message, before any validation', async () => {
+    const h = await makeHarness({ memberTools: 'send' })
+    const sessionId = 'sess-send-gate'
+    h.seed(sessionId, 'member')
+    for (const [name, args] of [
+      ['qq_send_forward', { messages: [{ name: 'a', content: 'b' }] }],
+      ['qq_send_file', { path: '/etc/passwd' }],
+      ['qq_send_voice', { path: '/etc/passwd' }],
+      ['qq_send_video', { path: '/etc/passwd' }],
+      ['qq_napcat_api', { action: 'get_group_member_list', params: { group_id: 1 } }],
+      ['qq_group_history', { chat_id: 'group:20002' }],
+    ] as Array<[string, Record<string, unknown>]>) {
+      await expect(h.tool(name).execute(args, h.exec(sessionId)))
+        .rejects.toThrow('当前发言人为成员档位（memberTools=send）：' + name + ' 不在放行清单')
+    }
+    expect(h.calls).toHaveLength(0)
+  })
+
+  it('does not affect admin turns (all tools stay available)', async () => {
+    const h = await makeHarness({ memberTools: 'send' })
+    const sessionId = 'sess-send-admin'
+    h.seed(sessionId, 'admin')
+    // admin 档恒为 all：qq_send_segments（管理员专属语义之外的任意工具均可）
+    // 正常发送即证守卫未拦。
+    const result = await h.tool('qq_send_segments').execute({ segments: ['管理员'] }, h.exec(sessionId)) as { sent: boolean }
+    expect(result.sent).toBe(true)
+    expect(h.calls.filter(c => c.action === 'send_msg')).toHaveLength(1)
   })
 })
 

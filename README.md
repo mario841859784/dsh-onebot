@@ -33,7 +33,7 @@
 | 出站 | 正文 ≤ `textImageThreshold`（默认 150）字符单条发送、**超过阈值渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji；渲染失败、PNG 超 `outboundImageMaxBytes` 或 `<=0` 禁用卡片时回退单条纯文本）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、**实时中间消息**（interimMessages：每条中间文本立即发出、实时可见；各自在 `interimRecallMs`（默认 90s）后自动单独撤回；回合结束时先把整轮中间消息渲染成一张 **t2i 小结卡**、立即撤回仍在屏幕上的原文、再发送最终回复——不用回合末合并转发，避免长回合「原文超 2 分钟撤不回+转发卡重复」；`interimRecall: false` 时降级为只发不撤（无小结卡、不撤回））、**宿主「计划书/提问卡」自动中继**（模型调用 exit_plan_mode 时把计划全文发到 QQ；**ask_user_question QQ 桥接**（0.9.11）：问题渲染成 QQ 选项卡、群友回复选项/`答:`/`跳过` 即回传答案，等待期内即时结算，300s 未答转 pending 后仍可回答，见「群聊权限分档与 ask_user_question 桥接」）、正在输入提示（set_input_status，仅私聊） |
 | 命令 | 斜杠命令（默认仅管理员；`/help` 群友可见成员视图）：`/new` 开新会话、`/stop` 停止生成、`/steer <补充内容>` 向运行中的任务补充指令（无运行任务时回用法提示；详见下方命令表与 `newMessagePolicy` 配置）、`/model` 查看或切换当前会话模型（`--default` 修改部署默认；无参输出两级序号列表，回复序号选 provider → 再回复序号选模型）、`/workspace` 查看或切换工作区（无参编号列表，回复序号即选）、`/preset` 查看或切换 agent 预设（无参编号列表，回复序号即选）、`/session` 查看可切回历史会话并按序号切回（`/new`、`/workspace`、`/preset` 切换下来的旧会话进列表，可来回切，历史上下文恢复）、`/status` 会话全景、`/doctor [export [参考号]|test]`（别名 `/healthcheck`）运行体检（export [参考号] 导出脱敏诊断包 qq-diagnostics-*.zip，文件名含触发参考号；`test` 一键自测收发链路）、`/retry` 重跑上一条、`/id` 会话标识、`/ver` 版本、`/ocr` 识别最近图片、`/mode` 切换出站模式（跨重启持久化）、`/plan` 计划模式、`/permission` 切换宿主权限预设（QQ 别名 `w`=工作区可写+需审批、`f`=全权+免审批；完整预设名照传，未知名由宿主报错并回显可用列表；无参查看当前与可用列表，序号按 available 顺序）、`/goal` 目标记录（跨重启持久化）、`/silent [分钟]` 临时免打扰（0.9.11 起，默认 30 分钟，再次 `/silent` 提前解除，见命令表）、`/help` 帮助（0.9.11 起群友可见成员视图，仅列群友可用的命令）；未知斜杠命令默认拦截并提示相近命令（`unknownCommand: passthrough` 改为透传给模型） |
 | 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_segments`（1–9 段纯文本分段气泡，每段 ≤500 字，见下文「分段发送」）、`qq_send_forward`、`qq_napcat_api`（14 个白名单 action）、`qq_group_history`（文件编辑工具 `code_safe_edit` 等已拆至独立插件 dsh-safe-edit，见下文「安全编辑」） |
-| 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、**群聊权限分档**（0.9.11：每条群消息前缀标注发言人档位·管理员/·成员；成员档位回合禁用全部 `qq_*` 工具，`permissions.memberTools: all` 可放开）、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计 |
+| 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、**群聊权限分档**（0.9.11：每条群消息前缀标注发言人档位·管理员/·成员；成员档位回合默认禁用全部 `qq_*` 工具，`permissions.memberTools: send/all` 可放开（0.10.1 加 send 中间档）、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计 |
 | 会话 | 每个 QQ 会话一个持久 Agent（session id 稳定派生），重启后自动 resume；按 `agentPreset`/`agentPresetGroup`/`workspacePath` 挂载到 preset 与工作区；每轮结束 flush 落盘 |
 | 运维 | 热加载：profile 层 patch 的 **config 覆盖**与 **insert 新增/删除**均热生效——插件 fiber 秒级原地重启（宿主进程不重启；代价：QQ 桥一次秒级重连、在途回合中断）；touch/内容未变不触发任何动作；bundle 自带 patch、仓库模板、部署副本的 patch 文件与根配置 `cordis.yml` 的改动**不**热生效；临时媒体 TTL 过期清理 |
 | 提示词 | 自动注入 QQ 平台说明（纯文本输出、图片/语音标注 `[图片]`/`[语音]` 占位、工具与命令指引、`ask_user_question` QQ 桥接、禁宿主 Web 审批卡 `exit_plan_mode`）；按**每个 QQ 会话 agent 自身作用域**注入，Web 会话不可见 |
@@ -214,7 +214,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `allowCidrs` | `[]` | 可选 CIDR 白名单（如 `100.64.0.0/10`、`fd7a:115c:a1e0::/48`）：只放行这些私网段，其他私网仍拒绝；空数组保持原行为；格式错误启动即报错 |
 | `agentPreset` | 空 | 会话挂载的 agent preset（留空=默认） |
 | `agentPresetGroup` | 空 | 群聊会话的 agent preset id（粗档，0.9.11 起）：设置后群聊会话优先使用它，私聊仍用 `agentPreset`；留空=群私同源。`/preset` 的 per-chat 覆盖仍最优先 |
-| `permissions.memberTools` | `none` | 成员档位（非管理员）的工具权限（0.9.11 起）：`none`（默认）= 成员回合禁用全部 `qq_*` 工具（插件硬拦截，无需模型自觉）；`all` = 不限。缺省配置 fail-closed 为 `none`；无 QQ 会话映射的调用方（Web 等其他通道）不受此档位约束 |
+| `permissions.memberTools` | `none` | 成员档位（非管理员）的工具权限（0.9.11 起；0.10.1 加 send 档）：`none`（默认）= 成员回合禁用全部 `qq_*` 工具（插件硬拦截，无需模型自觉）；`send` = 仅放行发往当前会话的内容类工具 `qq_send_text` / `qq_send_segments` / `qq_send_image`（成员回合也能分条、发图；发图可读会话工作区图库）；`all` = 不限。缺省配置 fail-closed 为 `none`；无 QQ 会话映射的调用方（Web 等其他通道）不受此档位约束 |
 | `workspacePath` | 空 | 会话挂载的工作区（留空=宿主进程 cwd；未配置时插件启动会 warn 一次建议显式配置——宿主未提供可编程查询的默认工作区）。`/workspace` 的 per-chat 覆盖已持久化进映射文件，重启不丢 |
 | `chatIdleEvictDays` | `7` | 会话空闲淘汰天数：chat 超过该天数无任何活动时，在下一条入站消息处理前清理其内存态 agent（会话先 flush 落盘、映射保留，同一 chat 之后再发消息可 resume 恢复原会话）；`0` = 禁用 |
 
@@ -379,7 +379,7 @@ chat 回退到下一条消息新建会话，不会卡死。损坏（碰撞/恢�
 群成员分「管理员 / 成员」两档（按 `adminUsers` 白名单判定），三处生效：
 
 1. **role 前缀档位**：每条群消息的 `[HH:MM 昵称(QQ)]` 前缀会标注发言人档位（·管理员 / ·成员），模型据此分辨消息来源，无需信任消息正文自带的身份声明。受限用户（`restrictedMemberPrefix`，默认开）仍额外带 `[受限用户:仅问答]` 前缀。
-2. **`permissions.memberTools`（默认 `none`）**：成员档位的回合中，全部 `qq_*` 工具调用被插件直接拒绝（硬拦截，不依赖模型自觉）；设为 `all` 则不限。缺省配置 fail-closed 为 `none`；无 QQ 会话映射的调用方（Web 等其他通道）不受此档位约束。管理员不受影响。
+2. **`permissions.memberTools`（默认 `none`）**：成员档位的回合中，`qq_*` 工具调用按档拦截（硬拦截，不依赖模型自觉）：`none`（默认）全禁；`send`（0.10.1 起）仅放行 `qq_send_text` / `qq_send_segments` / `qq_send_image` 三个「往当前会话发内容」的工具——成员也能让机器人分条、发图（图库放会话工作区即可，媒体围栏随档位放行该根）；`qq_send_forward`（合并转发卡片可伪造显示名/内容）、`qq_send_file` / `qq_send_voice` / `qq_send_video`（携带任意本地文件出站）、`qq_napcat_api`、`qq_group_history` 仍仅管理员回合可用；`all` 则不限。缺省配置 fail-closed 为 `none`；无 QQ 会话映射的调用方（Web 等其他通道）不受此档位约束。管理员不受影响。
 3. **`agentPresetGroup`（默认空）**：群聊会话独立的 agent 预设 id（粗档）——设置后群聊会话优先使用它（可给群聊配更收敛的模型/预设），私聊仍用 `agentPreset`；留空=群私同源。`/preset` 的 per-chat 覆盖仍最优先。
 
 ### ask_user_question QQ 桥接

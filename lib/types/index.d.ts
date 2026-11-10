@@ -225,9 +225,11 @@ export interface Config {
     agentPreset: string;
     /** 权限分档 A3: 群聊粗档 preset——设置后群聊会话优先使用该 preset id；空串=现行为。 */
     agentPresetGroup: string;
-    /** 权限分档 A2: 成员档位工具权限（none=成员回合禁用全部 qq_* 工具，默认；all=不限）。 */
+    /** 权限分档 A2: 成员档位工具权限（none=成员回合禁用全部 qq_* 工具，默认；
+     * send=仅放行发往当前会话的内容类工具（qq_send_text/segments/image）；
+     * all=不限）。 */
     permissions: {
-        memberTools: 'none' | 'all';
+        memberTools: 'none' | 'send' | 'all';
     };
     workspacePath: string;
     /** T3 (PR port 群工作区)：群聊会话的默认工作区目录；空串=现行为。 */

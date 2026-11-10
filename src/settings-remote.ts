@@ -77,7 +77,7 @@ export const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>> = {
   // 0.10.0 重排（用户裁定方案 A）：连接=通道配置 6 键；工作区/强制会话/提示词文件
   // 归 session；allowPrivateHosts 归 media；ignoreSelf/sidebarEntryEnabled 归 behavior。
   connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ'],
-  permissions: ['requireMention', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'replyCountsAsMention', 'atAllCountsAsMention', 'faceStyle', 'pokeEnabled', 'restrictedMemberPrefix', 'sensitivePatterns'],
+  permissions: ['requireMention', 'memberTools', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'replyCountsAsMention', 'atAllCountsAsMention', 'faceStyle', 'pokeEnabled', 'restrictedMemberPrefix', 'sensitivePatterns'],
   behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled', 'ignoreSelf', 'sidebarEntryEnabled'],
   session: ['newSessionGreeting', 'firstMessageAsUser', 'memoryFilesEnabled', 'memoryFiles', 'agentPreset', 'workspacePath', 'groupWorkspacePath', 'forceSessionId', 'dmPromptFile', 'groupPromptFile'],
   media: ['sttEnabled', 'sttEngine', 'sttCommand', 'sttArgs', 'sttModel', 'textImageEnabled', 'textImageThreshold', 'cardFooter', 'fontFiles', 'fontFamilies', 'outboundImageMaxBytes', 'maxVoiceBytes', 'maxFileBytes', 'inboundImageMaxPx', 'inboundFileMaxBytes', 'gifFramesEnabled', 'allowPrivateHosts'],
@@ -113,6 +113,8 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   // 当前快照条件注册，false 时侧边栏入口与配对 main 面板 slot 均不注册）。
   sidebarEntryEnabled: true,
   requireMention: true,
+  // A2 (#59)：成员档位工具权限默认关（fail-closed，与 schema 默认一致）。
+  memberTools: 'none',
   adminUsers: [],
   dmPolicy: 'open',
   groupPolicy: 'open',
@@ -206,6 +208,8 @@ const ENUM_KEYS: Readonly<Record<string, readonly string[]>> = {
   newMessagePolicy: ['queue', 'steer'],
   // T9-B (用户裁决 2026-10-12)：admin=仅管理员（默认）；all=不限。
   autoSteerPolicy: ['admin', 'all'],
+  // A2 (#59)：成员档位工具权限——none=禁用全部（默认）；send=仅发送类；all=不限。
+  memberTools: ['none', 'send', 'all'],
   // T5 键表新增：@ 样式 / 日志级别 / 语音转写引擎。
   faceStyle: ['name', 'emoji'],
   logLevel: ['debug', 'info', 'warn', 'error'],
@@ -404,10 +408,17 @@ function resolveWorkspaceRegistry(ctx: { get(key: string): unknown } | undefined
   return registry !== undefined && registry !== null && typeof registry.list === 'function' ? registry : undefined
 }
 
-/** 66 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
+/** 70 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。
+ *  memberTools (#59) 是「面板扁平键 ↔ 宿主嵌套对象」特例（notices 先例）：
+ *  宿主配置里它是 permissions.memberTools，快照读取时降一层取值。 */
 export function effectiveConfig(raw: Record<string, unknown>): Record<string, unknown> {
   const effective: Record<string, unknown> = {}
   for (const key of ALL_KEYS) {
+    if (key === 'memberTools') {
+      const permissions = raw.permissions
+      effective[key] = (typeof permissions === 'object' && permissions !== null ? (permissions as Record<string, unknown>).memberTools : undefined) ?? SCHEMA_DEFAULTS[key]
+      continue
+    }
     const value = raw[key]
     effective[key] = value === undefined ? SCHEMA_DEFAULTS[key] : value
   }
@@ -550,10 +561,24 @@ export async function updateSettings(
   }
   const clean = validatePatch(patch)
   const current = entry.options.config ?? {}
+  // memberTools (#59)：面板键扁平（memberTools），宿主配置嵌套（permissions.memberTools）。
+  // 写入侧重组进 permissions 对象并与现状合并（permissions 现仅此一键）；
+  // notices 同属「面板扁平键 ↔ 嵌套对象」特例。
+  if (typeof clean.memberTools === 'string') {
+    const currentPermissions = (typeof current.permissions === 'object' && current.permissions !== null ? current.permissions : {}) as Record<string, unknown>
+    clean.permissions = { ...currentPermissions, memberTools: clean.memberTools }
+    delete clean.memberTools
+  }
   const merged = { ...current, ...clean }
   if (isDeepStrictEqual(merged, current)) return buildSnapshot(entry, state) // no-op：不递增（§3.1 #4）
   try {
-    await editor.edit(entry, (fresh) => ({ ...fresh, ...clean }))
+    await editor.edit(entry, (fresh) => {
+      // 观察窗口内 permissions 若被并发写入，以 fresh 为底再合并一次防丢键。
+      if (typeof fresh.permissions === 'object' && fresh.permissions !== null && typeof clean.permissions === 'object' && clean.permissions !== null) {
+        return { ...fresh, ...clean, permissions: { ...fresh.permissions as Record<string, unknown>, ...clean.permissions } }
+      }
+      return { ...fresh, ...clean }
+    })
   } catch (cause) {
     // W6 错误归一：只翻译、不重试、不补偿写；宿主已保证 patch 文件未被破坏或已逐字节还原。
     // details 带宿主原文（可跨网关序列化），cause 仅进程内诊断。

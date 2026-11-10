@@ -1041,3 +1041,12 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 
 - **改动**：docs/ 新增 `settings-ui-connection-en.jpg` / `settings-ui-behavior-en.jpg`（宿主切 English 后实拍，亮色主题跟随宿主；连接页同时展示 0.10.0 重排后的纯通道配置形态）；README.en.md 两图换成英文版，并注明中文界面截图在中文 README、面板文案自 0.10.0 起全双语。
 - **意义**：上一轮「英文 README 无英文配图」的待办就此闭环——正是字段文案词典化让这一步从「不可行」变成「切个语言就能截」。
+
+## 2026-11-10 memberTools 中间档 send + 媒体围栏随档放行（issue #59）
+
+- **问题（HanaYuma 报告）**：群聊普通成员回合被硬拦掉全部 `qq_*` 工具，机器人对成员只能堆整段文字（不能分条、不能发图）；且即使 `memberTools: all`，成员回合发图仍被 `mediaSendRoots()` 二次拦死——围栏的会话工作区根只随管理员回合给，图库放工作区（如 `qqbot/recivememe`）的成员永远发不出去。
+- **方案**：档位语义从布尔改三档 `none / send / all`（默认仍 none fail-closed）。`send` 只放行「往当前会话发内容」三件套 `qq_send_text` / `qq_send_segments` / `qq_send_image`；`qq_send_forward`（合并转发卡片可伪造显示名/内容）、`qq_send_file`/`voice`/`video`（任意本地文件出站）、`qq_napcat_api`、`qq_group_history` 仍仅管理员档。媒体围栏同步随档：`mediaSendRoots()` 的 workspace 根条件从「仅管理员回合」放宽为「管理员回合 **或** 成员回合档 ≠ none」——图库可达性精确跟随发送类工具可用性。核心判定 `memberToolsAllowed(): boolean` → `memberToolTier(): 'none'|'send'|'all'`（bridge.ts），tools.ts 侧白名单集合 `SEND_TIER_TOOLS` + 按档报错文案。
+- **面板**：memberTools 首次进面板（permissions 组·群聊分区，enum 三档）；宿主配置里它是嵌套的 `permissions.memberTools` 而面板契约是扁平键——按 notices 先例做「扁平键 ↔ 嵌套对象」特例（effectiveConfig 读侧降层取值、updateSettings 写侧重组进 permissions 对象并与 current/fresh 两级合并防丢键）。配置文件形状不变。
+- **提示词**：`buildPlatformPrompt` 按档条件化「·成员」段——none 全禁（原文案）、send 仅发送类、all 全可。平台提示词随之更新。
+- **同步面**：src/index.ts（schema 三档）、src/bridge.ts（memberToolTier + mediaSendRoots + 调用点传档）、src/tools.ts（白名单 + 文案）、src/prompt.ts、src/settings-remote.ts（permissions 组 +memberTools、ENUM_KEYS、SCHEMA_DEFAULTS、嵌套读写特例）、src/client.ts（GROUPS/DEFAULTS/EN_GROUPS 双词 + 两处 codec）；tests/tools-gate（+send 档三用例、围栏随档回归、roots 三档矩阵）、tests/settings-remote（+扁平↔嵌套往返用例、ALL_KEYS 72 口径）、tests/t5-port（permissions 16、memberTools 嵌套豁免+默认值断言）、tests/client-settings（70 键口径全套）。
+- **验证**：tsc 0 错误；全量 1086 passed（connection 两条并行时序 flake 单跑 39/39，同既有口径）；README 中英三处口径更新。面板截图随旁观组（下一批）一起重截。

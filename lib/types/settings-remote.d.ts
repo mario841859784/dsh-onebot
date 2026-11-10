@@ -145,7 +145,9 @@ export interface WorkspaceListResult {
  *  校验——与 requireConfigEditor 同款「运行期再校验形状」风格，但绝不抛错：
  *  缺席/形状不符/list() 失败都归一为 unavailable 空列表）。 */
 export declare function listWorkspaces(registry: WorkspaceRegistryLike | undefined): WorkspaceListResult;
-/** 66 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
+/** 70 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。
+ *  memberTools (#59) 是「面板扁平键 ↔ 宿主嵌套对象」特例（notices 先例）：
+ *  宿主配置里它是 permissions.memberTools，快照读取时降一层取值。 */
 export declare function effectiveConfig(raw: Record<string, unknown>): Record<string, unknown>;
 /** updateSettings 入参校验（T1 §4：ALL_KEYS 任意子集，扁平 JSON）。未知键整单
  *  拒绝（不静默丢弃）；类型/枚举不符拒绝；notices 走单独白名单通道（T5 对齐
