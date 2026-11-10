@@ -1060,3 +1060,9 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **配置面**：五键扁平 `bystanderEnabled/Capacity/Topics/CooldownMinutes/DailyLimit`（inboxQueue 扁平先例），面板新增「旁观」组（七组 75 键）+ EN 双词 + desc 词条；NUMBER_RANGE/codec/DEFAULTS 全套同步；README 中英配置表 5 行 + 设置页七组口径 + 「群聊旁观」专节（含已知取舍：回顾回合用户消息留在会话历史——宿主无注入后丢弃原语，以冷却+日上限+容量定界）。
 - **测试**：tests/bystander.spec 11 用例（淘汰/边界消毒/四触发/冷却/日上限/跨天重置）；inbound.spec 3 集成（默认关零行为、触发文本形状+冷却、忙回合跳过）；键数口径 75/76/77/71(渲染行)/63(可见) 全套同步。
 - **验证**：tsc 0 错误；全量 1100 passed + 4 skipped（connection 两条并行时序 flake，单跑全绿，同既有口径）。面板截图待活体重截（旁观组 + #59 memberTools 行一起）。
+
+## 2026-11-11 活体部署 + 设置页四图重截（七组 75 键口径）
+
+- **部署**：活体 /Users/mario/dsh-onebot 从本地开发仓 fetch 快进到 7478ab8（GitHub 当晚 SSL 抖动，push 待网络恢复补推）；desktop profile 的 node_modules/dsh-onebot-qq 为文件副本（file: 直挂），rsync 同步后重启 DeepSeek Harness 应用生效。
+- **真机点验**：旁观页签渲染正确（desc「群聊旁观与主动插话」+ 开关 + hint，4 个 showIf 字段默认隐藏）；权限页「成员工具权限」三档分段控件（禁用全部/仅发送类/不限）+ hint 落位正确，默认禁用全部。en 界面 Lurk 页签/Member tool access 同步验证（宿主语言实切 English）。
+- **四图重截**：docs/settings-ui-connection.jpg / behavior.jpg（zh）与 -en.jpg 两张（1280×820 实拍，暗色主题跟随宿主），页签条均为七组口径；宿主语言拍后切回中文还原。
