@@ -20,6 +20,12 @@ import type { AssistantMessage } from '@deepseek-ai/dsh-llm';
 import type { BridgeConfig } from './bridge.js';
 import type { ChatId } from './chat.js';
 import type { OutboundSegment, SendOptions } from './outbound.js';
+/** T4 (PR port 沉默哨兵)：模型只输出沉默哨兵 = 本回合不出站。
+ * 判定要求整段文本只含哨兵（允许空白/全角空格/包裹的引号），
+ * 免得正常回复里提到这个词被误吞。 */
+export declare const SILENCE_TOKEN = "[[\u4E0D\u56DE]]";
+/** T4 (PR port 沉默哨兵)：整段文本剥掉空白与各类包裹引号后是否恰好只含哨兵。 */
+export declare function isSilenceText(text: string): boolean;
 /** Narrow view of a live chat the interim tracker may touch — the structural
  * subset of the bridge's ChatAgent carrying the interim state. The storage
  * itself stays on ChatAgent: the inbound pipeline's residue reset, the /stop

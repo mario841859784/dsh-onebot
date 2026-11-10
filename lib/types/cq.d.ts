@@ -42,7 +42,13 @@ export interface ParsedMessage {
  * @returns unescaped value.
  */
 export declare function cqUnescape(value: string): string;
-/** Map a QQ face id to an emoji, with a fallback for unknown ids. */
+/** Set the face presentation style (T6 PR port faceStyle 配置；非法值回落 'name'). */
+export declare function setFaceStyle(style: string | undefined | null): void;
+/** The built-in official QQ face name table (T6 PR port；测试/工具面). */
+export declare function faceNames(): Readonly<Record<string, string>>;
+/** Map a QQ face id to its presentation text, with a fallback for unknown ids.
+ * faceStyle='name'（默认）：官方名「[微笑]」，表外 id 降级「[表情id]」；
+ * faceStyle='emoji'：旧 emoji 对照表，表外 id 降级 😀。 */
 export declare function faceToEmoji(id: string): string;
 /**
  * Detect explicit @bot / @all only; a reply segment never implies an @.
@@ -52,7 +58,16 @@ export declare function faceToEmoji(id: string): string;
  * @param botQQ - configured bot QQ id ('' when unset).
  * @returns whether this message explicitly mentions the known bot.
  */
-export declare function detectExplicitMention(segments: OneBotSegment[] | undefined, raw: string, selfId: string, botQQ: string): boolean;
+export declare function detectExplicitMention(segments: OneBotSegment[] | undefined, raw: string, selfId: string, botQQ: string, atAllCounts?: boolean): boolean;
+/**
+ * T1 (PR port): 唤醒词命中判定——只认消息开头命中。用 startsWith 而非
+ * includes：消息正文里偶然提到唤醒词（如有人在句中写到唤醒词）不再误触；
+ * 大小写不敏感、两侧空白忽略；空词表恒 false。
+ * @param text - 消息纯文本（segmentText 结果）。
+ * @param names - 唤醒词表（管理员档或成员档）。
+ * @returns 是否以任一唤醒词开头。
+ */
+export declare function detectWakeName(text: string, names: readonly string[]): boolean;
 /**
  * Detect explicit mentions or a reply with a known bot author, fail-closed.
  * A standard OneBot reply contains only an id; the inbound group gate must
@@ -61,9 +76,13 @@ export declare function detectExplicitMention(segments: OneBotSegment[] | undefi
  * @param raw - CQ string fallback.
  * @param selfId - learned bot QQ id ('' when unknown).
  * @param botQQ - configured fallback bot QQ id.
+ * @param options - T1 (PR port) 引用即叫/@全体即叫 开关（缺省=上游语义）。
  * @returns false for replies whose author cannot be determined synchronously.
  */
-export declare function detectMention(segments: OneBotSegment[] | undefined, raw: string, selfId: string, botQQ: string): boolean;
+export declare function detectMention(segments: OneBotSegment[] | undefined, raw: string, selfId: string, botQQ: string, options?: {
+    reply?: boolean;
+    atAll?: boolean;
+}): boolean;
 /**
  * Drop the bot's own @ from the start of parsed text. Goes by the first segment,
  * not a text prefix: with bot 10002, "@100021" is either @10002 followed by "1"

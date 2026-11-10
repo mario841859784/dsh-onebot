@@ -30,6 +30,8 @@ export interface CommandChatView {
         text: string;
         sentAt: number;
     }>;
+    /** T1 (PR port): 排队回合的角色队列（/stop 同步清空，防角色位残留）。 */
+    pendingTurnRoles: UserRole[];
 }
 /** The bridge capabilities the command surface may touch. Deliberately
  * narrower than BridgeDeps: handlers get the outbound send path, the
@@ -52,7 +54,9 @@ export interface CommandContext {
     getChat(chatId: ChatId): CommandChatView | undefined;
     hasChat(chatId: ChatId): boolean;
     /** Registry capabilities the commands legitimately trigger. */
-    resetChat(chatId: ChatId): Promise<void>;
+    resetChat(chatId: ChatId, options?: {
+        withTail?: boolean;
+    }): Promise<void>;
     dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string): Promise<void>;
     /** T3 (P2): /stop — 显式终止该聊天的超时补发跟踪（pending 条目转
      * cancelled，其他聊天不受影响）。无补发条目时为 no-op。 */

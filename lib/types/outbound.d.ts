@@ -13,6 +13,58 @@ export interface OutboundSegment {
  * segments before the wire; non-text segments pass untouched.
  */
 export declare function filterBlankTextSegments(segments: OutboundSegment[]): OutboundSegment[];
+/**
+ * T1 (PR port): 清洗出站文本里夹带的 ACP 元数据残渣——宿主 ACP 代理的
+ * `<acp tokens="…" type="…" time="…">mNNNNN` 标记头与成对 `</acp>` 标签
+ * 偶尔漏进模型正文；上游 stripBoundaryLeakage 覆盖宿主自有元信息行，
+ * 这两条 ACP 形态是它未覆盖的面。
+ */
+export declare function stripAcpNoise(text: string): string;
+/** T1 (PR port): 逐 text 段清洗 ACP 残渣；无变化的段原样返回（保持引用
+ * 相等），清空后的空白文本段由 sendMsg 里的 filterBlankTextSegments 兜底。 */
+export declare function sanitizeAcpSegments(segments: OutboundSegment[]): OutboundSegment[];
+/**
+ * T2 (PR port): 生成侧陷进复读时的闸。
+ * 症状：正文里同一句垫话连着几千遍，一条消息几万字、上万输出 token 全砸在
+ * 这上头；重复会自己喂自己——写一次它就进了上下文，下一句更可能还写它。
+ * 判据只砍「连着」重复的：行内同一小段（1–6 字）连着 8 次以上砍成 1 次，
+ * 或整行完全一样（允许夹空行）连着 5 行以上只留第一次；正常语气词
+ * （哈哈哈、好好好）到不了这个数。短文（<300 字）不动，收尾折叠空行。
+ */
+export declare function collapseRepeats(raw: string): string;
+/**
+ * T2 (PR port): 模型把入站消息原文（<user_message> 信封）复读进正文的闸。
+ * 形态多是尾巴上挂一段「正文\n\n[HH:MM]<user_message …>原话</user_message>」。
+ * 只砍复读段、正文留着：成对的标签块整块删（连同行首 [HH:MM] 前缀）；
+ * 残缺的（只有开头没闭合）从它所在行的行首截到结尾；整条只剩复读时才
+ * 返回空串。不含 user_message 时原样返回（不引入多余的 trim 副作用）。
+ */
+export declare function cutLeakedEnvelope(raw: string): string;
+/**
+ * T2 (PR port): 出站清洗的单一入口——sendToChat 主路径（outboundDefenseEnabled
+ * 开启时）与 qq_send_text 工具共用这一个函数，避免贡献者实现里主路径与工具
+ * 两侧各抄一份、规则漂移的问题。次序固定：replacement 字符剥除 → 复读闸 →
+ * 信封闸 → 「系统提示」整段截断 → 半截 DSML/收尾标记与独立 URL 行剥除。
+ * 不做 [[…]] 标记清理（reply 标记要在 sendToChat 里先抽取，次序不能被打断）。
+ */
+export declare function cleanOutboundText(raw: string): string;
+/**
+ * T2 (PR port): 引用/转发标记写歪时的兜底——只删标记本身，不动正文。
+ * 在 sendToChat 里排在 [[reply:…]] 抽取与 [[qq_forward]] 块抽取之后。
+ */
+export declare function scrubLeftoverMarkers(raw: string): string;
+/**
+ * T2 (PR port): 整条只剩括号旁白（如「（嗯……）」）就不要发。
+ * 判据：把（…）/(…)/【…】括号块与空白全剥掉后什么都不剩、且原文非空。
+ * 是否真正拦截由 asideOnlySilentEnabled 开关决定（默认关闭不拦）。
+ */
+export declare function isAsideOnly(text: string): boolean;
+/**
+ * T2 (PR port): 正文里的 [[at:QQ号]] 拆成真正的 @ 段——文本里写 @ 只是字符，
+ * 成不了 at 段。无命中时返回单个 text 段（调用方在开关关闭时直接走原路径，
+ * 不经过本函数）。
+ */
+export declare function splitAtSegments(text: string): OutboundSegment[];
 /** Options for an explicit outbound send (from tools). */
 export interface SendOptions {
     replyTo?: string;
@@ -100,6 +152,13 @@ export interface OutboundContext {
         actionRatePerDay: number;
         /** W2-③ proactive-write audit switch (default on). */
         actionAuditEnabled: boolean;
+        /** T2 (PR port): 出站防御总开关——cleanOutboundText 复读/信封清洗、
+         * 残留标记兜底与 [[at:QQ]] 拆段都挂在这一个开关下；absent/false =
+         * 上游 0.9.19 原始行为（逐字节等价）。 */
+        outboundDefenseEnabled: boolean;
+        /** T2 (PR port): 纯括号旁白（如「（嗯……）」）静默丢弃的独立开关；
+         * absent/false = 照常发送。 */
+        asideOnlySilentEnabled: boolean;
     }>;
 }
 /** W2-③: default bridge-wide proactive-write caps, aligned with the MIT

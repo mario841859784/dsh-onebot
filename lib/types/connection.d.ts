@@ -75,6 +75,8 @@ export declare class OneBotConnection {
     onMessage: (event: OneBotEvent) => void;
     /** Meta event handler (self_id learning). */
     onMeta: (event: OneBotEvent) => void;
+    /** Notice event handler（戳一戳唤醒门，T1 PR port）；其余 notice 仍忽略。 */
+    onNotice: (event: OneBotEvent) => void;
     /** Connection-state callback. */
     onStatus: (connected: boolean) => void;
     /**

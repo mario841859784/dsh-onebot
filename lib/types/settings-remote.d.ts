@@ -50,21 +50,41 @@ import type { WorkspaceRegistryLike } from './bridge.js';
 export declare const ENTRY_ID = "dsh-onebot";
 /** Typert Remote 命名空间 = cordis 服务键（T1 §4）。 */
 export declare const NAMESPACE = "onebotSettings";
-/** 快照固定值：29 键均为插件级热重启生效（T1 §5；W1/W2 新增 6 布尔键同粒度）。 */
+/** 快照固定值：全部键均为插件级热重启生效（T1 §5；T5 扩到 66 键、T7 扩到 69 键同粒度）。 */
 export declare const REMOTE_EFFECT = "restart";
-/** 设置页 UI 四组 29 键（T1 §4 + T9 autoSteerPolicy + T3 deferredTimeoutMs；与 src/index.ts Config schema 一一对应）。
- *  W6：permissions/behavior 三组 19 键保持不动，W1/W2 的 6 个布尔键独立成
- *  「diagnostics（诊断）」组——它们全部默认关（除 actionAuditEnabled 默认开）、
- *  属观测/调试面，与连接权限行为组的使用频率与风险等级都不同，独立分组让
- *  「默认全关的调试开关」一眼可辨（对齐竞品 v0.6.0 面板的开关分组话术）。
- *  W7：connection 组追加 workspacePath（会话默认工作区；schema 已有该键
- *  src/index.ts:287，本批次起入面板白名单，键序追加在组尾）。 */
+/** 设置页 UI 六组 71 键（T5：键表对齐贡献者 0.9.19 版——connection 14 /
+ *  permissions 15 / behavior 10 / session 5 / media 15 / diagnostics 7；T6 media
+ *  组尾增 gifFramesEnabled、T7 behavior 组尾增 inboxQueueEnabled/
+ *  inboxQueueDelayMs、T11 组尾增 sidebarEntryEnabled、T24 behavior 组尾增
+ *  titleSyncEnabled；0.10.0 重排：connection 6 键（通道配置）、
+ *  workspacePath/groupWorkspacePath/forceSessionId/dmPromptFile/groupPromptFile
+ *  归 session（6→10）、allowPrivateHosts 归 media（17）、ignoreSelf/
+ *  sidebarEntryEnabled 归 behavior（12→14）；与
+ *  src/index.ts Config schema 一一对应，未入库功能的键
+ *  先行进表、schema 定义随后批接上，见 PENDING_SCHEMA_KEYS）。T1 四组 29 键
+ *  仍为前四组前缀，旧面板（lib/client.js 手写真相源，T8 重写）继续可渲染。
+ *  分组沿用 W6 取舍：diagnostics 组 = 观测/调试面开关；session/media 两组来自
+ *  贡献者键表（T4 提示词/记忆文件、T5 媒体限额键的 UI 归属）。gifFramesEnabled
+ *  为本仓 T6 批次自有开关（贡献者无对应键），归入 media 组。 */
 export declare const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>>;
-/** schema 默认值（T1 §4 表；摘自 src/index.ts:171-245），快照生效值的底层。 */
+/** schema 默认值（摘自 src/index.ts Config schema 默认值），快照生效值的底层。
+ *  T5：默认值翻转 10 处（用户裁定①，含安全面项 allowPrivateHosts/injectEnabled/
+ *  injectDryRun）+ 键表扩到 66 键（贡献者 0.9.19 批次）。
+ *  与贡献者取值的偏差（本仓已拍板事实优先）：dmPromptFile/groupPromptFile 默认
+ *  ''（T4 拍板默认关，贡献者为 ~/.dsh 路径）、memoryFilesEnabled 默认 false
+ *  （同 T4，贡献者 true）、notices 无 newSession 键（我们 schema 无该键）。 */
 export declare const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>>;
+/** notices 对象的合法子键（我们 schema 无贡献者的 newSession，故 5 键）。 */
+export declare const NOTICE_KEYS: readonly string[];
+/** T7 键表先行、schema 定义后批接上的键（T7 落地前，完整性测试豁免）。
+ *  faceStyle 已随 T6 官方表情名表批次转正（src/index.ts schema 已定义）。 */
+export declare const PENDING_SCHEMA_KEYS: readonly string[];
 /** 快照返回侧脱敏的键（T1 §3 敏感字段行；写入侧明文落盘属宿主既有行为）。 */
 export declare const SECRET_KEYS: readonly string[];
-/** 全部 29 键（校验与快照的唯一键集；6 枚举 + 4 数字 + 11 布尔 + 5 字符串 + 3 字符串数组）。 */
+/** 全部 71 键（校验与快照的唯一键集；9 枚举 + 12 数字 + 26 布尔 + 13 字符串 +
+ *  10 字符串数组 + notices 单独通道；T6 新增 gifFramesEnabled、T7 新增
+ *  inboxQueueEnabled/inboxQueueDelayMs、T11 新增 sidebarEntryEnabled、T24 新增
+ *  titleSyncEnabled）。 */
 export declare const ALL_KEYS: readonly string[];
 /** OnebotSettingsSnapshot（T1 §3 快照结构）。 */
 export interface OnebotSettingsSnapshot {
@@ -72,7 +92,7 @@ export interface OnebotSettingsSnapshot {
     revision: number;
     /** dsh-onebot 条目 fiber 是否 active（fiber.state === 2，同 configEditor.edit 的活性判据）。 */
     entryActive: boolean;
-    /** 28 键生效值；accessToken 脱敏为 ''。 */
+    /** 71 键生效值；accessToken 脱敏为 ''。 */
     config: Record<string, unknown>;
     /** 脱敏键标记：明文是否已配置。 */
     secrets: Array<{
@@ -125,11 +145,13 @@ export interface WorkspaceListResult {
  *  校验——与 requireConfigEditor 同款「运行期再校验形状」风格，但绝不抛错：
  *  缺席/形状不符/list() 失败都归一为 unavailable 空列表）。 */
 export declare function listWorkspaces(registry: WorkspaceRegistryLike | undefined): WorkspaceListResult;
-/** 28 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
+/** 66 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
 export declare function effectiveConfig(raw: Record<string, unknown>): Record<string, unknown>;
-/** updateSettings 入参校验（T1 §4：28 键的任意子集，扁平 JSON）。未知键整单
- *  拒绝（不静默丢弃）；类型/枚举不符拒绝；具体取值合法性交由宿主 schemastery
- *  校验 + reconcile 失败自动回滚兜底（T1 §5）。 */
+/** updateSettings 入参校验（T1 §4：ALL_KEYS 任意子集，扁平 JSON）。未知键整单
+ *  拒绝（不静默丢弃）；类型/枚举不符拒绝；notices 走单独白名单通道（T5 对齐
+ *  贡献者 0.9.19：子键须在 NOTICE_KEYS 内、值须 boolean|string，通过后作为
+ *  增量对象原样入 clean——未提及的子键由宿主 schemastery 按默认值补齐）；具体
+ *  取值合法性交由宿主 schemastery 校验 + reconcile 失败自动回滚兜底（T1 §5）。 */
 export declare function validatePatch(patch: unknown): Record<string, unknown>;
 /** getSettings 实现（descriptor 方法体共用；descriptor 参数 0 个）。 */
 export declare function getSettings(editor: ConfigEditorLike, state: RevisionState): OnebotSettingsSnapshot;

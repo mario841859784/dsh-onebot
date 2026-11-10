@@ -53,6 +53,7 @@ export declare const TRACE_REASONS: {
     readonly inboundDmBlocked: "私聊用户不在允许名单，已忽略";
     readonly inboundGroupBlocked: "群聊不在允许名单，已忽略";
     readonly inboundUnmentioned: "群聊未 @ 机器人，已忽略";
+    readonly inboundWakeName: "群聊唤醒词命中，视为 @机器人";
     readonly inboundReplyLookupFailed: "引用消息查询失败或响应为空，未唤醒机器人";
     readonly inboundReplyAuthorUnknown: "引用消息作者缺失，未唤醒机器人";
     readonly inboundReplyOtherAuthor: "引用消息作者不是机器人，已忽略";

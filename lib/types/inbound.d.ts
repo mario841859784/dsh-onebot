@@ -41,6 +41,9 @@ export interface NormalizedInbound {
      * sanitized; the pipeline's M3-D5 identity whitelist sanitizes it before it
      * reaches the prefix, the boundary attribute or lastNickname. */
     nickname: string;
+    /** T1 (PR port): OneBot event.time（Unix 秒）。上游 v1 把它丢了，导致
+     * 时间戳前缀永远取处理时刻——拉取旧消息时全错；0 = 事件未带时间。 */
+    time: number;
 }
 /** The get_msg fields needed to verify a reply author and expand its text. */
 export interface QuotedMessageData {
@@ -148,6 +151,16 @@ export interface InboundContext {
     config: Pick<BridgeConfig, 'botQQ' | 'ignoreSelf' | 'requireMention' | 'rateLimitPerMinute' | 'restrictedMemberPrefix' | 'maxInboundFileBytes' | 'notices'> & Partial<{
         /** W2-② (chatId, message_id) dedup window in seconds; 0 disables. */
         dedupWindowSeconds: number;
+        /** T1 (PR port): 引用即叫——回复任意消息也算 @机器人（跳过作者核实）。 */
+        replyCountsAsMention: boolean;
+        /** T1 (PR port): @全体即叫——@全体成员 也算 @机器人。 */
+        atAllCountsAsMention: boolean;
+        /** T1 (PR port): 管理员/成员唤醒词（消息开头命中即视为 @机器人）。 */
+        wakeNamesAdmin: string[];
+        wakeNamesMember: string[];
+        /** T6 (PR port GIF 分帧)：开关默认 false——关闭时gifFramesNote 不触碰
+         *  文件系统，行为与上游逐字节等价。 */
+        gifFramesEnabled: boolean;
     }>;
 }
 /** W2-②: default (chatId, message_id) dedup window, aligned with the MIT

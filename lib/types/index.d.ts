@@ -12,7 +12,7 @@ import type { Context as CordisContext } from '@deepseek-ai/cordis';
 import type SystemPrompt from '@deepseek-ai/dsh-system-prompt';
 import type ToolRuntime from '@deepseek-ai/dsh-tools';
 import type { AgentRegistry } from '@deepseek-ai/dsh-agent';
-import type { SessionStore } from '@deepseek-ai/dsh-session';
+import type { Session, SessionStore } from '@deepseek-ai/dsh-session';
 import type { ModelSelection } from '@deepseek-ai/dsh-agent';
 import type Z from '@deepseek-ai/schemastery';
 import type { OneBotEvent } from './connection.js';
@@ -106,9 +106,30 @@ type Context = CordisContext & {
             }>;
         }): Promise<boolean>;
     };
+    /** T24/T27 (PR port 会话标题同步)：宿主 dsh-session-title 服务（dsh-base
+     * 标准 include 集自带）。有意不进 inject 列表——cordis inject 是硬依赖
+     * （缺任一注入服务时 fiber 恒 INACTIVE、apply 不执行，宿主摘除标题插件会
+     * 导致整个插件静默不加载）。运行时经 resolveSessionTitle 按名容错读取：
+     * 服务缺失=undefined=桥接侧跳过标题同步。 */
+    sessionTitle?: {
+        /** 当前标题快照；undefined = 尚无标题；source.kind 'user' = 用户钉住。 */
+        get(session: Session): {
+            source?: {
+                kind?: string;
+            };
+        } | undefined;
+        /** 触发 provider 重新生成标题（语义=故意解除钉住——钉住态绝不调）。 */
+        refresh(session: Session): Promise<unknown>;
+    };
 };
 export declare const name = "dsh-onebot";
 export declare const inject: string[];
+/** T24/T27: 容错读取宿主 dsh-session-title 服务（与 userQuestions 同手法）。
+ * 按名从 ctx 读取（cordis 下服务未注册时 ctx.get 返回 null/undefined，宿主
+ * 摘除 dsh-session-title 亦然），取不到或读取抛错一律归一为 undefined；
+ * 桥接侧对 undefined 跳过标题同步。绝不走 inject——cordis inject 是硬依赖，
+ * 缺服务时 fiber 恒 INACTIVE，整个插件会静默不加载。 */
+export declare function resolveSessionTitle(ctx: unknown): import('./bridge.js').SessionTitlePort | undefined;
 /** Plugin configuration (validated by schemastery). */
 export interface Config {
     mode: 'reverse' | 'forward';
@@ -120,6 +141,22 @@ export interface Config {
     reconnectMaxAttempts: number;
     botQQ: string;
     requireMention: boolean;
+    /** T1 (PR port): 戳一戳唤醒开关；false = poke notice 一律忽略。 */
+    pokeEnabled: boolean;
+    /** T1 (PR port): 引用即叫——群聊回复任意消息（不限机器人）也算 @机器人。 */
+    replyCountsAsMention: boolean;
+    /** T1 (PR port): @全体即叫——群聊 @全体成员 也算 @机器人。 */
+    atAllCountsAsMention: boolean;
+    /** T1 (PR port): 管理员唤醒词；群聊消息以任一词开头即视为 @机器人。 */
+    wakeNamesAdmin: string[];
+    /** T1 (PR port): 成员唤醒词；群聊消息以任一词开头即视为 @机器人。 */
+    wakeNamesMember: string[];
+    /** T6 (PR port GIF 分帧)：开启后入站 .gif 附件旁附一张四格分帧长图；默认关闭，
+     *  关闭时不装依赖也不触碰文件系统（行为与上游逐字节等价）。 */
+    gifFramesEnabled: boolean;
+    /** T6 (PR port 官方表情名表)：[CQ:face] 的呈现风格：name=官方名（默认，
+     *  如「[微笑]」）；emoji=旧 emoji 对照表。 */
+    faceStyle: 'name' | 'emoji';
     /** Unknown slash-command handling: intercept（默认）=拦截并给建议；passthrough=透传给模型。 */
     unknownCommand: 'intercept' | 'passthrough';
     /** T2 (P1): 任务运行中的新消息处理策略：queue=排队（默认）；steer=插话进当前任务。 */
@@ -128,6 +165,12 @@ export interface Config {
     autoSteerPolicy: 'admin' | 'all';
     /** T3 (P2): 等待模型回复超时阈值（毫秒）——超时后登记补发跟踪、回合完成后向原聊天补发最终文字；0=关闭。 */
     deferredTimeoutMs: number;
+    /** T7 (PR port 入站连发合并)：入站排队+连发合并开关；默认关（关侧与上游
+     *  逐字节等价）。开启后每会话一条串行链，同会话紧挨的消息并成一条投递。 */
+    inboxQueueEnabled: boolean;
+    /** T7 (PR port 入站连发合并)：合并窗口毫秒数（最后一条进来后等这么久，
+     *  首条起最多 3000ms 封顶）；默认 600。仅在 inboxQueueEnabled 开启时生效。 */
+    inboxQueueDelayMs: number;
     dmPolicy: 'open' | 'allowlist' | 'disabled';
     groupPolicy: 'open' | 'allowlist' | 'disabled';
     allowFrom: string[];
@@ -187,6 +230,24 @@ export interface Config {
         memberTools: 'none' | 'all';
     };
     workspacePath: string;
+    /** T3 (PR port 群工作区)：群聊会话的默认工作区目录；空串=现行为。 */
+    groupWorkspacePath: string;
+    /** T3 (PR port 退休会话自动恢复)：退休会话自动重绑开关；false=默认关。 */
+    sessionAutoRecover: boolean;
+    /** T4 (PR port 提示词文件)：私聊（dm:）会话的附加设定文件路径（~/ 展开）；
+     * 空 = 不注入（默认）。 */
+    dmPromptFile: string;
+    /** T4 (PR port 提示词文件)：群聊（group:）会话的附加设定文件路径；空 = 不注入（默认）。 */
+    groupPromptFile: string;
+    /** T4 (PR port 记忆文件)：记忆文件开关（默认关；只喂私聊）。 */
+    memoryFilesEnabled: boolean;
+    /** T4 (PR port 记忆文件)：记忆文件路径列表。 */
+    memoryFiles: string[];
+    /** T4 (PR port 上下文尾巴)：/new 带上一会话最后几句（默认关）。 */
+    chatTailsEnabled: boolean;
+    /** T24 (PR port 会话标题同步)：QQ 用户消息派发回合后触发宿主会话标题
+     * 刷新（每条消息一次）；用户钉住的标题永不覆盖；默认关。 */
+    titleSyncEnabled: boolean;
     inboundFileMaxBytes: number;
     /** @deprecated D4a alias of inboundFileMaxBytes; honored for one release. */
     maxInboundFileBytes?: number;
@@ -206,6 +267,11 @@ export interface Config {
     actionRatePerDay: number;
     /** W2-③: proactive-write audit jsonl (mediaDir/qq-actions.log). */
     actionAuditEnabled: boolean;
+    /** T2 (PR port): 出站防御总开关——复读/信封清洗、残留标记兜底与
+     * [[at:QQ]] 拆段；默认 false（上游 0.9.19 原始行为）。 */
+    outboundDefenseEnabled: boolean;
+    /** T2 (PR port): 纯括号旁白（如「（嗯……）」）静默丢弃；默认 false。 */
+    asideOnlySilentEnabled: boolean;
     /** W1: decision-trace jsonl (mediaDir/qq-trace.jsonl); default off — zero
      * file, zero behavior difference vs 0.6.0. */
     traceEnabled: boolean;

@@ -85,6 +85,14 @@ export interface BridgeConfig {
         memberTools?: 'none' | 'all';
     };
     workspacePath: string;
+    /** T3 (PR port 群工作区)：群聊 chat 的会话默认工作区目录——配置后 group:
+     * 前缀 chat 的会话落在群独立目录（per-chat /workspace override 仍最优先，
+     * 私聊不受影响）；absent/空串 = 现行为。 */
+    groupWorkspacePath?: string;
+    /** T3 (PR port 退休会话自动恢复)：chat 绑定会话在宿主侧已退休/不存在时，
+     * 扫描宿主 sessions 目录找该 chat 可用的最新会话自动重绑；absent/false =
+     * 关（默认，维持上游默认行为），开启后探测失败仍静默降级为原行为。 */
+    sessionAutoRecover?: boolean;
     /** Max inbound file bytes fetched via QQ direct link / base64 (0 = no cap). */
     maxInboundFileBytes: number;
     /** B8c: chats idle longer than this many days are evicted on the next
@@ -110,6 +118,49 @@ export interface BridgeConfig {
      * 最终文字（「（超时补发）」前缀，走既有 outbound 管线）；absent →
      * 600000（保守 10 分钟），0 = 关闭超时补发。 */
     deferredTimeoutMs?: number;
+    /** T4 (PR port 提示词文件)：私聊（dm:）会话的附加设定文件路径（~/ 展开；
+     * 内容进 system prompt 的「本会话附加设定」段）；absent/空 = 不注入。 */
+    dmPromptFile?: string;
+    /** T4 (PR port 提示词文件)：群聊（group:）会话的附加设定文件路径；absent/空 = 不注入。 */
+    groupPromptFile?: string;
+    /** T4 (PR port 记忆文件)：记忆文件开关（默认关，裁定口径）；只对私聊生效。 */
+    memoryFilesEnabled?: boolean;
+    /** T4 (PR port 记忆文件)：记忆文件路径列表（~/ 展开；单文件 8000 字符、
+     * 总量 12000 字符截断）。 */
+    memoryFiles?: readonly string[];
+    /** T4 (PR port 上下文尾巴)：/new 把上一会话最后几句带进新会话（默认关，
+     * 裁定口径；落盘 mediaDir/chat-tails.json）。 */
+    chatTailsEnabled?: boolean;
+    /** T7 (PR port 入站连发合并)：入站排队+连发合并开关（默认关，裁定口径）；
+     * absent/false = 不排队不合并，handleInbound 走既有路径，与上游逐字节
+     * 等价。开启后每会话一条串行链，同会话紧挨的消息并成一条投递（斜杠命令
+     * 不合并、注入消息不排队不合并直接串行），全局积压 50 条超限丢弃并 warn。 */
+    inboxQueueEnabled?: boolean;
+    /** T7 (PR port 入站连发合并)：合并窗口毫秒数——最后一条进来后等这么久再
+     * 投递，从首条算起最多 3000ms 封顶；absent → 600。仅在 inboxQueueEnabled
+     * 开启时生效（开关与延迟设置项同一配置组）。 */
+    inboxQueueDelayMs?: number;
+    /** T24 (PR port 会话标题同步)：QQ 用户消息派发回合后触发宿主会话标题刷新
+     * （每条消息一次，等价宿主自动标题 all-prompts 的原行为——QQ 派发的
+     * source.kind 'plugin:dsh-onebot' 不触发宿主 onUserMessage，本开关补上）；
+     * absent/false = 关（默认，裁定口径）。用户在宿主里钉住的标题
+     * （snapshot.source.kind==='user'）永不覆盖；服务未部署或刷新失败静默
+     * 降级（warn 日志），绝不冒泡进派发主流程。 */
+    titleSyncEnabled?: boolean;
+}
+/** T24 (PR port 会话标题同步)：宿主 dsh-session-title 服务的最小结构面
+ * （不 import 宿主包类型——宿主包不在本插件构建/测试依赖里，同
+ * userQuestions 的结构化复刻手法）。get() 读当前标题快照（undefined = 尚
+ * 无标题；source.kind 'user' = 用户在宿主里手动钉住，refresh 的语义是故意
+ * 解除钉住——钉住态绝不调）；refresh() 触发 provider 重新生成标题。
+ * 服务未部署（宿主摘除 session-title 插件）时取不到 = 同步跳过，不崩。 */
+export interface SessionTitlePort {
+    get(session: Session): {
+        source?: {
+            kind?: string;
+        };
+    } | undefined;
+    refresh(session: Session): Promise<unknown>;
 }
 /** W1 trace/config extensions: the observability knobs ride as optional
  * members (same pattern as the W2-②③ gate keys) so the declared BridgeConfig
@@ -256,6 +307,12 @@ export interface BridgeDeps {
      * assemblies / unexpected hosts) = answer interception stays disabled and
      * every reply flows into the conversation normally. */
     userQuestions?: UserQuestionsPort | undefined;
+    /** T24/T27: the host session-title service (dsh-session-title). Read by
+     * name via a tolerant lookup in index.ts (deliberately NOT a cordis inject
+     * dependency — inject is hard, a missing service would keep the whole
+     * plugin from loading). Absent (title plugin removed / test assemblies) =
+     * title sync is skipped — no crash, no load failure. */
+    sessionTitle?: SessionTitlePort | undefined;
     config: BridgeConfig & TraceBridgeConfig;
     policy: AccessPolicyConfig;
     /** W1/T5 health: the ALREADY-redacted plugin config snapshot (secrets
@@ -285,6 +342,15 @@ export declare class ChatBridge {
     /** T3 (P2): the deferred-delivery tracker (超时补发) — timeout timers, the
      * JSONL registry, bounded send retries and restart recovery. */
     private readonly deferred;
+    /** T4 (PR port 提示词文件/记忆文件)：dm/group 提示词文件与记忆文件的
+     * 读取与组装（mtime 失效缓存；记忆只喂私聊）。 */
+    private readonly prompts;
+    /** T4 (PR port 上下文尾巴)：/new 前的上一会话尾巴（防抖落盘 mediaDir/
+     * chat-tails.json；默认关）。 */
+    private readonly tails;
+    /** T7 (PR port 入站连发合并)：入站排队+合并调度器；开关关闭（默认）时为
+     * undefined，handleInbound 保持既有路径（上游逐字节等价）。 */
+    private readonly inboundQueue;
     /** T4 (P3): the bounded registry of recent fault references — every minted
      * QQ-CONN-/MF- number is recorded here for the /healthcheck report and the
      * diagnostics archive file name. */
@@ -423,6 +489,20 @@ export declare class ChatBridge {
      * the base text for /retry, queues the initiator's turn role, and applies
      * per-chat /goal + /plan prefixes. */
     private dispatchFollowup;
+    /** T24 (PR port 会话标题同步)：每条 QQ 用户消息派发回合后，让宿主标题
+     * 服务为该会话重新生成标题（频率=每条消息，等价宿主 all-prompts 自动
+     * 标题的原行为——QQ 派发的 source.kind 'plugin:dsh-onebot' 不进宿主
+     * onUserMessage，QQ 会话原本永远拿不到自动标题）。门控与降级：
+     * - titleSyncEnabled 关（默认）→ 不做任何事（零行为差异）；
+     * - 服务按名可选读取（deps.sessionTitle 为 undefined，含宿主未部署标题
+     *   插件）→ 跳过，不崩、不影响加载；
+     * - 钉住态（snapshot.source.kind==='user'，用户在宿主里手动命名）→
+     *   绝不 refresh——refresh 的语义就是故意解除钉住；跨进程竞态（refresh
+     *   在途时用户在宿主 rename）由宿主 supersede 语义化解——rename 会中止
+     *   该会话 in-flight 的标题生成，迟到的 provider 结果不提交；
+     * - refresh 后台执行不 await 主流程；get/refresh 同步抛或拒绝都只
+     *   warn（标题是辅助功能，失败静默降级，不冒泡进派发主流程）。 */
+    private syncSessionTitle;
     /** Prepend per-chat context directives (/goal reminder) to a turn's user
      * text. Plan mode is host-owned now (/plan forwards to the host command),
      * so the agent's own plan-mode instruction section governs planning. */
@@ -575,6 +655,13 @@ export declare class ChatBridge {
      * file name carries the trigger reference — the explicit command argument,
      * or the most recent recorded fault reference when omitted. */
     private exportDiagnosticsPackage;
+    /**
+     * T1 (PR port): 非插件 dispatch 的回合（后台/Web 输入，pendingTurnRoles
+     * 队列为空）的回合角色判定。旧实现一律 fail-closed 为 member，管理员的
+     * Web 回合也被当 member，qq_* 工具全拒；现对私聊按管理员名单判档，群聊
+     * 维持 fail-closed member（群成员身份无法从宿主侧验证）。
+     */
+    private hostTurnRole;
     private onSessionEvent;
     /** W1: the trace scope for one chat's session events, resolved through the
      * chat-level association table; undefined when tracing is off or the chat

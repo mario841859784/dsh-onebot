@@ -159,8 +159,12 @@ export interface RegistryDeps {
     workspaceRegistry: WorkspaceRegistryLike | undefined;
     agentPresets: AgentPresetsLike | undefined;
     defaultModel: (() => ModelSelection | undefined) | undefined;
+    /** DSH home directory (host's $DSH_HOME / ~/.dsh). Only used by the
+     * optional 退休会话自动恢复 probe to locate `<dshHome>/sessions`;
+     * undefined falls back to the same env/home resolution index.ts uses. */
+    dshHome?: string;
     /** The only config fields the registry reads. */
-    config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'agentPresetGroup' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>;
+    config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'agentPresetGroup' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays' | 'groupWorkspacePath' | 'sessionAutoRecover'>;
     log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void;
     /** Bridge stop flag (guards the resume loop). */
     isStopping(): boolean;
@@ -171,8 +175,29 @@ export interface RegistryDeps {
     onChatRemoved(chat: ChatAgent): void;
     /** Register the QQ platform prompt section + qq_* tools on a new agent's
      * own scope — bridge-owned because the tools call back into the bridge. */
-    installChannelScope(agentCtx: Context): void;
+    installChannelScope(agentCtx: Context, chatId: ChatId): void;
 }
+/**
+ * T3 port (上游 0.9.19 退休会话自动恢复): probe the host's session
+ * persistence root for the newest still-usable session id of one chat.
+ *
+ * The probe is intentionally standalone and read-only: any failure
+ * (missing root, unreadable dir, unexpected layout) resolves to undefined
+ * so callers degrade silently to the pre-port behavior.
+ *
+ * Host layout (verified against dsh 0.2.2 dsh-session-persistence-jsonl,
+ * replacing the contributor's flat-layout assumption):
+ *   `<root>/<projectKey(cwd)>/<encodeSegment(sessionId)>/session.v4.jsonl[.zstd]`
+ * — two directory levels, with the generation log file named
+ * `session.v<n>.jsonl` (optionally `.zstd`-compressed; v0 was plain
+ * `session.jsonl`). A session dir without a log file is not usable.
+ *
+ * Note on encoding: sessionIdForChat only emits [A-Za-z0-9-], which the
+ * host's encodeSegment keeps verbatim, so the scanned session dir names
+ * can be matched against the raw chat session-id prefix (bare id or
+ * suffixed `<prefix>-xxxx` from create-collision healing).
+ */
+export declare function findLatestSessionForChat(sessionsRoot: string, sessionIdPrefix: string): Promise<string | undefined>;
 /**
  * The chat↔session registry: dual index, persistence pair, per-chat settings
  * and the shared create/resume assembly. Created by the ChatBridge
@@ -246,6 +271,16 @@ export declare class ChatRegistry {
     private restoreEvictedSettings;
     /** Resume persisted chats from the mapping file (best-effort). */
     loadMapping(): Promise<void>;
+    /** T3 port (上游 0.9.19, 退休会话自动恢复): resolve the sessions root
+     * for the auto-recovery probe — the injected dshHome when the bridge
+     * provides one, else the same $DSH_HOME / ~/.dsh resolution index.ts
+     * uses (duplicated here because registry must not import index.ts). */
+    private sessionsRoot;
+    /** T3 port (上游 0.9.19, 退休会话自动恢复): probe the host persistence
+     * root for the newest usable session of one chat. Independent probe +
+     * silent degradation: any failure resolves to undefined and the caller
+     * keeps the pre-port behavior. */
+    private findRecoverableSession;
     /** T4 (#15): quarantine an unparsable/structurally invalid mapping file —
      * warn, copy it to `<chat-sessions.json>.bak` (an existing .bak is never
      * overwritten: the earliest post-corruption copy wins), and leave the load
@@ -347,6 +382,11 @@ export declare class ChatRegistry {
      * Effective workspace directory for a chat's sessions: the per-chat
      * /workspace override when set, else the configured workspacePath, falling
      * back to the host process cwd.
+     *
+     * T3 port (上游 0.9.19 群工作区): a group chat whose groupWorkspacePath
+     * is configured gets its own workspace directory — the per-chat /workspace
+     * override still wins, private chats and unconfigured deployments behave
+     * exactly as before.
      */
     effectiveCwd(chatId?: ChatId): string;
     /**
@@ -380,11 +420,13 @@ export declare class ChatRegistry {
      * sessions group under a workspace in the GUI instead of "Ungrouped".
      * Best-effort: failure only logs.
      *
-     * A workspace is auto-created only when the session cwd matches the
-     * configured workspacePath (new sessions). A resumed session carrying a
-     * foreign cwd (e.g. created under an earlier host cwd) is attached only when
-     * a workspace already owns that path — never auto-created, so legacy
-     * sessions cannot spawn accidental workspaces.
+     * A workspace is auto-created only when the session cwd matches the chat's
+     * effective cwd (new sessions). A resumed session carrying a foreign cwd
+     * (e.g. created under an earlier host cwd) is attached only when a
+     * workspace already owns that path — never auto-created, so legacy
+     * sessions cannot spawn accidental workspaces. `chatId` keys the effective
+     * cwd: passing it lets a group chat's groupWorkspacePath auto-create/attach
+     * (T3 review fix); omitting it keeps the pre-group behavior.
      */
     private attachToWorkspace;
     /**
