@@ -170,7 +170,9 @@ export function cleanOutboundText(raw: string): string {
  */
 export function scrubLeftoverMarkers(raw: string): string {
   return raw
-    .replace(/\[\[\s*reply\s*:?[^\]\n]{0,40}\]?\]?/gi, '')
+    // 不再无条件剥 [[reply:…]]：那条规则会把「模型正在解释这个标记」的正文一起
+    // 吃掉（`{0,40}\]?\]?` 连没闭合的残缺标记和它后面 40 个字都算进去）。抽取出站
+    // 引用已经是行首锚定的，散落的标记留着顶多让用户看到字面，丢掉解释更糟。
     .replace(/\[\[\s*\/?\s*qq_forward\s*\]?\]?/gi, '')
     .replace(/^\s*\[\[(?!at:)[^\]\n]{0,40}\]?\]?\s*$/gm, '')
     .replace(/[ \t]+$/gm, '')
@@ -411,11 +413,14 @@ export class OutboundPipeline {
       // chat.ts wrapUserMessage）。显式 options.replyTo 优先，标记只做兜底；
       // 与入站半边成对，无条件启用。
       let replyTo = options.replyTo
-      const replyMarker = /\[\[reply:([^\]\s]+)\]\]/
+      // 只认行首：模型在正文里**提到**这个标记（典型场景：向用户解释这个语法本身）
+      // 时不能把它当成引用目标抽走，否则那句解释会被剪成空壳（实测：`敲了 [[reply:x]]`
+      // 发出去只剩反引号）。约定见 prompt.ts：想引用就把标记写在回复最开头。
+      const replyMarker = /^\s*\[\[reply:([^\]\s]+)\]\]/
       const replyHit = replyMarker.exec(bodyText)
       if (replyHit !== null) {
         if (replyTo === undefined || replyTo === '') replyTo = replyHit[1]
-        bodyText = bodyText.replace(new RegExp(replyMarker.source, 'g'), '')
+        bodyText = bodyText.replace(replyMarker, '').replace(/^\s+/, '')
       }
       const { body: bodyRaw, nodes } = extractForwardBlocks(bodyText, '助手')
       // T2 (PR port): 引用/转发标记的残次品在进发送前再剥一层（防御开关内）。

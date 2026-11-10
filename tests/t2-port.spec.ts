@@ -94,9 +94,16 @@ describe('T2 PR port: cleanOutboundText（主路径与工具共用的单一入�
 })
 
 describe('T2 PR port: scrubLeftoverMarkers', () => {
-  it('歪写的 [[reply / [[qq_forward 标记只删标记本身，正文保留', () => {
-    expect(scrubLeftoverMarkers('回答 [[reply:777 直接回答')).toBe('回答')
+  it('[[qq_forward 残片只删标记本身，正文保留', () => {
     expect(scrubLeftoverMarkers('正文一\n[[qq_forward\n正文二')).toBe('正文一\n正文二')
+  })
+
+  it('[[reply:…]] 不再兜底剥除——残缺的也不吞后面的正文', () => {
+    // 以前的 /\[\[\s*reply\s*:?[^\]\n]{0,40}\]?\]?/ 会把「回答 」「 直接回答」
+    // 之间那段一并吃掉（'回答 [[reply:777 直接回答' → '回答'）。模型向用户解释
+    // 这个语法时，解释句就会变成空壳，所以这条规则整个撤掉。
+    expect(scrubLeftoverMarkers('回答 [[reply:777 直接回答')).toBe('回答 [[reply:777 直接回答')
+    expect(scrubLeftoverMarkers('想引用就敲 [[reply:777]] 这样')).toBe('想引用就敲 [[reply:777]] 这样')
   })
 
   it('整行只有别的歪写标记时删行，[[at:…]] 行不删（收尾空白折叠）', () => {
@@ -177,6 +184,27 @@ describe('T2 PR port: [[reply:mid]] 出站引用抽取（无条件启用，与�
     expect(segments[0]).toEqual({ type: 'reply', data: { id: '777' } })
     expect(JSON.stringify(segments)).not.toContain('[[reply')
     expect(JSON.stringify(segments)).toContain('这是答案')
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('标记写在正文中间时不抽引用，标记原样留在正文里', async () => {
+    // 模型在正文里「提到」这个标记（解释语法、举例）必须能把话说完：
+    // 只认行首，正文中间的标记当普通文字发出去。
+    const h = await makeHarness()
+    h.sendText('hi')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const session = { id: h.sessionIds[0] }
+    h.ctx.emit('session/event', session as never, makeEvent('assistant/message', {
+      turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '想引用就敲 [[reply:777]] 这样' }] },
+    }))
+    h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    await vi.waitFor(() => expect(h.outbound.some(f => f.action === 'send_msg')).toBe(true))
+    const frame = h.outbound.find(f => f.action === 'send_msg')!
+    const segments = frame.params.message as Array<{ type: string; data: Record<string, unknown> }>
+    expect(segments.some(seg => seg.type === 'reply')).toBe(false)
+    expect(JSON.stringify(segments)).toContain('[[reply:777]]')
     h.client.close()
     await h.bridge.stop()
     await h.connection.stop()
