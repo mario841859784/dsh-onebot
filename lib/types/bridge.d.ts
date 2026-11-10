@@ -114,6 +114,17 @@ export interface BridgeConfig {
      * 非受限发送者均可。不改变 /steer 命令（始终仅管理员）与 queue 模式行为，
      * 也不放宽受限用户软限制（受限消息任何档都排队）。 */
     autoSteerPolicy?: 'admin' | 'all';
+    /** 旁观总开关（默认关）：开启后未通过 @ 门控的群消息进每群环形缓冲，
+     * 规则触发（唤醒词/话题词/问句/机会触发）时开一次回顾回合。 */
+    bystanderEnabled?: boolean;
+    /** 每群旁听缓冲条数上限（默认 50）。 */
+    bystanderCapacity?: number;
+    /** 话题词表：消息文本包含任一词即触发回顾（子串匹配，大小写不敏感）。 */
+    bystanderTopics?: readonly string[];
+    /** 每群两次回顾回合的最小间隔分钟数（默认 45）。 */
+    bystanderCooldownMinutes?: number;
+    /** 每群每日回顾回合上限（本地日期键计数，默认 20）。 */
+    bystanderDailyLimit?: number;
     /** T3 (P2)：等待模型回复超时阈值（ms）——回合超过该时长没有任何模型输出
      * 时提示超时并登记补发跟踪（deferred delivery），回合完成后向原聊天补发
      * 最终文字（「（超时补发）」前缀，走既有 outbound 管线）；absent →
@@ -378,6 +389,9 @@ export declare class ChatBridge {
      * /new keeps it. Writes go through setSilentUntilImpl (memory + settings +
      * debounced save); a bare /silent clears both copies explicitly. */
     private readonly silentUntil;
+    /** 群聊旁观 (#58)：每群旁听环形缓冲 + 冷却/每日上限记账。惰性判定，
+     * 零定时器；缓冲不持久化（易失的「最近发生了什么」，重启后重新积累）。 */
+    private readonly bystander;
     /** W1/T5: chatId → the traceId of the chat's unsettled INJECTED round
      * (independent of the trace sink, so the dry-run guard covers the async
      * agent reply even with tracing off). Cleared by a real dispatch to the
@@ -505,6 +519,15 @@ export declare class ChatBridge {
      * - refresh 后台执行不 await 主流程；get/refresh 同步抛或拒绝都只
      *   warn（标题是辅助功能，失败静默降级，不冒泡进派发主流程）。 */
     private syncSessionTitle;
+    /**
+     * 群聊旁观 (#58)：把一条未通过 @ 门控的群消息喂进旁听缓冲；规则触发命中
+     * 且会话空闲时开一次回顾回合（角色固定 member——旁听内容源自群消息，不可信，
+     * 绝不能拿 admin 档工具；与 memberTools='send' 档天然衔接）。
+     * enabled=false 时本方法在入口即返回（管线挂点零行为）。
+     */
+    private feedBystander;
+    /** 旁观参数聚合：bridge 扁平键逐项回落 BYSTANDER_DEFAULTS（absent = 默认关）。 */
+    private bystanderSettings;
     /** Prepend per-chat context directives (/goal reminder) to a turn's user
      * text. Plan mode is host-owned now (/plan forwards to the host command),
      * so the agent's own plan-mode instruction section governs planning. */

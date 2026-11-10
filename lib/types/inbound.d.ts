@@ -123,6 +123,16 @@ export interface InboundContext {
     expandQuote(messageId: string, verifiedData?: QuotedMessageData): Promise<string>;
     /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes). */
     dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string): Promise<void>;
+    /** 群聊旁观 (#58)：未通过 @ 门控的群消息喂进每群旁听缓冲，规则触发时由
+     * 桥开一次回顾回合。桥侧 enabled=false 即返回（挂点零行为）；缺席（旧
+     * 测试桩）= 无旁观能力，drop 点行为与上游逐字节等价。 */
+    feedBystander?(chatId: ChatId, entry: {
+        seq: string;
+        time: number;
+        userId: string;
+        nickname: string;
+        text: string;
+    }): Promise<void>;
     /** T2 (P1): busy-turn policy seam — invoked for every non-command message
      * after ALL gates (dedup/policy/mention/media/rate-limit), right before the
      * turn dispatch, so queue/steer can never bypass an existing gate. Returns

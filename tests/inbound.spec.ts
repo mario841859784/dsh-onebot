@@ -1215,3 +1215,80 @@ describe('inbound stickers next to photos', () => {
       .toEqual(['图片: photo bytes', '图片: photo bytes'])
   })
 })
+
+describe('群聊旁观 (#58)', () => {
+  /** 未 @ 的纯文本群消息帧（sendGroupTextAs 固定带 at 段，旁观用例需要不带 @ 的）。 */
+  const sendGroupPlain = (h: Awaited<ReturnType<typeof makeHarness>>, text: string, userId = 10001, messageId = 0): void => {
+    h.client.send(JSON.stringify({
+      post_type: 'message', message_type: 'group', group_id: 888, user_id: userId, self_id: 10002,
+      message_id: messageId, time: Math.floor(Date.now() / 1000),
+      message: [{ type: 'text', data: { text } }], raw_message: text,
+      sender: { user_id: userId, nickname: '用户' + userId },
+    }))
+  }
+
+  it('默认关：未 @ 的群消息零行为（不缓冲不派发）', async () => {
+    const h = await makeHarness()
+    sendGroupPlain(h, '群里有人懂吗')
+    sendGroupPlain(h, '再问一句懂吗')
+    await new Promise(resolve => setTimeout(resolve, 300))
+    expect(h.captured.followups).toHaveLength(0)
+    // @ 消息不受影响（旁观关闭时门控行为与上游逐字节等价）。
+    h.sendGroupTextAs('正式提问', 10001)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    expect(h.captured.followups[0].text).not.toContain('旁观回顾')
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('开启后：未 @ 群消息进缓冲，问句触发一次回顾回合（member 角色文本形状）', async () => {
+    const h = await makeHarness({ bystanderEnabled: true })
+    // 第一条陈述只积累（缓冲 < 就绪线、无触发信号）。
+    sendGroupPlain(h, '今天聊聊配置', 10001, 101)
+    await new Promise(resolve => setTimeout(resolve, 200))
+    expect(h.captured.followups).toHaveLength(0)
+    // 第二条是问句 → 触发回顾回合。
+    sendGroupPlain(h, '那有人懂 dsh 吗', 10001, 102)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const text = h.captured.followups[0].text
+    expect(text).toContain('[旁观回顾]')
+    // 两条旁听消息都在边界内，且第一条先于第二条（时间序）。
+    expect(text).toContain('用户10001(10001)：今天聊聊配置')
+    expect(text).toContain('用户10001(10001)：那有人懂 dsh 吗')
+    expect(text.indexOf('今天聊聊配置')).toBeLessThan(text.indexOf('那有人懂 dsh 吗'))
+    expect(text).toContain('<user_message qq="" nickname="群聊旁听">')
+    expect(text).toContain('[[不回]]')
+    // 冷却生效：紧接着的问句不再开第二个回顾回合。
+    sendGroupPlain(h, '再问一次懂吗', 10001, 103)
+    await new Promise(resolve => setTimeout(resolve, 300))
+    expect(h.captured.followups).toHaveLength(1)
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('忙回合跳过：agent 运行中触发不派发，冷却不消耗', async () => {
+    const h = await makeHarness({ bystanderEnabled: true })
+    // 先用 @ 消息开一次真回合，让群会话（chat）存在。
+    h.sendGroupTextAs('正式提问', 10001)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    // 把群会话的 agent 置为运行中（真桥内部 chats 状态）。
+    const chat = (h.bridge as unknown as { chats: Map<string, { agent: { status: string } }> }).chats.get('group:888')
+    expect(chat).toBeDefined()
+    chat!.agent.status = 'running'
+    sendGroupPlain(h, '先积累一条', 10001, 201)
+    sendGroupPlain(h, '运行中有人懂吗', 10001, 202)
+    await new Promise(resolve => setTimeout(resolve, 400))
+    // 忙回合：旁观触发被跳过，没有新派发（仍只有首个 @ 回合）。
+    expect(h.captured.followups).toHaveLength(1)
+    // 恢复空闲后再触发 → 派发回顾回合（冷却未被忙跳过消耗）。
+    chat!.agent.status = 'idle'
+    sendGroupPlain(h, '空闲了还有人懂吗', 10001, 203)
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    expect(h.captured.followups[1].text).toContain('[旁观回顾]')
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+})

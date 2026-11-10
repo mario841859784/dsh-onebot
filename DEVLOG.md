@@ -1050,3 +1050,13 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **提示词**：`buildPlatformPrompt` 按档条件化「·成员」段——none 全禁（原文案）、send 仅发送类、all 全可。平台提示词随之更新。
 - **同步面**：src/index.ts（schema 三档）、src/bridge.ts（memberToolTier + mediaSendRoots + 调用点传档）、src/tools.ts（白名单 + 文案）、src/prompt.ts、src/settings-remote.ts（permissions 组 +memberTools、ENUM_KEYS、SCHEMA_DEFAULTS、嵌套读写特例）、src/client.ts（GROUPS/DEFAULTS/EN_GROUPS 双词 + 两处 codec）；tests/tools-gate（+send 档三用例、围栏随档回归、roots 三档矩阵）、tests/settings-remote（+扁平↔嵌套往返用例、ALL_KEYS 72 口径）、tests/t5-port（permissions 16、memberTools 嵌套豁免+默认值断言）、tests/client-settings（70 键口径全套）。
 - **验证**：tsc 0 错误；全量 1086 passed（connection 两条并行时序 flake 单跑 39/39，同既有口径）；README 中英三处口径更新。面板截图随旁观组（下一批）一起重截。
+
+## 2026-11-11 群聊旁观：未被 @ 也能选择性插话（issue #58，用户拍板完整实现）
+
+- **问题（InsaneGenji 报告）**：`requireMention: true` 下未被 @ 的群消息完全不进模型上下文——机器人只有「被点名」一种存在形态。模型表达沉默的能力早已有（T4 `[[不回]]` 哨兵 + 6 处守卫），缺的是「听见的机会」。
+- **方案（AskUserQuestion 用户拍板：完整实现）**：新模块 src/bystander.ts——每群环形缓冲（容量默认 50，不持久化）+ 纯规则触发（唤醒词句首/句中命中复用 detectWakeName 语义、话题词表子串、问句 `?`/`？` 结尾或 吗/呢/么 收尾、机会触发=缓冲 ≥10 且群活跃 5 分钟窗口）+ 冷却（默认 45 分钟）/每日上限（默认 20，本地日期键惰性重置）。零后台定时器（时间戳惰性判定，silentUntil 先例）。触发即由桥开一次回顾回合：缓冲整块包 `<user_message>` 边界（旁听文本不可信）派 member 档回合，可插话可 `[[不回]]`；沉默链路复用现有 6 处哨兵守卫。
+- **派发旁路**：dispatchFollowup 加 bystander 标记——不写 lastFollowup（/retry 基底不被旁听文本顶掉）、不记 chat-tails、不触发标题同步；队列/interim/followup 照常。忙回合跳过（不插队、冷却不消耗）。角色固定 member：旁听内容源自群消息不可信，不给 admin 工具；与 #59 send 档天然衔接。
+- **挂点**：inbound.ts mention 门 drop 处喂缓冲（seam 可选，旧测试桩缺席=零行为）；关 = 入口即返回。
+- **配置面**：五键扁平 `bystanderEnabled/Capacity/Topics/CooldownMinutes/DailyLimit`（inboxQueue 扁平先例），面板新增「旁观」组（七组 75 键）+ EN 双词 + desc 词条；NUMBER_RANGE/codec/DEFAULTS 全套同步；README 中英配置表 5 行 + 设置页七组口径 + 「群聊旁观」专节（含已知取舍：回顾回合用户消息留在会话历史——宿主无注入后丢弃原语，以冷却+日上限+容量定界）。
+- **测试**：tests/bystander.spec 11 用例（淘汰/边界消毒/四触发/冷却/日上限/跨天重置）；inbound.spec 3 集成（默认关零行为、触发文本形状+冷却、忙回合跳过）；键数口径 75/76/77/71(渲染行)/63(可见) 全套同步。
+- **验证**：tsc 0 错误；全量 1100 passed + 4 skipped（connection 两条并行时序 flake，单跑全绿，同既有口径）。面板截图待活体重截（旁观组 + #59 memberTools 行一起）。

@@ -174,6 +174,19 @@ export interface Config {
   /** T7 (PR port 入站连发合并)：合并窗口毫秒数（最后一条进来后等这么久，
    *  首条起最多 3000ms 封顶）；默认 600。仅在 inboxQueueEnabled 开启时生效。 */
   inboxQueueDelayMs: number
+  /** 群聊旁观 (#58)：总开关，默认关。开启后未通过 @ 门控的群消息进每群
+   *  环形旁听缓冲，规则触发（唤醒词/话题词/问句/机会触发）时开一次回顾
+   *  回合：模型可插话，也可输出 [[不回]] 保持沉默。 */
+  bystanderEnabled: boolean
+  /** 群聊旁观 (#58)：每群旁听缓冲条数上限；默认 50。 */
+  bystanderCapacity: number
+  /** 群聊旁观 (#58)：话题词表，消息文本包含任一词即触发回顾（子串匹配，
+   *  大小写不敏感）；默认 []。 */
+  bystanderTopics: string[]
+  /** 群聊旁观 (#58)：每群两次回顾回合的最小间隔分钟数；默认 45。 */
+  bystanderCooldownMinutes: number
+  /** 群聊旁观 (#58)：每群每日回顾回合上限（本地日期键计数）；默认 20。 */
+  bystanderDailyLimit: number
   dmPolicy: 'open' | 'allowlist' | 'disabled'
   groupPolicy: 'open' | 'allowlist' | 'disabled'
   allowFrom: string[]
@@ -349,6 +362,16 @@ export const Config: Z<Config> = z.object({
     .description('入站连发合并（T7 PR 移植）：开启后每个会话一条串行链（先到先答，带图慢消息不再插队），同会话紧挨的几条消息并成一条投递（斜杠命令不合并、注入消息不合并直接串行）；全局积压超过 50 条丢弃一条并记警告；已知代价：每条消息延迟约一个合并窗口（默认 600ms）才投递；默认关闭——关闭时不排队不合并，与上游行为逐字节等价'),
   inboxQueueDelayMs: z.number().default(600)
     .description('连发合并窗口（毫秒，T7 PR 移植）：同会话最后一条消息进来后等这么久再合并投递，从首条算起最多 3000ms 封顶；仅在 inboxQueueEnabled 开启时生效；0=立即投递（等同关闭合并，串行链仍生效）'),
+  bystanderEnabled: z.boolean().default(false)
+    .description('群聊旁观：开启后未被 @ 的群消息进每群旁听缓冲，命中触发条件（提到唤醒词/话题词/明显提问/群内持续活跃）时开一次「回顾回合」，机器人可插话也可沉默（[[不回]]）；默认关'),
+  bystanderCapacity: z.number().default(50)
+    .description('群聊旁观：每群旁听缓冲条数上限（超出淘汰最旧）；默认 50'),
+  bystanderTopics: z.array(z.string()).default([])
+    .description('群聊旁观：话题词表，消息包含任一词即触发回顾（子串匹配，大小写不敏感）；默认空'),
+  bystanderCooldownMinutes: z.number().default(45)
+    .description('群聊旁观：每群两次回顾回合的最小间隔（分钟）；默认 45，防刷屏'),
+  bystanderDailyLimit: z.number().default(20)
+    .description('群聊旁观：每群每日回顾回合上限（按本地日期重置）；默认 20，防刷屏'),
   dmPolicy: z.union([z.const('open'), z.const('allowlist'), z.const('disabled')]).default('open')
     .description('私聊策略：open=仅管理员；allowlist=仅 allowFrom；disabled=拒绝所有私聊'),
   groupPolicy: z.union([z.const('open'), z.const('allowlist'), z.const('disabled')]).default('open')
@@ -729,6 +752,11 @@ export function apply(ctx: Context, config: Config): void {
       // 侧缺省兜底：开关默认关、窗口默认 600ms）。
       inboxQueueEnabled: config.inboxQueueEnabled,
       inboxQueueDelayMs: config.inboxQueueDelayMs,
+      bystanderEnabled: config.bystanderEnabled,
+      bystanderCapacity: config.bystanderCapacity,
+      bystanderTopics: config.bystanderTopics,
+      bystanderCooldownMinutes: config.bystanderCooldownMinutes,
+      bystanderDailyLimit: config.bystanderDailyLimit,
       interimMessages: config.interimMessages,
       interimRecallMs: config.interimRecallMs,
       interimRecall: config.interimRecall,

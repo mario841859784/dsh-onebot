@@ -38,11 +38,12 @@ describe('T5 键表完整性（SCHEMA_DEFAULTS 与 schema 无孤儿键）', () =
   const resolved = Config({}) as Record<string, unknown>
   const groupKeys = Object.values(SETTINGS_GROUPS).flat()
 
-  it('六组结构（T8/T11/T24 增键 + 0.10.0 重排方案 A + #59 memberTools）：connection 6 / permissions 16 / behavior 12+2 / session 5+5 / media 16+1 / diagnostics 7', () => {
-    expect(Object.keys(SETTINGS_GROUPS)).toEqual(['connection', 'permissions', 'behavior', 'session', 'media', 'diagnostics'])
+  it('七组结构（T8/T11/T24 增键 + 0.10.0 重排方案 A + #59 memberTools + #58 旁观）：connection 6 / permissions 16 / behavior 12+2 / bystander 5 / session 5+5 / media 16+1 / diagnostics 7', () => {
+    expect(Object.keys(SETTINGS_GROUPS)).toEqual(['connection', 'permissions', 'behavior', 'bystander', 'session', 'media', 'diagnostics'])
     expect(SETTINGS_GROUPS.connection).toHaveLength(6) // 0.10.0 重排：连接=通道配置（-8 键）
     expect(SETTINGS_GROUPS.permissions).toHaveLength(16) // #59：+memberTools
     expect(SETTINGS_GROUPS.behavior).toHaveLength(14) // T24：+titleSyncEnabled；0.10.0：+ignoreSelf/sidebarEntryEnabled
+    expect(SETTINGS_GROUPS.bystander).toHaveLength(5) // #58：旁观五键
     expect(SETTINGS_GROUPS.behavior).toEqual(expect.arrayContaining(['inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled']))
     expect(SETTINGS_GROUPS.session).toHaveLength(10) // 0.10.0：5→10（+工作区×2/强制会话/提示词文件×2）
     expect(SETTINGS_GROUPS.media).toHaveLength(17) // T6：+gifFramesEnabled；0.10.0：+allowPrivateHosts

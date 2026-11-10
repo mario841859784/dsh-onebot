@@ -79,6 +79,8 @@ export const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>> = {
   connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ'],
   permissions: ['requireMention', 'memberTools', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'replyCountsAsMention', 'atAllCountsAsMention', 'faceStyle', 'pokeEnabled', 'restrictedMemberPrefix', 'sensitivePatterns'],
   behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled', 'ignoreSelf', 'sidebarEntryEnabled'],
+  // #58 群聊旁观：默认全关/空（enabled=false 时其余四键零行为）。
+  bystander: ['bystanderEnabled', 'bystanderCapacity', 'bystanderCooldownMinutes', 'bystanderDailyLimit', 'bystanderTopics'],
   session: ['newSessionGreeting', 'firstMessageAsUser', 'memoryFilesEnabled', 'memoryFiles', 'agentPreset', 'workspacePath', 'groupWorkspacePath', 'forceSessionId', 'dmPromptFile', 'groupPromptFile'],
   media: ['sttEnabled', 'sttEngine', 'sttCommand', 'sttArgs', 'sttModel', 'textImageEnabled', 'textImageThreshold', 'cardFooter', 'fontFiles', 'fontFamilies', 'outboundImageMaxBytes', 'maxVoiceBytes', 'maxFileBytes', 'inboundImageMaxPx', 'inboundFileMaxBytes', 'gifFramesEnabled', 'allowPrivateHosts'],
   diagnostics: ['actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun', 'logLevel'],
@@ -115,6 +117,12 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   requireMention: true,
   // A2 (#59)：成员档位工具权限默认关（fail-closed，与 schema 默认一致）。
   memberTools: 'none',
+  // #58 群聊旁观（默认关；与 schema 默认逐项一致）。
+  bystanderEnabled: false,
+  bystanderCapacity: 50,
+  bystanderCooldownMinutes: 45,
+  bystanderDailyLimit: 20,
+  bystanderTopics: [],
   adminUsers: [],
   dmPolicy: 'open',
   groupPolicy: 'open',
@@ -215,7 +223,7 @@ const ENUM_KEYS: Readonly<Record<string, readonly string[]>> = {
   logLevel: ['debug', 'info', 'warn', 'error'],
   sttEngine: ['auto', 'openai', 'whisper-cpp', 'custom'],
 }
-const NUMBER_KEYS: readonly string[] = ['port', 'interimRecallMs', 'rateLimitPerMinute', 'deferredTimeoutMs', 'textImageThreshold', 'chatIdleEvictDays', 'outboundImageMaxBytes', 'maxVoiceBytes', 'maxFileBytes', 'inboundImageMaxPx', 'inboundFileMaxBytes', 'inboxQueueDelayMs']
+const NUMBER_KEYS: readonly string[] = ['port', 'interimRecallMs', 'rateLimitPerMinute', 'deferredTimeoutMs', 'textImageThreshold', 'chatIdleEvictDays', 'outboundImageMaxBytes', 'maxVoiceBytes', 'maxFileBytes', 'inboundImageMaxPx', 'inboundFileMaxBytes', 'inboxQueueDelayMs', 'bystanderCapacity', 'bystanderCooldownMinutes', 'bystanderDailyLimit']
 /** 数字键取值范围（评审 B4：port 1–65535、时长/频控 ≥0；越界在 Remote 层拒绝，不再只依赖宿主回滚兜底）。 */
 const NUMBER_RANGE: Readonly<Record<string, readonly [number, number | undefined]>> = {
   port: [1, 65535],
@@ -231,6 +239,10 @@ const NUMBER_RANGE: Readonly<Record<string, readonly [number, number | undefined
   inboundFileMaxBytes: [0, undefined],
   // T7：合并窗口毫秒数（≥0；0=立即投递，等同关闭合并但串行链仍生效）。
   inboxQueueDelayMs: [0, undefined],
+  // #58 旁观：容量条数 / 冷却分钟 / 每日上限。
+  bystanderCapacity: [5, 500],
+  bystanderCooldownMinutes: [5, 1440],
+  bystanderDailyLimit: [1, 200],
 }
 /** 布尔键白名单（T1 §4 + W6 + T5 键表 22 键 + T6 gifFramesEnabled + T7
  *  inboxQueueEnabled + T11 sidebarEntryEnabled + T24 titleSyncEnabled：26 键）。 */
@@ -240,10 +252,10 @@ const BOOLEAN_KEYS: readonly string[] = [
   'actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun',
   'textImageEnabled', 'pokeEnabled', 'firstMessageAsUser', 'memoryFilesEnabled', 'ignoreSelf',
   'sttEnabled', 'restrictedMemberPrefix', 'allowPrivateHosts', 'gifFramesEnabled', 'inboxQueueEnabled',
-  'sidebarEntryEnabled', 'titleSyncEnabled',
+  'sidebarEntryEnabled', 'titleSyncEnabled', 'bystanderEnabled',
 ]
 const STRING_KEYS: readonly string[] = ['host', 'url', 'accessToken', 'botQQ', 'workspacePath', 'groupWorkspacePath', 'forceSessionId', 'dmPromptFile', 'groupPromptFile', 'cardFooter', 'agentPreset', 'sttCommand', 'sttModel']
-const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'memoryFiles', 'sensitivePatterns', 'sttArgs', 'fontFiles', 'fontFamilies']
+const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'memoryFiles', 'sensitivePatterns', 'sttArgs', 'fontFiles', 'fontFamilies', 'bystanderTopics']
 /** 全部 71 键（校验与快照的唯一键集；9 枚举 + 12 数字 + 26 布尔 + 13 字符串 +
  *  10 字符串数组 + notices 单独通道；T6 新增 gifFramesEnabled、T7 新增
  *  inboxQueueEnabled/inboxQueueDelayMs、T11 新增 sidebarEntryEnabled、T24 新增

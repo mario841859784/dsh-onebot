@@ -171,6 +171,19 @@ export interface Config {
     /** T7 (PR port 入站连发合并)：合并窗口毫秒数（最后一条进来后等这么久，
      *  首条起最多 3000ms 封顶）；默认 600。仅在 inboxQueueEnabled 开启时生效。 */
     inboxQueueDelayMs: number;
+    /** 群聊旁观 (#58)：总开关，默认关。开启后未通过 @ 门控的群消息进每群
+     *  环形旁听缓冲，规则触发（唤醒词/话题词/问句/机会触发）时开一次回顾
+     *  回合：模型可插话，也可输出 [[不回]] 保持沉默。 */
+    bystanderEnabled: boolean;
+    /** 群聊旁观 (#58)：每群旁听缓冲条数上限；默认 50。 */
+    bystanderCapacity: number;
+    /** 群聊旁观 (#58)：话题词表，消息文本包含任一词即触发回顾（子串匹配，
+     *  大小写不敏感）；默认 []。 */
+    bystanderTopics: string[];
+    /** 群聊旁观 (#58)：每群两次回顾回合的最小间隔分钟数；默认 45。 */
+    bystanderCooldownMinutes: number;
+    /** 群聊旁观 (#58)：每群每日回顾回合上限（本地日期键计数）；默认 20。 */
+    bystanderDailyLimit: number;
     dmPolicy: 'open' | 'allowlist' | 'disabled';
     groupPolicy: 'open' | 'allowlist' | 'disabled';
     allowFrom: string[];

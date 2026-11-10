@@ -187,6 +187,11 @@ default). Common options:
 | `unknownCommand` | `intercept` | unknown slash-command handling: `intercept` (default) consumes the message and suggests close matches (prefix matches first, edit-distance ≤2 fallback only for inputs of length ≥4, at most 3 candidates; with no match it points to `/help` or re-sending without the leading `/`); `passthrough` restores the old fall-through to the model. Text not starting with a `/word` token (e.g. a path like `/tmp/x`) is unaffected |
 | `newMessagePolicy` | `queue` | how a new ordinary message is handled while the chat's task is running (P1): `queue` (default) = the message is processed as the next turn after the current task ends, in arrival order, with at most one queue notice per running turn; `steer` = a new plain-text message is submitted into the running task as a supplementary instruction (read at the agent's next step) with a submit notice. Exceptions: images / files / voice / quoted or forwarded messages and `[受限用户:Q&A only]` group-member messages always take the queue path in both modes (the soft limit is never widened and the media pipeline is never bypassed); auto-steer eligibility is governed by `autoSteerPolicy`; the `/steer` command works under both modes; without a running task the behavior is identical to 0.8.1 regardless of this setting. Editable in the settings page behavior group; applies after a hot restart |
 | `autoSteerPolicy` | `admin` | who may auto-steer under the steer mode (T9, user ruling 2026-10-12): `admin` (default) = admins only; `all` = every non-restricted sender. Messages from senders without eligibility take the queue path (enqueue + queue notice); the `/steer` command stays admin-only regardless of this setting; the `queue` mode behavior is completely unchanged. Editable in the settings page behavior group; applies after a hot restart |
+| `bystanderEnabled` | `false` | Group lurking (since 0.10.1, off by default): un-@ed group messages feed a per-group ring buffer; when a rule triggers (wake name / topic keyword / a clear question / sustained activity with a ready buffer) one "review turn" opens — recent lurked messages go to the model as one-shot reference; the bot may add one short remark or output `[[不回]]` to stay silent. Silence sends nothing and never touches the `/retry` base, context tails, or title sync. Lurk tab in the settings page; hot-restart applies |
+| `bystanderCapacity` | `50` | Per-group lurk buffer size in entries (0.10.1); oldest dropped first; only active when `bystanderEnabled` is on |
+| `bystanderTopics` | `[]` | Lurk topic keywords (0.10.1): a message containing any keyword (substring, case-insensitive) triggers a review turn |
+| `bystanderCooldownMinutes` | `45` | Minimum minutes between review turns per group (0.10.1); triggers skipped while a turn runs do not consume cooldown |
+| `bystanderDailyLimit` | `20` | Daily review-turn cap per group (0.10.1, resets by local date) |
 | `notices.steerAccepted` | `true` | auto-receipt after a supplementary instruction is accepted under steer mode (boolean or string; switch since 0.9.10, custom text since 0.9.13): `false` or an empty string `""` = not sent, the steer is still accepted; `true` or unset = default text; non-empty string = custom text. The `/steer` command's confirmation reply: `false` still sends the default text, a non-empty string uses the custom text there too, an empty string mutes it |
 | `notices.queue` | `true` | queue notice, at most one per running turn (boolean or string; switch since 0.9.10, custom text since 0.9.13): `false` or an empty string `""` = not sent, new messages still queue; `true` or unset = default text; non-empty string = custom text |
 | `notices.answerAccepted` | `true` | receipt after a question answer is accepted (boolean or string, since 0.9.13): `false` or an empty string `""` = not sent, the answer is still submitted; `true` or unset = default text「✔ 已提交回答」; non-empty string = custom text |
@@ -265,7 +270,7 @@ The panel follows the host's native look (since 0.10.0 the client bundle reuses 
 (Chinese-UI screenshots for the same panel live in the Chinese README; the panel
 follows the host language — field texts are fully bilingual since 0.10.0.)
 
-### Six groups, 69 keys (plus 5 notice texts)
+### Seven groups, 75 keys (plus 5 notice texts)
 
 The panel is organized into six tabs (UI text is Chinese; group coverage below):
 
@@ -274,6 +279,7 @@ The panel is organized into six tabs (UI text is Chinese; group coverage below):
 | Connection | Connection mode (reverse/forward WS with its address/port), `accessToken` (redacted), bot QQ id — channel config only (regrouped in 0.10.0) |
 | Permissions | DM/group policies and allowlists, admins, wake names, mention details, face rendering, poke, restricted prefix, sensitive patterns |
 | Behavior | Interim messages and auto-recall, error notice, unknown commands, rate limit, queue/steer, inbound burst merging, session title sync, ignore own messages, home sidebar entry |
+| Lurk | Group lurking switch, buffer size, review cooldown & daily cap, topic keywords (0.10.1, off by default) |
 | Session | New-session greeting, first message as User, memory files, agent preset, default workspace paths (DM/group), forced session id, DM/group prompt files |
 | Media | Speech-to-text (engine/command/model), long-text-to-image cards, card fonts, inbound/outbound media size caps, private-host download allow, GIF frame splitting |
 | Diagnostics | Action audit, decision trace, inbound recording with redaction, event injection and dry-run, log level |
@@ -430,6 +436,17 @@ Group members fall into two tiers — "admin / member" (decided by the `adminUse
 1. **Role prefix tier**: the `[HH:MM nickname(QQ)]` prefix of every group message carries the sender's tier (·admin / ·member), so the model can tell message origins apart without trusting identity claims inside the message body. Restricted users (`restrictedMemberPrefix`, on by default) additionally carry the `[受限用户:仅问答]` prefix.
 2. **`permissions.memberTools` (default `none`)**: in member-tier turns `qq_*` tool calls are gated by tier (a hard gate, no model cooperation required): `none` (default) blocks all; `send` (since 0.10.1) allows only the three "send content to the current chat" tools `qq_send_text` / `qq_send_segments` / `qq_send_image` — members can get split bubbles and image sends (put galleries in the session workspace; the media fence grants that root alongside the tier); `qq_send_forward` (forward cards can forge display names/content), `qq_send_file` / `qq_send_voice` / `qq_send_video` (carry arbitrary local files out), `qq_napcat_api` and `qq_group_history` remain admin-only; `all` lifts everything. A missing config fails closed to `none`; callers with no QQ session mapping (Web and other channels) are outside this tier. Admins are unaffected.
 3. **`agentPresetGroup` (empty by default)**: a dedicated agent preset id for group-chat sessions (coarse tier) — when set, group-chat sessions prefer it (so group chats can run a leaner model/preset) while private chats keep `agentPreset`; empty = same preset for group and private. A per-chat `/preset` override still wins.
+
+### Group lurking (0.10.1)
+
+`bystanderEnabled` (off by default) lets the bot selectively join un-@ed group chatter:
+
+1. **Lurk buffer**: messages gated out by `requireMention` feed a per-group ring buffer (`bystanderCapacity` entries; text/sender/time only; not persisted — re-accumulates after a restart).
+2. **Rule triggers** (any one opens one "review turn"): the message mentions a wake name (start or middle: `wakeNamesAdmin` ∪ `wakeNamesMember`); it hits a topic keyword (`bystanderTopics`); it reads as a question (ends with `?`/`？` or 吗/呢/么); the buffer has ≥10 entries and the group is active (last message within 5 minutes).
+3. **Review turn**: the buffer is composed into a one-shot context (wrapped in a `<user_message>` boundary) and dispatched as a member-tier turn — the model may add one short remark, or output only `[[不回]]` to stay silent (silence = zero visible output). The turn never touches the `/retry` base, context tails, or title sync.
+4. **Anti-spam**: per-group cooldown `bystanderCooldownMinutes` (default 45) plus a daily cap `bystanderDailyLimit` (default 20, local-date reset); triggers skipped while a turn runs do not consume cooldown.
+
+**Known trade-off**: the review turn's user message stays in session history (the host has no inject-and-discard context primitive); growth is bounded by cooldown + daily cap + buffer capacity. The bystander turn is member-tier — lurked content comes from group messages (untrusted) and never gains admin tools; pair with `permissions.memberTools: send` to let bystander remarks send images too.
 
 ### ask_user_question QQ bridge
 
