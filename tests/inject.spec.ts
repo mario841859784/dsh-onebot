@@ -16,6 +16,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { Config } from '../src/index.js'
 import { InjectChannel, INJECT_FILE, INTERCEPTED_MESSAGE_ID, MIN_INJECT_INTERVAL_MS } from '../src/inject.js'
 import { InboundRecorder, INBOX_FILE } from '../src/record.js'
+import { SCHEMA_DEFAULTS } from '../src/settings-remote.js'
 import { TraceSink } from '../src/trace.js'
 import type { TraceEvent } from '../src/trace.js'
 
@@ -35,13 +36,18 @@ const readTraceLines = (dir: string): TraceEvent[] => {
 }
 
 describe('inject config defaults (schema)', () => {
-  it('T5 默认翻转：injectEnabled defaults true, injectDryRun defaults false, interval defaults 2000', () => {
+  it('injectEnabled defaults false, injectDryRun defaults true, interval defaults 2000', () => {
     const config = Config({ mediaDir: join(tmpdir(), 'onebot-inject-defaults') } as never)
-    expect(config.injectEnabled).toBe(true) // T5 翻转（原 false）
-    expect(config.injectDryRun).toBe(false) // T5 翻转（原 true）
+    expect(config.injectEnabled).toBe(false)
+    expect(config.injectDryRun).toBe(true)
     expect(config.injectIntervalMs).toBe(2000)
     expect(config.recordInbound).toBe(false)
     expect(config.inboxRedact).toBe(true) // T5 翻转（原 false）
+  })
+
+  it('设置页的默认值同样是注入关 + 干跑开（面板「重置」不会把通道打开）', () => {
+    expect(SCHEMA_DEFAULTS.injectEnabled).toBe(false)
+    expect(SCHEMA_DEFAULTS.injectDryRun).toBe(true)
   })
 
   it('the poll interval floor is 500ms', () => {

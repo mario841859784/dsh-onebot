@@ -34,11 +34,12 @@ vi.mock('../src/bridge.js', () => ({
  * a gate, letting the test unload the plugin while start is still in flight.
  * startCompleted mirrors the real channel's invariant that arming the poll
  * timer happens only after the awaited history skip (inject.ts start()).
- * T5 后 injectEnabled 默认翻转为 true：闸门只在用例显式置 holdStart 时挂起
- * （T3/T2-board 持闸），其余用例（如 applies，吃 T5 默认）start() 直接完成，
- * 不再被无人释放的闸门拖到超时。
+ * 闸门只在用例显式置 holdStart 时挂起（T3/T2-board 持闸），其余显式开启
+ * injectEnabled 的用例 start() 直接完成，不会被无人释放的闸门拖到超时。
+ * constructed 记构造次数：默认配置下通道不该被构造。
  */
 const injectLifecycle = vi.hoisted(() => ({
+  constructed: 0,
   startCalls: 0,
   stopCalls: 0,
   startCompleted: false,
@@ -48,6 +49,9 @@ const injectLifecycle = vi.hoisted(() => ({
 }))
 vi.mock('../src/inject.js', () => ({
   InjectChannel: class {
+    constructor() {
+      injectLifecycle.constructed++
+    }
     async start(): Promise<void> {
       injectLifecycle.startCalls++
       injectLifecycle.startCompleted = false
@@ -153,6 +157,34 @@ describe('plugin entry', () => {
     expect(effectSpy).toHaveBeenCalled()
     const disposer = effectSpy.mock.results[0].value as () => Promise<void>
     await disposer()
+  })
+
+  it('不写 injectEnabled 时不建注入通道：启动链走完，InjectChannel 不构造、不启动', async () => {
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-plugin-'))
+    const { ctx } = makeCtx()
+    injectLifecycle.constructed = 0
+    injectLifecycle.startCalls = 0
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    try {
+      const effectSpy = vi.spyOn(ctx as { effect: (cb: () => unknown, label?: string) => unknown }, 'effect')
+      apply(ctx as never, Config({
+        mediaDir,
+        port: 0,
+        mode: 'reverse',
+        accessToken: 'test-token',
+        botQQ: '10002',
+        sttEnabled: false,
+        sensitivePatterns: [],
+      }))
+      const texts = () => log.mock.calls.map(c => String(c[0]))
+      await vi.waitFor(() => expect(texts().some(t => t.startsWith('[dsh-onebot] mounted (mode='))).toBe(true))
+      expect(injectLifecycle.constructed).toBe(0)
+      expect(injectLifecycle.startCalls).toBe(0)
+      const disposer = effectSpy.mock.results[0].value as () => Promise<void>
+      await disposer()
+    } finally {
+      log.mockRestore()
+    }
   })
 
   it('warns once at mount when workspacePath is unset; silent when configured (T3 方案 B)', () => {

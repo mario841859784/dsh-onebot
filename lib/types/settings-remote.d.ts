@@ -69,7 +69,8 @@ export declare const REMOTE_EFFECT = "restart";
 export declare const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>>;
 /** schema 默认值（摘自 src/index.ts Config schema 默认值），快照生效值的底层。
  *  T5：默认值翻转 10 处（用户裁定①，含安全面项 allowPrivateHosts/injectEnabled/
- *  injectDryRun）+ 键表扩到 66 键（贡献者 0.9.19 批次）。
+ *  injectDryRun）+ 键表扩到 66 键（贡献者 0.9.19 批次）。其中 injectEnabled/
+ *  injectDryRun 已改回默认关 + 干跑（注入通道仅调试用，见 src/inject.ts 头注释）。
  *  与贡献者取值的偏差（本仓已拍板事实优先）：dmPromptFile/groupPromptFile 默认
  *  ''（T4 拍板默认关，贡献者为 ~/.dsh 路径）、memoryFilesEnabled 默认 false
  *  （同 T4，贡献者 true）、notices 无 newSession 键（我们 schema 无该键）。 */
