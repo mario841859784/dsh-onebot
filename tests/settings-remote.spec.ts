@@ -294,14 +294,14 @@ describe('onebotSettings remote — descriptor 契约（T1 §4：全 positional�
 
 describe('onebotSettings remote — W6 白名单扩展（W1/W2 观测/调试 6 键）', () => {
   const NEW_BOOLEAN_KEYS = ['actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun'] as const
-  /** 期望默认值（摘自 src/index.ts schema：actionAuditEnabled 默认开；T5 翻转后 inboxRedact/injectEnabled 默认开、injectDryRun 默认关）。 */
+  /** 期望默认值（摘自 src/index.ts schema：actionAuditEnabled 默认开；T5 翻转后 inboxRedact 默认开；注入通道默认关、injectDryRun 默认开）。 */
   const NEW_DEFAULTS: Record<string, boolean> = {
     actionAuditEnabled: true,
     traceEnabled: false,
     recordInbound: false,
     inboxRedact: true,
-    injectEnabled: true,
-    injectDryRun: false,
+    injectEnabled: false,
+    injectDryRun: true,
   }
 
   it('6 个新键入快照：默认值正确、落在 diagnostics 组、计入 ALL_KEYS', () => {

@@ -5,16 +5,16 @@ import {
 } from '../src/settings-remote.js'
 
 /** T5（PR port 配置默认值翻转 + SCHEMA_DEFAULTS 键表）：
- *  1) 10 处默认值翻转——schema 解析默认值与 SCHEMA_DEFAULTS 逐字一致；
+ *  1) 默认值翻转（10 处里保留的 8 处）——schema 解析默认值与 SCHEMA_DEFAULTS 逐字一致；
  *  2) 键表完整性——SCHEMA_DEFAULTS 每键在 schema 有定义（PENDING 豁免）、
  *     无孤儿键（每组键都有类型通道，notices 单独通道）。 */
 
-/** 用户裁定①（含安全面项，风险已提示仍拍板）：10 处默认值按贡献者值翻转。 */
+/** 用户裁定①（含安全面项，风险已提示仍拍板）：10 处默认值按贡献者值翻转。
+ *  其中 injectEnabled/injectDryRun 已改回默认关 + 干跑（注入通道仅调试用，
+ *  断言见 tests/inject.spec.ts），这里只列其余 8 处。 */
 const T5_FLIPPED: ReadonlyArray<readonly [string, unknown]> = [
   ['mode', 'forward'],
   ['allowPrivateHosts', true],
-  ['injectEnabled', true],
-  ['injectDryRun', false],
   ['inboxRedact', true],
   ['newMessagePolicy', 'steer'],
   ['interimRecall', false],
