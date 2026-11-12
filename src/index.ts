@@ -150,6 +150,11 @@ export interface Config {
   replyCountsAsMention: boolean
   /** T1 (PR port): @全体即叫——群聊 @全体成员 也算 @机器人。 */
   atAllCountsAsMention: boolean
+  /** 群聊 @ 表情回执：群聊被显式 @ 后，回合启动时给该消息贴表情回执作为已收到回执；
+   *  仅 NapCat/SnowLuma 支持（set_msg_emoji_like），其他实现静默跳过。 */
+  reactionOnMention: boolean
+  /** 回执表情 ID，默认 178（微笑）。 */
+  reactionEmoji: number
   /** T1 (PR port): 管理员唤醒词；群聊消息以任一词开头即视为 @机器人。 */
   wakeNamesAdmin: string[]
   /** T1 (PR port): 成员唤醒词；群聊消息以任一词开头即视为 @机器人。 */
@@ -342,6 +347,10 @@ export const Config: Z<Config> = z.object({
     .description('引用即叫（T1 PR port）：群聊中回复任意消息（不限于机器人自己的消息）也算 @机器人并跳过引用作者核实；默认关闭=仅回复机器人的消息才唤醒'),
   atAllCountsAsMention: z.boolean().default(false)
     .description('@全体即叫（T1 PR port）：群聊中 @全体成员 也算 @机器人；默认关闭=@全体成员不唤醒机器人'),
+  reactionOnMention: z.boolean().default(false)
+    .description('群聊 @ 表情回执：群聊被显式 @ 后，回合启动时给该消息贴表情回执作为已收到回执；仅 NapCat/SnowLuma 支持（set_msg_emoji_like），其他实现静默跳过；默认关闭'),
+  reactionEmoji: z.number().default(178)
+    .description('回执表情 ID，默认 178（微笑）'),
   wakeNamesAdmin: z.array(z.string()).default([])
     .description('管理员唤醒词（T1 PR port）：群聊消息以任一唤醒词开头即视为 @机器人（仅对管理员生效）；留空=不启用'),
   wakeNamesMember: z.array(z.string()).default([])
@@ -744,6 +753,8 @@ export function apply(ctx: Context, config: Config): void {
       botQQ: config.botQQ,
       ignoreSelf: config.ignoreSelf,
       requireMention: config.requireMention,
+      reactionOnMention: config.reactionOnMention,
+      reactionEmoji: config.reactionEmoji,
       unknownCommand: config.unknownCommand,
       newMessagePolicy: config.newMessagePolicy,
       autoSteerPolicy: config.autoSteerPolicy,

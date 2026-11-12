@@ -121,8 +121,12 @@ export interface InboundContext {
     /** Quote expansion via the overridable bridge facade; a verified response
      * is reused for reply-only triggers instead of querying the same id twice. */
     expandQuote(messageId: string, verifiedData?: QuotedMessageData): Promise<string>;
-    /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes). */
-    dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string): Promise<void>;
+    /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes).
+     *  options.reactionMessageId = 群聊 @ 表情回执：该消息命中「显式 @ 机器人」
+     *  时由 inbound 传入，桥在回合启动点 best-effort 贴一次表情（缺席=不贴）。 */
+    dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string, options?: {
+        reactionMessageId?: string;
+    }): Promise<void>;
     /** 群聊旁观 (#58)：未通过 @ 门控的群消息喂进每群旁听缓冲，规则触发时由
      * 桥开一次回顾回合。桥侧 enabled=false 即返回（挂点零行为）；缺席（旧
      * 测试桩）= 无旁观能力，drop 点行为与上游逐字节等价。 */

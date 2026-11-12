@@ -85,7 +85,8 @@ export declare const SECRET_KEYS: readonly string[];
 /** 全部 71 键（校验与快照的唯一键集；9 枚举 + 12 数字 + 26 布尔 + 13 字符串 +
  *  10 字符串数组 + notices 单独通道；T6 新增 gifFramesEnabled、T7 新增
  *  inboxQueueEnabled/inboxQueueDelayMs、T11 新增 sidebarEntryEnabled、T24 新增
- *  titleSyncEnabled）。 */
+ *  titleSyncEnabled、T1 reaction 新增 reactionOnMention/reactionEmoji，实际
+ *  键数以 ALL_KEYS 数组为准）。 */
 export declare const ALL_KEYS: readonly string[];
 /** OnebotSettingsSnapshot（T1 §3 快照结构）。 */
 export interface OnebotSettingsSnapshot {

@@ -147,6 +147,11 @@ export interface Config {
     replyCountsAsMention: boolean;
     /** T1 (PR port): @全体即叫——群聊 @全体成员 也算 @机器人。 */
     atAllCountsAsMention: boolean;
+    /** 群聊 @ 表情回执：群聊被显式 @ 后，回合启动时给该消息贴表情回执作为已收到回执；
+     *  仅 NapCat/SnowLuma 支持（set_msg_emoji_like），其他实现静默跳过。 */
+    reactionOnMention: boolean;
+    /** 回执表情 ID，默认 178（微笑）。 */
+    reactionEmoji: number;
     /** T1 (PR port): 管理员唤醒词；群聊消息以任一词开头即视为 @机器人。 */
     wakeNamesAdmin: string[];
     /** T1 (PR port): 成员唤醒词；群聊消息以任一词开头即视为 @机器人。 */

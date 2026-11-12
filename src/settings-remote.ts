@@ -77,7 +77,7 @@ export const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>> = {
   // 0.10.0 重排（用户裁定方案 A）：连接=通道配置 6 键；工作区/强制会话/提示词文件
   // 归 session；allowPrivateHosts 归 media；ignoreSelf/sidebarEntryEnabled 归 behavior。
   connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ'],
-  permissions: ['requireMention', 'memberTools', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'replyCountsAsMention', 'atAllCountsAsMention', 'faceStyle', 'pokeEnabled', 'restrictedMemberPrefix', 'sensitivePatterns'],
+  permissions: ['requireMention', 'memberTools', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'replyCountsAsMention', 'atAllCountsAsMention', 'reactionOnMention', 'reactionEmoji', 'faceStyle', 'pokeEnabled', 'restrictedMemberPrefix', 'sensitivePatterns'],
   behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled', 'ignoreSelf', 'sidebarEntryEnabled'],
   // #58 群聊旁观：默认全关/空（enabled=false 时其余四键零行为）。
   bystander: ['bystanderEnabled', 'bystanderCapacity', 'bystanderCooldownMinutes', 'bystanderDailyLimit', 'bystanderTopics'],
@@ -134,6 +134,9 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   wakeNamesMember: [],
   replyCountsAsMention: false,
   atAllCountsAsMention: false,
+  // 群聊 @ 表情回执（默认关；仅 NapCat/SnowLuma 支持 set_msg_emoji_like）。
+  reactionOnMention: false,
+  reactionEmoji: 178,
   // T6 转正：@ 消息样式（name=显示名字，emoji=仅表情）。
   faceStyle: 'name',
   // T6 (PR port GIF 分帧)：开关默认 false，关闭时不装依赖也不触碰 FS（上游等价）。
@@ -224,7 +227,7 @@ const ENUM_KEYS: Readonly<Record<string, readonly string[]>> = {
   logLevel: ['debug', 'info', 'warn', 'error'],
   sttEngine: ['auto', 'openai', 'whisper-cpp', 'custom'],
 }
-const NUMBER_KEYS: readonly string[] = ['port', 'interimRecallMs', 'rateLimitPerMinute', 'deferredTimeoutMs', 'textImageThreshold', 'chatIdleEvictDays', 'outboundImageMaxBytes', 'maxVoiceBytes', 'maxFileBytes', 'inboundImageMaxPx', 'inboundFileMaxBytes', 'inboxQueueDelayMs', 'bystanderCapacity', 'bystanderCooldownMinutes', 'bystanderDailyLimit']
+const NUMBER_KEYS: readonly string[] = ['port', 'interimRecallMs', 'rateLimitPerMinute', 'deferredTimeoutMs', 'textImageThreshold', 'chatIdleEvictDays', 'outboundImageMaxBytes', 'maxVoiceBytes', 'maxFileBytes', 'inboundImageMaxPx', 'inboundFileMaxBytes', 'inboxQueueDelayMs', 'bystanderCapacity', 'bystanderCooldownMinutes', 'bystanderDailyLimit', 'reactionEmoji']
 /** 数字键取值范围（评审 B4：port 1–65535、时长/频控 ≥0；越界在 Remote 层拒绝，不再只依赖宿主回滚兜底）。 */
 const NUMBER_RANGE: Readonly<Record<string, readonly [number, number | undefined]>> = {
   port: [1, 65535],
@@ -244,12 +247,14 @@ const NUMBER_RANGE: Readonly<Record<string, readonly [number, number | undefined
   bystanderCapacity: [5, 500],
   bystanderCooldownMinutes: [5, 1440],
   bystanderDailyLimit: [1, 200],
+  // 群聊 @ 表情回执：表情 ID（非负整数）。
+  reactionEmoji: [0, undefined],
 }
 /** 布尔键白名单（T1 §4 + W6 + T5 键表 22 键 + T6 gifFramesEnabled + T7
  *  inboxQueueEnabled + T11 sidebarEntryEnabled + T24 titleSyncEnabled：26 键）。 */
 const BOOLEAN_KEYS: readonly string[] = [
   'requireMention', 'allowAllUsers', 'interimMessages', 'interimRecall', 'sendErrorNotice',
-  'newSessionGreeting', 'replyCountsAsMention', 'atAllCountsAsMention',
+  'newSessionGreeting', 'replyCountsAsMention', 'atAllCountsAsMention', 'reactionOnMention',
   'actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun',
   'textImageEnabled', 'pokeEnabled', 'firstMessageAsUser', 'memoryFilesEnabled', 'ignoreSelf',
   'sttEnabled', 'restrictedMemberPrefix', 'allowPrivateHosts', 'gifFramesEnabled', 'inboxQueueEnabled',
@@ -260,7 +265,8 @@ const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupA
 /** 全部 71 键（校验与快照的唯一键集；9 枚举 + 12 数字 + 26 布尔 + 13 字符串 +
  *  10 字符串数组 + notices 单独通道；T6 新增 gifFramesEnabled、T7 新增
  *  inboxQueueEnabled/inboxQueueDelayMs、T11 新增 sidebarEntryEnabled、T24 新增
- *  titleSyncEnabled）。 */
+ *  titleSyncEnabled、T1 reaction 新增 reactionOnMention/reactionEmoji，实际
+ *  键数以 ALL_KEYS 数组为准）。 */
 export const ALL_KEYS: readonly string[] = [
   ...Object.keys(ENUM_KEYS), ...NUMBER_KEYS, ...BOOLEAN_KEYS, ...STRING_KEYS, ...STRING_ARRAY_KEYS, 'notices',
 ]

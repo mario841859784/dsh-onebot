@@ -134,7 +134,7 @@ window.__ModuleLoader__.load({
 				// 本地加：权限分「私聊 / 群聊」两块展示（id = 分区词条键尾段；客户端展示结构，host 契约不涉）。
 				sections: [
 					{ id: "dm", title: "私聊", keys: ["dmPolicy", "allowFrom", "allowAllUsers", "adminUsers"] },
-					{ id: "group", title: "群聊", keys: ["requireMention", "memberTools", "groupPolicy", "groupAllowFrom", "wakeNamesAdmin", "wakeNamesMember", "replyCountsAsMention", "atAllCountsAsMention", "faceStyle", "pokeEnabled", "restrictedMemberPrefix"] },
+					{ id: "group", title: "群聊", keys: ["requireMention", "memberTools", "groupPolicy", "groupAllowFrom", "wakeNamesAdmin", "wakeNamesMember", "replyCountsAsMention", "atAllCountsAsMention", "reactionOnMention", "reactionEmoji", "faceStyle", "pokeEnabled", "restrictedMemberPrefix"] },
 					{ id: "common", title: "通用", keys: ["sensitivePatterns"] },
 				],
 				fields: [
@@ -150,6 +150,8 @@ window.__ModuleLoader__.load({
 					{ key: "wakeNamesMember", label: "他人唤醒词", type: "stringArray" },
 					{ key: "replyCountsAsMention", label: "被引用唤醒", type: "boolean", hint: "引用别人的消息也算叫我" },
 					{ key: "atAllCountsAsMention", label: "@全体唤醒", type: "boolean", hint: "@全体成员也算叫我" },
+					{ key: "reactionOnMention", label: "@ 表情回执", type: "boolean", hint: "群里被显式 @ 后，回合启动时给那条消息贴表情回执（已收到回执）；仅 NapCat/SnowLuma 支持，其他实现静默跳过" },
+					{ key: "reactionEmoji", label: "回执表情 ID", type: "number", hint: "表情回执用的表情 ID，默认 178（微笑）" },
 					{ key: "faceStyle", label: "QQ 表情呈现方式", type: "enum", options: ["name", "emoji"], optionLabels: { name: "官方表情表", emoji: "emoji 近似（旧观感）" }, hint: "表情名或 emoji 近似" },
 				{ key: "pokeEnabled", label: "戳一戳叫醒", type: "boolean" },
 					{ key: "restrictedMemberPrefix", label: "群聊非管理员加受限前缀", type: "boolean", hint: "打开后非管理员的消息带 [受限用户:仅问答] 标记：只答问题，可以要图片和表情包；关掉一视同仁" },
@@ -290,6 +292,8 @@ window.__ModuleLoader__.load({
 			wakeNamesMember: [],
 			replyCountsAsMention: false,
 			atAllCountsAsMention: false,
+			reactionOnMention: false,
+			reactionEmoji: 178,
 			faceStyle: "name",
 			pokeEnabled: true,
 			interimMessages: true,
@@ -499,6 +503,8 @@ window.__ModuleLoader__.load({
 			wakeNamesMember: vArray(vString(0, 64)),
 			replyCountsAsMention: vBoolean(),
 			atAllCountsAsMention: vBoolean(),
+			reactionOnMention: vBoolean(),
+			reactionEmoji: vNumber(),
 			faceStyle: vEnum(["name", "emoji"]),
 			pokeEnabled: vBoolean(),
 			interimMessages: vBoolean(),
@@ -607,6 +613,8 @@ window.__ModuleLoader__.load({
 			wakeNamesMember: vOptional(vArray(vString(0, 64))),
 			replyCountsAsMention: vOptional(vBoolean()),
 			atAllCountsAsMention: vOptional(vBoolean()),
+			reactionOnMention: vOptional(vBoolean()),
+			reactionEmoji: vOptional(vNumber(0)),
 			faceStyle: vOptional(vEnum(["name", "emoji"])),
 			pokeEnabled: vOptional(vBoolean()),
 			restrictedMemberPrefix: vOptional(vBoolean()),
@@ -886,6 +894,8 @@ window.__ModuleLoader__.load({
 					wakeNamesMember: { label: "Member wake names" },
 					replyCountsAsMention: { label: "Quoted-message wakes", hint: "Quoting someone else's message also wakes me" },
 					atAllCountsAsMention: { label: "@-all wakes", hint: "@-ing everyone also counts as a wake" },
+					reactionOnMention: { label: "@ reaction receipt", hint: "After an explicit @ in a group chat, attach an emoji reaction to that message when the turn starts (acknowledged receipt); NapCat/SnowLuma only, silently skipped elsewhere" },
+					reactionEmoji: { label: "Reaction emoji ID", hint: "Emoji ID for the reaction receipt, default 178 (smile)" },
 					faceStyle: { label: "QQ face rendering", hint: "Face names or emoji approximation", options: { name: "Official face table", emoji: "Emoji approximation (legacy look)" } },
 					pokeEnabled: { label: "Poke wakes" },
 					restrictedMemberPrefix: { label: "Restricted prefix for non-admins", hint: "When on, non-admin group messages carry a [restricted user: Q&A only] marker: answers questions only, may still request images and stickers; off = treat everyone the same" },
@@ -1218,6 +1228,8 @@ window.__ModuleLoader__.load({
 		 */
 		var NUMBER_RANGE: any = {
 			port: [1, 65535],
+			// T1 reaction：表情 ID（非负整数）。
+			reactionEmoji: [0, undefined],
 			interimRecallMs: [0, undefined],
 			rateLimitPerMinute: [0, undefined],
 			deferredTimeoutMs: [0, undefined],

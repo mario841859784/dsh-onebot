@@ -77,6 +77,12 @@ export interface BridgeConfig {
   botQQ: string
   ignoreSelf: boolean
   requireMention: boolean
+  /** 群聊 @ 表情回执：群聊被显式 @ 后，回合启动时给该消息贴表情回执（已收到
+   *  回执）；仅 NapCat/SnowLuma 支持（set_msg_emoji_like），其他实现静默跳过。
+   *  absent/false = 关闭。 */
+  reactionOnMention?: boolean
+  /** 回执表情 ID（set_msg_emoji_like 的 emoji_id），absent → 178（微笑）。 */
+  reactionEmoji?: number
   /** Unknown slash-command handling (R1): 'intercept' (default) consumes the
    * message with a closest-match suggestion or a hint; 'passthrough' restores
    * the old fall-through to the model. */
@@ -532,7 +538,7 @@ export class ChatBridge {
       },
       buildBody: (text, media, chatId) => this.buildBody(text, media, chatId),
       expandQuote: (messageId, verifiedData) => this.expandQuote(messageId, verifiedData),
-      dispatchFollowup: (chatId, text, role, nickname) => this.dispatchFollowup(chatId, text, role, nickname),
+      dispatchFollowup: (chatId, text, role, nickname, options) => this.dispatchFollowup(chatId, text, role, nickname, options),
       // 群聊旁观 (#58)：mention 门 drop 点喂缓冲；seam 可选（旧测试桩缺席 = 零行为）。
       feedBystander: (chatId, entry) => this.feedBystander(chatId, entry),
       interceptBusyTurn: (chatId, text, role, nickname, plain) => this.interceptBusyTurn(chatId, text, role, nickname, plain),
@@ -818,7 +824,7 @@ export class ChatBridge {
   /** Feed one user message into a chat's agent (create on demand). Records
    * the base text for /retry, queues the initiator's turn role, and applies
    * per-chat /goal + /plan prefixes. */
-  private async dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string, options?: { recordTail?: boolean; bystander?: boolean }): Promise<void> {
+  private async dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string, options?: { recordTail?: boolean; bystander?: boolean; reactionMessageId?: string }): Promise<void> {
     const final = this.prefixTurn(chatId, text)
     const fallback = this.chats.get(chatId)?.lastNickname ?? ''
     const chat = await this.ensureChat(chatId, nickname ?? fallback)
@@ -869,6 +875,9 @@ export class ChatBridge {
     // T24 (PR port 会话标题同步)：派发回合后按开关门控触发宿主标题刷新
     // （#58 旁观回合不刷——标题不被旁听回顾文本带跑）。
     if (!isBystander) this.syncSessionTitle(chat)
+    // 群聊 @ 表情回执：回合启动点（与 startTyping 同位）best-effort 贴一次
+    // 表情——每条消息最多一次（调用点唯一、由 inbound 传 reactionMessageId）。
+    if (options?.reactionMessageId !== undefined) this.sendReactionReceipt(chatId, options.reactionMessageId)
     this.startTyping(chat)
   }
 
@@ -1798,6 +1807,28 @@ export class ChatBridge {
   }
 
   // ------------------------------------------------------------ typing
+
+  /**
+   * 群聊 @ 表情回执：在触发回合的那条消息上贴一个表情（NapCat/SnowLuma 的
+   * set_msg_emoji_like 扩展 action），补 QQ 群聊没有「正在输入」指示的空缺。
+   * 门控与失败路径与 startTyping 对称：
+   * - reactionOnMention 关（默认）→ 不做任何事（零行为差异）；
+   * - 消息 id 非数字（理论上不会）→ 跳过；
+   * - 实现不支持该 action（其他 OneBot 实现）→ 连接层报错，best-effort
+   *   静默降级（debug 日志），绝不影响回复管线。
+   */
+  private sendReactionReceipt(chatId: ChatId, messageId: string): void {
+    const config = this.deps.config
+    if (config.reactionOnMention !== true) return
+    const id = Number(messageId)
+    if (!Number.isFinite(id)) return
+    void this.guardedConnectionCall('set_msg_emoji_like', {
+      message_id: id,
+      emoji_id: String(config.reactionEmoji ?? 178),
+    }, chatId).catch((error: unknown) => {
+      this.deps.log('debug', '表情回执失败（set_msg_emoji_like 不受支持或连接不可用）: ' + describeError(error))
+    })
+  }
 
   /** Start the NapCat typing indicator (private chats only). */
   private startTyping(chat: ChatAgent): void {

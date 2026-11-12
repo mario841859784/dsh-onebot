@@ -38,6 +38,12 @@ export interface BridgeConfig {
     botQQ: string;
     ignoreSelf: boolean;
     requireMention: boolean;
+    /** 群聊 @ 表情回执：群聊被显式 @ 后，回合启动时给该消息贴表情回执（已收到
+     *  回执）；仅 NapCat/SnowLuma 支持（set_msg_emoji_like），其他实现静默跳过。
+     *  absent/false = 关闭。 */
+    reactionOnMention?: boolean;
+    /** 回执表情 ID（set_msg_emoji_like 的 emoji_id），absent → 178（微笑）。 */
+    reactionEmoji?: number;
     /** Unknown slash-command handling (R1): 'intercept' (default) consumes the
      * message with a closest-match suggestion or a hint; 'passthrough' restores
      * the old fall-through to the model. */
@@ -734,6 +740,16 @@ export declare class ChatBridge {
      * not) push messages to QQ.
      */
     private installChannelScope;
+    /**
+     * 群聊 @ 表情回执：在触发回合的那条消息上贴一个表情（NapCat/SnowLuma 的
+     * set_msg_emoji_like 扩展 action），补 QQ 群聊没有「正在输入」指示的空缺。
+     * 门控与失败路径与 startTyping 对称：
+     * - reactionOnMention 关（默认）→ 不做任何事（零行为差异）；
+     * - 消息 id 非数字（理论上不会）→ 跳过；
+     * - 实现不支持该 action（其他 OneBot 实现）→ 连接层报错，best-effort
+     *   静默降级（debug 日志），绝不影响回复管线。
+     */
+    private sendReactionReceipt;
     /** Start the NapCat typing indicator (private chats only). */
     private startTyping;
     /** Stop the typing indicator. */
