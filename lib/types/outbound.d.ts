@@ -101,6 +101,15 @@ export interface SendOptions {
  * line-edge shapes only (alone on a line, or glued at a line start/end) —
  * mid-line occurrences (ordinary `<`, XML, comparisons, prose mentions of
  * the prefixes) stay untouched.
+ *
+ * #46（最新评论）: 宿主元信息的另一组盲区同样要剥——skill_content 成对块、
+ * system-reminder / system_reminder 成对块（两种拼写都会出现，可嵌套、可
+ * 混用）整块丢弃：先用 \1 反向引用的成对正则循环 replace 至不动点（开闭
+ * 拼写一致才成对，懒惰匹配止于最近的同名闭标签——嵌套块的外层连同内层
+ * 一起吃掉），再剥残留散标签兜底混合拼写的孤儿标签；</input> 只剥收尾
+ * 形态——开标签 <input type="…"> 与正文讨论 HTML 的场景一律不碰。标签名
+ * 受限，普通尖括号（a < b、<tag>、<br>）不受影响。这一段在 user_message
+ * 早退判断之前跑：真实泄漏样本里往往没有 user_message 包裹。
  */
 export declare function stripBoundaryLeakage(text: string): string;
 /** Narrow view of a live chat the outbound pipeline may touch — the
