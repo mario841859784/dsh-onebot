@@ -48,6 +48,20 @@ export interface HealthDeps {
         intercepted: number;
         skippedHistory: number;
     } | undefined;
+    /** #61: the live trace sink (structural — the report only reads its
+     * counters). Absent = tracing off (traceEnabled=false leaves the sink
+     * unconstructed); the report renders a visible off state instead of
+     * silently omitting the section, so "trace on but zero records" after an
+     * abnormal restart is diagnosable from /healthcheck. */
+    trace?: {
+        getStats(): {
+            written: number;
+            dropped: number;
+            suppressed: number;
+            writeFailures: number;
+            rotated: number;
+        };
+    } | undefined;
     /** The already-redacted config snapshot (see redactSnapshot). */
     configSnapshot: Record<string, unknown>;
     /** Secret VALUES to scrub from every packed artifact (e.g. accessToken). */

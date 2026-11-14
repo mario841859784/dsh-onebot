@@ -187,6 +187,32 @@ describe('plugin entry', () => {
     }
   })
 
+  it('#61: the mount log surfaces the trace state — trace=off by default, trace=on(<level>) when enabled', async () => {
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-plugin-'))
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    try {
+      // Default config (traceEnabled=false): the sink is not constructed and
+      // the mounted line must say so visibly.
+      const offCtx = makeCtx()
+      const offEffect = vi.spyOn(offCtx.ctx as { effect: (cb: () => unknown, label?: string) => unknown }, 'effect')
+      apply(offCtx.ctx as never, Config({ mediaDir, port: 0, mode: 'reverse', accessToken: 'test-token', botQQ: '10002', sttEnabled: false, sensitivePatterns: [] }))
+      const offTexts = () => log.mock.calls.map(c => String(c[0]))
+      await vi.waitFor(() => expect(offTexts().some(t => t.startsWith('[dsh-onebot] mounted (mode=') && t.includes(', trace=off)'))).toBe(true))
+      await (offEffect.mock.results[0].value as () => Promise<void>)()
+
+      // traceEnabled=true + traceLevel=warn: the mounted line carries the level.
+      log.mockClear()
+      const onCtx = makeCtx()
+      const onEffect = vi.spyOn(onCtx.ctx as { effect: (cb: () => unknown, label?: string) => unknown }, 'effect')
+      apply(onCtx.ctx as never, Config({ mediaDir, port: 0, mode: 'reverse', accessToken: 'test-token', botQQ: '10002', sttEnabled: false, sensitivePatterns: [], traceEnabled: true, traceLevel: 'warn' }))
+      const onTexts = () => log.mock.calls.map(c => String(c[0]))
+      await vi.waitFor(() => expect(onTexts().some(t => t.startsWith('[dsh-onebot] mounted (mode=') && t.includes(', trace=on(warn)'))).toBe(true))
+      await (onEffect.mock.results[0].value as () => Promise<void>)()
+    } finally {
+      log.mockRestore()
+    }
+  })
+
   it('warns once at mount when workspacePath is unset; silent when configured (T3 方案 B)', () => {
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-plugin-'))
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)

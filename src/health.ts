@@ -52,6 +52,12 @@ export interface HealthDeps {
   recorder?: { enabled: boolean; redact: boolean; written: number } | undefined
   /** Inject channel state (absent = channel off). */
   inject?: { enabled: boolean; dryRun: boolean; consumed: number; intercepted: number; skippedHistory: number } | undefined
+  /** #61: the live trace sink (structural — the report only reads its
+   * counters). Absent = tracing off (traceEnabled=false leaves the sink
+   * unconstructed); the report renders a visible off state instead of
+   * silently omitting the section, so "trace on but zero records" after an
+   * abnormal restart is diagnosable from /healthcheck. */
+  trace?: { getStats(): { written: number; dropped: number; suppressed: number; writeFailures: number; rotated: number } } | undefined
   /** The already-redacted config snapshot (see redactSnapshot). */
   configSnapshot: Record<string, unknown>
   /** Secret VALUES to scrub from every packed artifact (e.g. accessToken). */
@@ -124,6 +130,15 @@ export async function healthReport(deps: HealthDeps): Promise<string> {
   lines.push('写闸门：本分钟 ' + deps.writeGate.minuteUsed + '/' + deps.writeGate.minuteLimit + ' · 今日 ' + deps.writeGate.dayUsed + '/' + deps.writeGate.dayLimit)
   lines.push('录制：' + (deps.recorder?.enabled ? '开启（redact=' + (deps.recorder.redact ? 'on' : 'off') + '，已写 ' + deps.recorder.written + ' 行）' : '关闭'))
   lines.push('注入：' + (deps.inject?.enabled ? '开启（dryRun=' + (deps.inject.dryRun ? 'on' : 'off') + '，已消费 ' + deps.inject.consumed + ' 行、拦截出站 ' + deps.inject.intercepted + ' 次、跳过历史 ' + deps.inject.skippedHistory + ' 条）' : '关闭'))
+  // #61: the trace sink's live counters; absent sink = trace off (the sink is
+  // not constructed when traceEnabled=false). Both states stay visible so the
+  // report never goes quiet about tracing.
+  const traceStats = deps.trace?.getStats()
+  if (traceStats === undefined) {
+    lines.push('追踪：关闭（traceEnabled=false 时不构造 sink、不落盘）')
+  } else {
+    lines.push('追踪：开启（written=' + traceStats.written + ' · writeFailures=' + traceStats.writeFailures + ' · dropped=' + traceStats.dropped + ' · suppressed=' + traceStats.suppressed + ' · rotated=' + traceStats.rotated + '）')
+  }
   const files: string[] = []
   for (const [name, rotated] of [[TRACE_FILE, traceRotatedFile], [INBOX_FILE, inboxRotatedFile]] as const) {
     const size = await fileSize(join(deps.mediaDir, name))

@@ -12,7 +12,7 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 
 import { buildZip, crc32, exportDiagnostics, healthReport, redactSnapshot, scrubSecrets } from '../src/health.js'
-import { TRACE_FILE } from '../src/trace.js'
+import { TRACE_FILE, TraceSink } from '../src/trace.js'
 
 import { makeCmdHarness } from './helpers/bridge-harness.js'
 
@@ -61,6 +61,34 @@ describe('health report (src/health.ts)', () => {
     }))
     expect(report).toContain('连接：未连接')
     expect(report).toContain('重试/自愈：reverse 接管重试 未知 次')
+    expect(report).toContain('最近 ok:false 事件：无（或 trace 未开启）')
+  })
+
+  it('#61: renders the live trace sink counters when the sink is injected', async () => {
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-health-'))
+    const sink = new TraceSink({ dir: mediaDir, log: () => undefined })
+    sink.emit({ traceId: 't-1', stage: 'inbound', ok: true })
+    // Same stage+reason within the window: the repeat is counted, not written.
+    sink.emit({ traceId: 't-2', stage: 'whitelist', ok: false, reason: '私聊用户不在允许名单，已忽略' })
+    sink.emit({ traceId: 't-2', stage: 'whitelist', ok: false, reason: '私聊用户不在允许名单，已忽略' })
+    await sink.flush()
+    const stats = sink.getStats()
+    expect(stats.written).toBe(2)
+    expect(stats.suppressed).toBe(1)
+    const report = await healthReport(baseDeps(mediaDir, { trace: sink }))
+    expect(report).toContain('追踪：开启（written=2')
+    expect(report).toContain('writeFailures=0')
+    expect(report).toContain('dropped=0')
+    expect(report).toContain('suppressed=1')
+    expect(report).toContain('rotated=0')
+  })
+
+  it('#61: renders a visible trace-off state when no sink is injected (default-off path)', async () => {
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-health-'))
+    const report = await healthReport(baseDeps(mediaDir))
+    expect(report).toContain('追踪：关闭')
+    // The rest of the report renders unaffected (no sink = no crash).
+    expect(report).toContain('▍dsh-onebot 体检')
     expect(report).toContain('最近 ok:false 事件：无（或 trace 未开启）')
   })
 })

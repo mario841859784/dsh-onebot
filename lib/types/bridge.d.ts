@@ -100,6 +100,13 @@ export interface BridgeConfig {
      * 扫描宿主 sessions 目录找该 chat 可用的最新会话自动重绑；absent/false =
      * 关（默认，维持上游默认行为），开启后探测失败仍静默降级为原行为。 */
     sessionAutoRecover?: boolean;
+    /** #61 建议 2（启动恢复会话开关）：启动时按 chat-sessions.json mapping 恢复
+     * 各 chat 的上次会话；absent/true = 默认（既有行为，零变化）。false = loadMapping
+     * 完全跳过启动 resume——不 resume、不 retire、不把 mapping 条目停入
+     * evictedChats 作重试载体；首条消息走既有 createChat 新建路径，mapping 经正常
+     * 保存流更新为新 id，旧会话日志文件不动（「每次重启都开全新会话」的显式出口）。
+     * 改动需重启插件生效。 */
+    startupResumeEnabled?: boolean;
     /** Max inbound file bytes fetched via QQ direct link / base64 (0 = no cap). */
     maxInboundFileBytes: number;
     /** B8c: chats idle longer than this many days are evicted on the next

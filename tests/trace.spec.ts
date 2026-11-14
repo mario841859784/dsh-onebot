@@ -29,6 +29,22 @@ const readLines = (file: string): TraceEvent[] => {
 const current = (dir: string): string => join(dir, 'qq-trace.jsonl')
 
 describe('trace sink (src/trace.ts)', () => {
+  it('#61: an empty dir warns exactly once at construction, then stays silent per event', async () => {
+    const warns: string[] = []
+    const sink = new TraceSink({ log: (level, message) => { if (level === 'warn') warns.push(message) } })
+    expect(warns).toEqual(['trace 目录未配置，事件不落盘'])
+    // Construction-time only: the silent drain (dir='' counts written without
+    // touching a file) must not nag per event.
+    sink.emit({ traceId: 't-nodir', stage: 'inbound', ok: true })
+    sink.emit({ traceId: 't-nodir', stage: 'agent', ok: true })
+    await sink.flush()
+    expect(warns).toHaveLength(1)
+    // A configured dir (the normal traceEnabled path) never warns.
+    const dir = mkdtempSync(join(tmpdir(), 'onebot-trace-'))
+    new TraceSink({ dir, log: (level, message) => { if (level === 'warn') warns.push(message) } })
+    expect(warns).toHaveLength(1)
+  })
+
   it('mints short sortable trace ids', () => {
     const a = newTraceId(1_760_000_000_000)
     const b = newTraceId(1_760_000_000_000)
