@@ -246,6 +246,11 @@ export interface Config {
   groupWorkspacePath: string
   /** T3 (PR port 退休会话自动恢复)：退休会话自动重绑开关；false=默认关。 */
   sessionAutoRecover: boolean
+  /** #61 建议 2（启动恢复会话开关）：启动按 chat-sessions.json mapping 恢复各
+   * chat 的上次会话；默认 true（既有行为，零变化）。false = 启动完全跳过
+   * resume（不 resume、不 retire、不留 evictedChats 重试载体），首条消息新建
+   * 会话；旧会话日志文件不动。 */
+  startupResumeEnabled: boolean
   /** T4 (PR port 提示词文件)：私聊（dm:）会话的附加设定文件路径（~/ 展开）；
    * 空 = 不注入（默认）。 */
   dmPromptFile: string
@@ -485,6 +490,8 @@ export const Config: Z<Config> = z.object({
     .description('群工作区目录（T3 PR 移植）：设置后群聊会话默认落在该独立目录（自动归入该工作区），私聊不受影响；单聊 /workspace 覆盖仍最优先；留空 = 群聊与私聊同源 workspacePath（默认，维持现行为）'),
   sessionAutoRecover: z.boolean().default(false)
     .description('退休会话自动恢复（T3 PR 移植）：chat 绑定的会话在宿主侧已退休/不存在时，启动加载扫描宿主 sessions 目录，找该 chat 可用的最新会话自动重绑；扫描失败/无候选时静默降级为原行为（保持退休跳过或重新建会话）；默认关（不改变现行为）'),
+  startupResumeEnabled: z.boolean().default(true)
+    .description('启动恢复会话（#61 建议 2）：插件启动时按 chat-sessions.json 映射恢复各 chat 的上次会话（默认开，行为与既有版本一致）；关闭后启动完全跳过 resume——不恢复、不退休旧会话、也不把映射条目留作重试载体，每个 chat 的首条消息走既有新建路径开全新会话（映射随之更新为新会话 id），旧会话日志文件保留不动；改动重启插件后生效'),
   dmPromptFile: z.string().default('')
     .description('私聊附加设定文件路径（T4 PR 移植）：支持 ~/ 展开；文件内容（剥行首尾空白）注入私聊会话 system prompt 的「本会话附加设定」段，文件编辑后即时生效（mtime 缓存失效）；留空 = 不注入（默认）'),
   groupPromptFile: z.string().default('')
@@ -791,6 +798,8 @@ export function apply(ctx: Context, config: Config): void {
       workspacePath: config.workspacePath,
       groupWorkspacePath: config.groupWorkspacePath,
       sessionAutoRecover: config.sessionAutoRecover,
+      // #61 建议 2（启动恢复会话开关）：透传（默认 true；门控在 registry.loadMapping）。
+      startupResumeEnabled: config.startupResumeEnabled,
       dmPromptFile: config.dmPromptFile,
       groupPromptFile: config.groupPromptFile,
       memoryFilesEnabled: config.memoryFilesEnabled,
@@ -830,7 +839,10 @@ export function apply(ctx: Context, config: Config): void {
     // when the effect body runs; 'mounted' only after the whole start chain
     // has settled (the old single line printed BEFORE completion, claiming
     // "mounted" while the channels were still coming up).
-    const mountDetails = ' (mode=' + config.mode + ', media=' + mediaDir + ', admins=' + policy.adminUsers.length + ')'
+    // #61: surface the trace state in the mount log — after an abnormal
+    // restart the switch falls back to default-off with zero signal; showing
+    // trace=on(<level>)/trace=off makes that fallback visible at mount.
+    const mountDetails = ' (mode=' + config.mode + ', media=' + mediaDir + ', admins=' + policy.adminUsers.length + ', trace=' + (config.traceEnabled ? 'on(' + config.traceLevel + ')' : 'off') + ')'
     console.log('[dsh-onebot] starting' + mountDetails)
     try {
       await bridge.start()

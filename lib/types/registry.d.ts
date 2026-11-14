@@ -164,7 +164,7 @@ export interface RegistryDeps {
      * undefined falls back to the same env/home resolution index.ts uses. */
     dshHome?: string;
     /** The only config fields the registry reads. */
-    config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'agentPresetGroup' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays' | 'groupWorkspacePath' | 'sessionAutoRecover'>;
+    config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'agentPresetGroup' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays' | 'groupWorkspacePath' | 'sessionAutoRecover' | 'startupResumeEnabled'>;
     log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void;
     /** Bridge stop flag (guards the resume loop). */
     isStopping(): boolean;

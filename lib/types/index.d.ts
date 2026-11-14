@@ -254,6 +254,11 @@ export interface Config {
     groupWorkspacePath: string;
     /** T3 (PR port 退休会话自动恢复)：退休会话自动重绑开关；false=默认关。 */
     sessionAutoRecover: boolean;
+    /** #61 建议 2（启动恢复会话开关）：启动按 chat-sessions.json mapping 恢复各
+     * chat 的上次会话；默认 true（既有行为，零变化）。false = 启动完全跳过
+     * resume（不 resume、不 retire、不留 evictedChats 重试载体），首条消息新建
+     * 会话；旧会话日志文件不动。 */
+    startupResumeEnabled: boolean;
     /** T4 (PR port 提示词文件)：私聊（dm:）会话的附加设定文件路径（~/ 展开）；
      * 空 = 不注入（默认）。 */
     dmPromptFile: string;

@@ -45,7 +45,7 @@ describe('T5 键表完整性（SCHEMA_DEFAULTS 与 schema 无孤儿键）', () =
     expect(SETTINGS_GROUPS.behavior).toHaveLength(14) // T24：+titleSyncEnabled；0.10.0：+ignoreSelf/sidebarEntryEnabled
     expect(SETTINGS_GROUPS.bystander).toHaveLength(5) // #58：旁观五键
     expect(SETTINGS_GROUPS.behavior).toEqual(expect.arrayContaining(['inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled']))
-    expect(SETTINGS_GROUPS.session).toHaveLength(10) // 0.10.0：5→10（+工作区×2/强制会话/提示词文件×2）
+    expect(SETTINGS_GROUPS.session).toHaveLength(11) // 0.10.0：5→10（+工作区×2/强制会话/提示词文件×2）；#61 建议 2：10→11（+startupResumeEnabled）
     expect(SETTINGS_GROUPS.media).toHaveLength(17) // T6：+gifFramesEnabled；0.10.0：+allowPrivateHosts
     expect(SETTINGS_GROUPS.media).toContain('gifFramesEnabled')
     expect(SETTINGS_GROUPS.diagnostics).toHaveLength(7)

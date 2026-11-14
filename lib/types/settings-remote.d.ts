@@ -82,11 +82,11 @@ export declare const NOTICE_KEYS: readonly string[];
 export declare const PENDING_SCHEMA_KEYS: readonly string[];
 /** 快照返回侧脱敏的键（T1 §3 敏感字段行；写入侧明文落盘属宿主既有行为）。 */
 export declare const SECRET_KEYS: readonly string[];
-/** 全部 71 键（校验与快照的唯一键集；9 枚举 + 12 数字 + 26 布尔 + 13 字符串 +
+/** 全部 71 键（校验与快照的唯一键集；9 枚举 + 12 数字 + 29 布尔 + 13 字符串 +
  *  10 字符串数组 + notices 单独通道；T6 新增 gifFramesEnabled、T7 新增
  *  inboxQueueEnabled/inboxQueueDelayMs、T11 新增 sidebarEntryEnabled、T24 新增
- *  titleSyncEnabled、T1 reaction 新增 reactionOnMention/reactionEmoji，实际
- *  键数以 ALL_KEYS 数组为准）。 */
+ *  titleSyncEnabled、T1 reaction 新增 reactionOnMention/reactionEmoji、#61 建议 2
+ *  新增 startupResumeEnabled，实际键数以 ALL_KEYS 数组为准）。 */
 export declare const ALL_KEYS: readonly string[];
 /** OnebotSettingsSnapshot（T1 §3 快照结构）。 */
 export interface OnebotSettingsSnapshot {
