@@ -878,14 +878,6 @@ window.__ModuleLoader__.load({
 					url: { label: "Forward WS server address", hint: "Server address in forward mode" },
 					accessToken: { label: "Access token (AccessToken)" },
 					botQQ: { label: "Bot QQ id" },
-					workspacePath: { label: "Default DM workspace path", hint: "Default directory for new DM sessions" },
-					groupWorkspacePath: { label: "Default group workspace path", hint: "Default directory for new group sessions; empty = same as DM" },
-					forceSessionId: { label: "Force session id", hint: "When set, always use this session id (advanced; usually left empty)" },
-					dmPromptFile: { label: "DM prompt file (txt path)" },
-					groupPromptFile: { label: "Group prompt file (txt path)" },
-					allowPrivateHosts: { label: "Allow localhost/private-network downloads", hint: "Private-network links are blocked by default; enable when NapCat's file service runs locally" },
-					ignoreSelf: { label: "Ignore own messages", hint: "Do not process the bot's own echo messages" },
-					sidebarEntryEnabled: { label: "Home sidebar entry", hint: "Show a \"QQ Bot\" entry in the DSH home sidebar; changes apply after a page reload" },
 				},
 			},
 			permissions: {
@@ -926,6 +918,8 @@ window.__ModuleLoader__.load({
 					inboxQueueEnabled: { label: "Inbound burst merging", hint: "Merge several messages burst-sent to one session into a single delivery" },
 					inboxQueueDelayMs: { label: "Merge wait window (ms)", hint: "Each message waits one window before delivery; 0 = immediately" },
 					titleSyncEnabled: { label: "QQ session title sync", hint: "Let the host refresh session titles after each message (one small LLM call); titles you named manually in the host are never overwritten" },
+					ignoreSelf: { label: "Ignore own messages", hint: "Do not process the bot's own echo messages" },
+					sidebarEntryEnabled: { label: "Home sidebar entry", hint: "Show a \"QQ Bot\" entry in the DSH home sidebar; changes apply after a page reload" },
 				},
 			},
 			bystander: {
@@ -947,6 +941,11 @@ window.__ModuleLoader__.load({
 					memoryFilesEnabled: { label: "Read memory files on new sessions" },
 					memoryFiles: { label: "Memory file paths", placeholder: "Absolute file paths; split by comma, enumeration comma, or newline" },
 					agentPreset: { label: "Agent preset for new sessions (preset id, e.g. standard; empty = host default)", placeholder: "standard" },
+					workspacePath: { label: "Default DM workspace path", hint: "Default directory for new DM sessions" },
+					groupWorkspacePath: { label: "Default group workspace path", hint: "Default directory for new group sessions; empty = same as DM" },
+					forceSessionId: { label: "Force session id", hint: "When set, always use this session id (advanced; usually left empty)" },
+					dmPromptFile: { label: "DM prompt file (txt path)" },
+					groupPromptFile: { label: "Group prompt file (txt path)" },
 				},
 			},
 			media: {
@@ -968,6 +967,7 @@ window.__ModuleLoader__.load({
 					inboundImageMaxPx: { label: "Inbound image max long edge (px)", placeholder: "Default 2048; 1440+ recommended" },
 					inboundFileMaxBytes: { label: "Inbound file size cap (bytes)", placeholder: "Default 20971520 (20MB); 0 = unlimited" },
 					gifFramesEnabled: { label: "GIF frame splitting", hint: "Attach a 4-frame vertical strip next to received GIFs so the model can follow the motion (default off)" },
+					allowPrivateHosts: { label: "Allow localhost/private-network downloads", hint: "Private-network links are blocked by default; enable when NapCat's file service runs locally" },
 				},
 			},
 			diagnostics: {
