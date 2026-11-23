@@ -1066,3 +1066,12 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **部署**：活体 /Users/mario/dsh-onebot 从本地开发仓 fetch 快进到 7478ab8（GitHub 当晚 SSL 抖动，push 待网络恢复补推）；desktop profile 的 node_modules/dsh-onebot-qq 为文件副本（file: 直挂），rsync 同步后重启 DeepSeek Harness 应用生效。
 - **真机点验**：旁观页签渲染正确（desc「群聊旁观与主动插话」+ 开关 + hint，4 个 showIf 字段默认隐藏）；权限页「成员工具权限」三档分段控件（禁用全部/仅发送类/不限）+ hint 落位正确，默认禁用全部。en 界面 Lurk 页签/Member tool access 同步验证（宿主语言实切 English）。
 - **四图重截**：docs/settings-ui-connection.jpg / behavior.jpg（zh）与 -en.jpg 两张（1280×820 实拍，暗色主题跟随宿主），页签条均为七组口径；宿主语言拍后切回中文还原。
+
+## 2026-11-23 qq_send_forward 节点可引用已有消息（`{ id }`）
+
+- **问题**：`qq_send_forward` 的每个节点只能是自写的 `{ name, content }`，想把群里刚才的几条原消息转给别人只能手抄一遍（显示名、内容都成了机器人编的）。
+- **方案**：节点也可以是 `{ id: "<message_id>" }`，出站为 OneBot 11 `{ type: 'node', data: { id } }`，由协议端填原发送者和原内容；两种节点可混排、按顺序展示。id 校验复用入站引用的 `numericReplyId`（十进制、可带负号、安全整数，拒空白/十六进制/小数/指数），另拒 `0`（SnowLuma 把 0 当「没给 id」，会按自写节点处理）；工具 schema 里 `id` 是 string，非字符串由宿主参数校验先拦。带 id 的节点忽略 name/content。
+- **两条路**：只扩主动工具那条（`OutboundPipeline.sendForward`，类型 `ForwardNodeInput`）；回复里 `[[qq_forward]]` 块的被动那条（`sendForwardNodes`）仍只收自写节点。两条共用新拆出的 `textForwardNode`（自写节点拼装，与原逐字节相同）和 `dispatchForward`（按群/私聊路由）。
+- **审计**：软性敏感词审计 `scanSensitive` 只跑在 sendToChat 的模型正文上，工具这条本来就不跑；`{ id }` 节点没有我们写的正文，不为它 get_msg 取原文（内容是别人发过、已在 QQ 里的，协议端自己解析 id、未知 id 直接报错，多一次 get_msg 只为一条只记日志的检查不划算）。写操作审计（qq-actions.log）照旧一次主动写一行；含引用节点时 reason 末尾附「（引用已有消息 id=…）」，最多列 20 个，再多写总数；全是自写节点时 reason 不变。
+- **未改**：memberTools 分档不动（qq_send_forward 仍仅管理员回合）；频控仍按一次调用计一次主动写。
+- **测试**：outbound.spec +6（两条 golden：全自写节点时群/私聊请求与改动前逐字节一致，在改动前代码上同样通过；混排形状与审计 reason；私聊路由与失败审计；20 个 id 截断；频控）；tools-gate.spec +7（golden、空 content 仍拒、混排与忽略 name/content、私聊 chat_id、非法 id、空 id 回落、成员档仍拦）。

@@ -695,3 +695,103 @@ describe('qq_send_image caption 清洗 + qq_send_segments 丢弃分支与丢弃�
     expect(h.logs).toHaveLength(0)
   })
 })
+
+/**
+ * qq_send_forward 引用已有消息：节点可以是自写的 { name, content }，也可以是
+ * { id }（OneBot 11 node 段引用已有 message_id），两种可混排。id 校验与入站
+ * 引用同一口径（numericReplyId），另拒 0。golden 组在改动前的代码上同样通过：
+ * 全是自写节点时，工具发出的 OneBot 请求逐字节不变。
+ */
+describe('qq_send_forward 节点引用已有消息', () => {
+  it('golden: all-text nodes through the tool send the exact pre-change request', async () => {
+    const h = await makeHarness()
+    h.seed('fwd-golden', 'admin')
+    const result = await h.tool('qq_send_forward').execute({
+      messages: [{ name: '甲', content: '第一条' }, { content: '没给名字' }],
+    }, h.exec('fwd-golden'))
+    expect(result).toEqual({ sent: true, messageId: null })
+    expect(JSON.stringify(h.calls)).toBe(JSON.stringify([{
+      action: 'send_forward_msg',
+      params: {
+        group_id: 20001,
+        messages: [
+          { type: 'node', data: { uin: '10002', name: '甲', content: [{ type: 'text', data: { text: '第一条' } }] } },
+          { type: 'node', data: { uin: '10002', name: '助手', content: [{ type: 'text', data: { text: '没给名字' } }] } },
+        ],
+      },
+    }]))
+  })
+
+  it('golden: a text node with empty content is still rejected before any send', async () => {
+    const h = await makeHarness()
+    h.seed('fwd-empty', 'admin')
+    await expect(h.tool('qq_send_forward').execute({ messages: [{ name: '甲', content: '' }] }, h.exec('fwd-empty')))
+      .rejects.toThrow('qq_send_forward: 每条消息都需要 content')
+    expect(h.calls).toHaveLength(0)
+  })
+
+  it('mixes { id } and { name, content } nodes in order; id nodes need no content', async () => {
+    const h = await makeHarness()
+    h.seed('fwd-mixed', 'admin')
+    await h.tool('qq_send_forward').execute({
+      messages: [
+        { name: '助手', content: '刚才这两条：' },
+        { id: '1234567' },
+        { id: ' 7654321 ', name: '会被忽略', content: '也会被忽略' },
+      ],
+    }, h.exec('fwd-mixed'))
+    expect(h.calls).toEqual([{
+      action: 'send_forward_msg',
+      params: {
+        group_id: 20001,
+        messages: [
+          { type: 'node', data: { uin: '10002', name: '助手', content: [{ type: 'text', data: { text: '刚才这两条：' } }] } },
+          { type: 'node', data: { id: '1234567' } },
+          { type: 'node', data: { id: '7654321' } },
+        ],
+      },
+    }])
+  })
+
+  it('id-only forward to a private chat_id routes to send_private_forward_msg', async () => {
+    const h = await makeHarness()
+    h.seed('fwd-private', 'admin')
+    await h.tool('qq_send_forward').execute({ messages: [{ id: '-2147483648' }], chat_id: 'private:10001' }, h.exec('fwd-private'))
+    expect(h.calls).toEqual([{
+      action: 'send_private_forward_msg',
+      params: { user_id: 10001, messages: [{ type: 'node', data: { id: '-2147483648' } }] },
+    }])
+  })
+
+  it('rejects invalid ids (non-decimal, zero, unsafe) before any send', async () => {
+    const h = await makeHarness()
+    h.seed('fwd-bad', 'admin')
+    for (const bad of ['abc', '0x1f', '1.5', '1e3', '0', '-0', '9007199254740993', 'mid-12', '12 34']) {
+      await expect(h.tool('qq_send_forward').execute({
+        messages: [{ name: '甲', content: '前面这条没问题' }, { id: bad }],
+      }, h.exec('fwd-bad'))).rejects.toThrow('qq_send_forward: 第 2 条的 id 不是有效的消息 id')
+    }
+    // Non-string ids never reach execute: the tool schema (id: string) rejects them.
+    for (const bad of [12, true, { n: 1 }]) {
+      await expect(h.tool('qq_send_forward').execute({ messages: [{ id: bad }] }, h.exec('fwd-bad')))
+        .rejects.toThrow('must be a string')
+    }
+    expect(h.calls).toHaveLength(0)
+  })
+
+  it('an empty id falls back to the text-node rule (content required)', async () => {
+    const h = await makeHarness()
+    h.seed('fwd-blank-id', 'admin')
+    await expect(h.tool('qq_send_forward').execute({ messages: [{ id: '' }] }, h.exec('fwd-blank-id')))
+      .rejects.toThrow('每条消息都需要 content')
+    expect(h.calls).toHaveLength(0)
+  })
+
+  it('member tier none still blocks qq_send_forward even with id-only nodes', async () => {
+    const h = await makeHarness({ memberTools: 'none' })
+    h.seed('fwd-member', 'member')
+    await expect(h.tool('qq_send_forward').execute({ messages: [{ id: '123' }] }, h.exec('fwd-member')))
+      .rejects.toThrow('当前发言人为成员档位')
+    expect(h.calls).toHaveLength(0)
+  })
+})

@@ -269,3 +269,10 @@ export declare class InboundPipeline {
         media: MediaRef[];
     }>;
 }
+/**
+ * Parse a decimal reply id without producing NaN or rounding an integer.
+ * Also the validation rule for qq_send_forward's `{ id }` nodes (tools.ts).
+ * @param messageId - raw OneBot reply id (signed ids remain supported).
+ * @returns the exact numeric id, or undefined when no safe request can be made.
+ */
+export declare function numericReplyId(messageId: string): number | undefined;

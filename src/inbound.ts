@@ -903,10 +903,11 @@ export class InboundPipeline {
 
 /**
  * Parse a decimal reply id without producing NaN or rounding an integer.
+ * Also the validation rule for qq_send_forward's `{ id }` nodes (tools.ts).
  * @param messageId - raw OneBot reply id (signed ids remain supported).
  * @returns the exact numeric id, or undefined when no safe request can be made.
  */
-function numericReplyId(messageId: string): number | undefined {
+export function numericReplyId(messageId: string): number | undefined {
   // Keep negative int32 ids and safe larger adapter ids; reject coercions such
   // as empty strings, whitespace, hexadecimal, fractions and exponent notation.
   // Some adapters send numeric segment fields despite the string-valued type.

@@ -393,6 +393,97 @@ describe('outbound proactive-write gate (W2-③)', () => {
     await vi.waitFor(() => expect(readAudit(mediaDir)).toHaveLength(25))
     expect(readAudit(mediaDir).every(l => l.ok === true)).toBe(true)
   })
+
+  // qq_send_forward 引用已有消息（{ id } 节点）。golden：全是自写节点时发出的
+  // OneBot 请求与改动前逐字节一致（本组前两条在改动前的代码上同样通过）。
+  it('forward golden: all-text nodes send the exact pre-change group request', async () => {
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-audit-'))
+    const { pipeline, sent } = makeGateHarness({ actionRatePerMinute: 0, actionRatePerDay: 0, mediaDir })
+    await pipeline.sendForward('group:888', [
+      { name: '助手', content: '第一条' },
+      { name: '这个显示名一共有二十五个字这个显示名一共有二十五个字这个显', content: 'x'.repeat(501) },
+    ])
+    expect(JSON.stringify(sent)).toBe(JSON.stringify([{
+      action: 'send_forward_msg',
+      params: {
+        group_id: 888,
+        messages: [
+          { type: 'node', data: { uin: '10002', name: '助手', content: [{ type: 'text', data: { text: '第一条' } }] } },
+          { type: 'node', data: { uin: '10002', name: '这个显示名一共有二十五个字这个显示名一共有二十五', content: [{ type: 'text', data: { text: 'x'.repeat(500) } }] } },
+        ],
+      },
+    }]))
+    await vi.waitFor(() => expect(readAudit(mediaDir)).toHaveLength(1))
+    expect(readAudit(mediaDir)[0]).toMatchObject({ chatId: 'group:888', action: 'send_forward_msg', ok: true, reason: '发送成功' })
+  })
+
+  it('forward golden: all-text nodes send the exact pre-change private request', async () => {
+    const { pipeline, sent } = makeGateHarness({ actionRatePerMinute: 0, actionRatePerDay: 0 })
+    await pipeline.sendForward('private:10001', [{ name: '助手', content: '私聊节点' }])
+    expect(JSON.stringify(sent)).toBe(JSON.stringify([{
+      action: 'send_private_forward_msg',
+      params: {
+        user_id: 10001,
+        messages: [{ type: 'node', data: { uin: '10002', name: '助手', content: [{ type: 'text', data: { text: '私聊节点' } }] } }],
+      },
+    }]))
+  })
+
+  it('forward ids: { id } nodes become OneBot { type: node, data: { id } } and mix with text nodes in order', async () => {
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-audit-'))
+    const { pipeline, sent } = makeGateHarness({ actionRatePerMinute: 0, actionRatePerDay: 0, mediaDir })
+    await pipeline.sendForward('group:888', [
+      { name: '助手', content: '下面是刚才的两条' },
+      { id: '1234567' },
+      { id: '-20480' },
+    ])
+    expect(sent).toEqual([{
+      action: 'send_forward_msg',
+      params: {
+        group_id: 888,
+        messages: [
+          { type: 'node', data: { uin: '10002', name: '助手', content: [{ type: 'text', data: { text: '下面是刚才的两条' } }] } },
+          { type: 'node', data: { id: '1234567' } },
+          { type: 'node', data: { id: '-20480' } },
+        ],
+      },
+    }])
+    // Referenced content is not scanned; the audit line names the ids instead.
+    await vi.waitFor(() => expect(readAudit(mediaDir)).toHaveLength(1))
+    expect(readAudit(mediaDir)[0]).toMatchObject({
+      chatId: 'group:888', action: 'send_forward_msg', ok: true, reason: '发送成功（引用已有消息 id=1234567,-20480）',
+    })
+  })
+
+  it('forward ids: id-only private forward routes to send_private_forward_msg; failures audit the ids', async () => {
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-audit-'))
+    const { pipeline, sent } = makeGateHarness({ actionRatePerMinute: 0, actionRatePerDay: 0, mediaDir })
+    await pipeline.sendForward('private:10001', [{ id: '42' }])
+    expect(sent).toEqual([{ action: 'send_private_forward_msg', params: { user_id: 10001, messages: [{ type: 'node', data: { id: '42' } }] } }])
+    // Invalid target: nothing sent, the failure line still carries the ids.
+    await expect(pipeline.sendForward('group:abc', [{ id: '43' }])).rejects.toThrow('invalid chat target')
+    expect(sent).toHaveLength(1)
+    await vi.waitFor(() => expect(readAudit(mediaDir)).toHaveLength(2))
+    expect(readAudit(mediaDir)[1]).toMatchObject({ ok: false })
+    expect(String(readAudit(mediaDir)[1].reason)).toMatch(/^发送失败: .*（引用已有消息 id=43）$/)
+  })
+
+  it('forward ids: audit lists at most 20 ids, then the total', async () => {
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-audit-'))
+    const { pipeline } = makeGateHarness({ actionRatePerMinute: 0, actionRatePerDay: 0, mediaDir })
+    const nodes = Array.from({ length: 22 }, (_, i) => ({ id: String(i + 1) }))
+    await pipeline.sendForward('group:888', nodes)
+    await vi.waitFor(() => expect(readAudit(mediaDir)).toHaveLength(1))
+    const ids = Array.from({ length: 20 }, (_, i) => String(i + 1)).join(',')
+    expect(readAudit(mediaDir)[0].reason).toBe('发送成功（引用已有消息 id=' + ids + ' 等 22 条）')
+  })
+
+  it('forward ids: id nodes count as one proactive write against the minute cap', async () => {
+    const { pipeline, sent } = makeGateHarness({ actionRatePerMinute: 1, actionRatePerDay: 0 })
+    await pipeline.sendForward('group:888', [{ id: '1' }, { id: '2' }])
+    await expect(pipeline.sendForward('group:888', [{ id: '3' }])).rejects.toThrow('actionRatePerMinute')
+    expect(sent).toHaveLength(1)
+  })
 })
 
 describe('T9: stripBoundaryLeakage', () => {
