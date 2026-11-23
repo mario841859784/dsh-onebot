@@ -276,6 +276,8 @@ export async function makeCmdHarness(opts?: {
   interimRecall?: boolean
   rateLimitPerMinute?: number
   restrictedMemberPrefix?: boolean
+  /** promptStyle 透传（absent = 缺省 'tag'）。 */
+  promptStyle?: 'tag' | 'plain'
   newMessagePolicy?: 'queue' | 'steer'
   /** T9-B: auto-steer eligibility knob; absent = the bridge default 'admin'. */
   autoSteerPolicy?: 'admin' | 'all'
@@ -355,6 +357,7 @@ export async function makeCmdHarness(opts?: {
       // T2/T11: preferred mono families for t2i code text (absent = undefined).
       ...(opts?.monoFamilies !== undefined ? { monoFamilies: opts.monoFamilies } : {}),
       ...(opts?.restrictedMemberPrefix !== undefined ? { restrictedMemberPrefix: opts.restrictedMemberPrefix } : {}),
+      ...(opts?.promptStyle !== undefined ? { promptStyle: opts.promptStyle } : {}),
       ...(opts?.newMessagePolicy !== undefined ? { newMessagePolicy: opts.newMessagePolicy } : {}),
       ...(opts?.autoSteerPolicy !== undefined ? { autoSteerPolicy: opts.autoSteerPolicy } : {}),
       // T3 (P2): deferred-delivery timeout override (absent = the 10min default).
