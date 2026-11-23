@@ -284,6 +284,10 @@ export interface Config {
     fileRefRoots: string[];
     /** Optional CIDR allowlist for trusted private download targets. */
     allowCidrs: string[];
+    /** qq_napcat_api 放行的动作名；含 '*' = 禁区以外全部放行（禁区写死在 napcat-api.ts）。 */
+    napcatApiAllow: string[];
+    /** qq_napcat_api 参数里的本机文件必须落在这些目录内；空 = 不检查（缺省）。 */
+    napcatApiFileRoots: string[];
     /** W2-②: inbound (chatId, message_id) dedup window in seconds; 0 disables. */
     dedupWindowSeconds: number;
     /** W2-③: bridge-wide proactive-write (qq_send_* tools) cap per minute; 0 disables. */

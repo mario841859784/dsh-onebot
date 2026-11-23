@@ -43,6 +43,8 @@ let InjectChannel: typeof import('./inject.js').InjectChannel
 let redactSnapshot: typeof import('./health.js').redactSnapshot
 let describeError: typeof import('./errors.js').describeError
 let configureSendSegments: typeof import('./tools.js').configureSendSegments
+let configureNapcatApi: typeof import('./napcat-api.js').configureNapcatApi
+let DEFAULT_NAPCAT_API_ALLOW: readonly string[]
 let resolveUserQuestions: typeof import('./ask-tool.js').resolveUserQuestions
 
 try {
@@ -57,6 +59,7 @@ try {
   ;({ redactSnapshot } = await import('./health.js'))
   ;({ describeError } = await import('./errors.js'))
   ;({ configureSendSegments } = await import('./tools.js'))
+  ;({ configureNapcatApi, DEFAULT_NAPCAT_API_ALLOW } = await import('./napcat-api.js'))
   ;({ resolveUserQuestions } = await import('./ask-tool.js'))
 } catch (error) {
   console.error('[dsh-onebot] 挂载失败：peer 依赖解析失败或关键模块缺失 —— 部署副本必须带完整 node_modules 链接集（scripts/link-host.sh 产物），只复制 lib/ 不够。原始错误：' + (error instanceof Error ? error.message : String(error)))
@@ -276,6 +279,10 @@ export interface Config {
   fileRefRoots: string[]
   /** Optional CIDR allowlist for trusted private download targets. */
   allowCidrs: string[]
+  /** qq_napcat_api 放行的动作名；含 '*' = 禁区以外全部放行（禁区写死在 napcat-api.ts）。 */
+  napcatApiAllow: string[]
+  /** qq_napcat_api 参数里的本机文件必须落在这些目录内；空 = 不检查（缺省）。 */
+  napcatApiFileRoots: string[]
   /** W2-②: inbound (chatId, message_id) dedup window in seconds; 0 disables. */
   dedupWindowSeconds: number
   /** W2-③: bridge-wide proactive-write (qq_send_* tools) cap per minute; 0 disables. */
@@ -514,6 +521,10 @@ export const Config: Z<Config> = z.object({
     .description('允许复制的 file:// 源根目录列表；空数组（默认）拒绝所有入站 file:// ref；路径按 realpath 校验，必须在这些根目录内'),
   allowCidrs: z.array(z.string()).default([])
     .description('可选 CIDR 白名单（IPv4/IPv6，如 100.64.0.0/10、fd7a:115c:a1e0::/48）：只放行这些私网段，其他私网/环回仍拒绝；空数组保持原行为'),
+  napcatApiAllow: z.array(z.string()).default([...DEFAULT_NAPCAT_API_ALLOW])
+    .description('qq_napcat_api 放行的 OneBot 动作名；缺省 = 原先写死的 15 个（行为与工具说明不变）；写 * 表示禁区以外全部放行。禁区写死在代码里、配置打不开：取登录凭据和密钥（get_cookies / get_credentials / get_clientkey / get_csrf_token / request_decrypt_key）、发原始协议包（send_packet）、让协议端退出或重启（bot_exit / set_restart）、.handle_quick_operation；比较时忽略大小写、前导点和 nc_ 前缀'),
+  napcatApiFileRoots: z.array(z.string()).default([])
+    .description('qq_napcat_api 本机文件放行目录：配置后，参数里像本机文件的值（绝对路径、file:// 地址，含 CQ 码里的）必须按 realpath 落在这些目录内且存在，网络共享 / 设备路径 / NTFS 流 / 相对路径一律拒绝；空数组（缺省）= 不检查，与以前一致。放开白名单（尤其 *）时建议配上'),
   chatIdleEvictDays: z.number().default(7)
     .description('会话空闲淘汰天数：chat 超过该天数无任何活动时，在下一条入站消息处理前清理其 agent（会话先落盘 flush、映射保留，之后同一 chat 的消息可 resume 恢复原会话）；0 = 禁用'),
   dedupWindowSeconds: z.number().default(300)
@@ -609,6 +620,8 @@ export function apply(ctx: Context, config: Config): void {
   // T14: qq_send_segments 插件页开关与发送间隔——必须在任何 agent scope 注册
   // 工具（bridge.installChannelScope → registerTools）之前生效。
   configureSendSegments(config.segments)
+  // qq_napcat_api 放行规则：同样必须在任何 agent scope 注册工具之前装好。
+  const napcatRules = configureNapcatApi({ allow: config.napcatApiAllow, fileRoots: config.napcatApiFileRoots })
   const mediaDir = config.mediaDir !== '' ? config.mediaDir : defaultMediaDir()
   const policy = resolvePolicy(config)
   /** Console log line callback (level, message) — shared by the bridge deps,
@@ -624,6 +637,9 @@ export function apply(ctx: Context, config: Config): void {
   // WorkspaceRegistry has no default getter and the session controller's
   // defaultCwd is assembly-internal — so the unconfigured fallback stays the
   // host process cwd. Say so once at mount so a /root surprise is explainable.
+  if (napcatRules.all && napcatRules.fileRoots.length === 0) {
+    log('warn', 'napcatApiAllow 含 *（禁区以外全部放行）但没有配置 napcatApiFileRoots：qq_napcat_api 参数里的本机文件路径不受检查，协议端可按模型给的路径读取本机任意文件；建议配置 napcatApiFileRoots')
+  }
   if (config.workspacePath === '') {
     log('warn', '未配置 workspacePath：QQ 会话默认目录将使用宿主进程工作目录 ' + process.cwd() + '，建议在配置中设置 workspacePath，避免会话工作区落在宿主启动目录')
   }
