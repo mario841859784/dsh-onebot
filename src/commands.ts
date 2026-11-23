@@ -17,7 +17,10 @@ import { fileURLToPath } from 'node:url'
 
 import type { OneBotConnection } from './connection.js'
 import type { MediaRef } from './cq.js'
-import { RESTRICTED_PREFIX, type ChatId, type UserRole, wrapUserMessage } from './chat.js'
+import {
+  buildPlainDirectHeader, buildPlainGroupHeader, parsePlainEnvelope, RESTRICTED_PREFIX, splitChatId,
+  type ChatId, type UserRole, wrapPlainMessage, wrapUserMessage,
+} from './chat.js'
 import type { PendingSelection, SessionSwitchOutcome, SwitchableSession } from './registry.js'
 import { fileToBase64 } from './media.js'
 import type { AgentDefaultModelLike, AgentPresetsLike, BridgeConfig, BridgeDeps, LlmCatalogPort, SessionPersistenceLike, SessionPreviewEvent, SessionReadHandleLike, WorkspaceRegistryLike } from './bridge.js'
@@ -134,7 +137,7 @@ export interface CommandContext {
   silentUntil?: ((chatId: ChatId) => number | undefined) | undefined
   setSilentUntil?: ((chatId: ChatId, untilMs: number | undefined) => void) | undefined
   /** The only config fields the commands read. */
-  config: Pick<BridgeConfig, 'interimMessages' | 'maxImageBytes' | 'unknownCommand'>
+  config: Pick<BridgeConfig, 'interimMessages' | 'maxImageBytes' | 'unknownCommand' | 'promptStyle'>
 }
 
 /** T9-A: the sender identity the inbound pipeline already resolved for the
@@ -424,10 +427,22 @@ export const STEER_USAGE_HINT = '用法：/steer <补充内容> —— 在任务
  * T9-A: the argument enters the prompt wrapped in the same <user_message>
  * boundary as every inbound payload (same wrapUserMessage shape, qq +
  * nickname attributes) — /steer is admin-gated (trusted sender) but the
- * boundary posture must not fork between the two steerMessage callers. */
+ * boundary posture must not fork between the two steerMessage callers.
+ * promptStyle=plain: the same posture in the plain shape — a framework
+ * header line (now, sender, private/group) above the indented argument. */
 async function handleSteerCommand(ctx: CommandContext, chatId: ChatId, arg: string, sender: CommandSender): Promise<void> {
   const raw = arg.trim()
-  const text = raw === '' ? '' : wrapUserMessage(raw, sender.userId, sender.nickname)
+  let text = ''
+  if (raw !== '') {
+    if (ctx.config.promptStyle === 'plain') {
+      const header = splitChatId(chatId).kind === 'group'
+        ? buildPlainGroupHeader(sender.nickname, sender.userId, false, 'admin', false, 0)
+        : buildPlainDirectHeader(sender.nickname, sender.userId, 0)
+      text = wrapPlainMessage(header, raw)
+    } else {
+      text = wrapUserMessage(raw, sender.userId, sender.nickname)
+    }
+  }
   const chat = ctx.getChat(chatId)
   if (text === '' || chat === undefined || chat.agent.status !== 'running' || !ctx.steerRunningTurn(chatId, text)) {
     ctx.log('debug', 'slash /steer rejected (no running task or empty argument) for ' + chatId)
@@ -1026,8 +1041,12 @@ export function truncatePreview(text: string, maxLength: number): string {
  * `</user_message>`. Anything that is not a complete wrapped message
  * (different head, missing closer, empty body) comes back unchanged so the
  * caller's existing preview path applies — an unwrap failure never empties
- * the preview. */
+ * the preview. A promptStyle=plain message (strict header line + indented
+ * body, chat.ts parsePlainEnvelope) contributes its de-indented body the
+ * same way, whichever style is configured now (old logs keep their shape). */
 function unwrapUserMessageText(text: string): string {
+  const plain = parsePlainEnvelope(text)
+  if (plain !== null) return plain.body.trim() === '' ? text : plain.body
   let rest = text
   if (rest.startsWith(RESTRICTED_PREFIX)) rest = rest.slice(RESTRICTED_PREFIX.length)
   const groupPrefix = /^\[\d{2}:\d{2} .*?\(\d+\)\](?:\[@我\])? /.exec(rest)

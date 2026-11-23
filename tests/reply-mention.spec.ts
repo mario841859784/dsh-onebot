@@ -131,7 +131,7 @@ describe('reply-only group mention verification', () => {
       const text = h.dispatchFollowup.mock.calls[0][1]
       expect(text).toContain('[@我]')
       expect(text).toContain('[引用]original author: original & text')
-      expect(h.interceptBusyTurn).toHaveBeenCalledWith('group:888', expect.any(String), 'admin', 'sender', false)
+      expect(h.interceptBusyTurn).toHaveBeenCalledWith('group:888', expect.any(String), 'admin', 'sender', false, expect.objectContaining({ senderId: '10003', messageId: '456', mentioned: true, role: 'admin' }))
     })
   }
 
@@ -158,7 +158,7 @@ describe('reply-only group mention verification', () => {
   it('retains busy-turn queue eligibility for a verified reply to bot', async () => {
     const h = makeHarness({ author: BOT, busy: true })
     await h.pipeline.processInbound(inbound([reply, body]))
-    expect(h.interceptBusyTurn).toHaveBeenCalledWith('group:888', expect.any(String), 'admin', 'sender', false)
+    expect(h.interceptBusyTurn).toHaveBeenCalledWith('group:888', expect.any(String), 'admin', 'sender', false, expect.objectContaining({ senderId: '10003', messageId: '456', mentioned: true, role: 'admin' }))
     expect(h.dispatchFollowup).not.toHaveBeenCalled()
   })
 

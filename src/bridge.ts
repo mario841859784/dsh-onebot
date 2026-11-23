@@ -21,7 +21,7 @@ import type { MediaStore } from './media.js'
 import type { Transcriber } from './stt.js'
 import { transcriptLabel } from './stt.js'
 import type { MediaRef } from './cq.js'
-import type { ChatId, UserRole } from './chat.js'
+import type { ChatId, PromptStyle, UserRole } from './chat.js'
 import { buildChatId, classifyUserRole, splitChatId } from './chat.js'
 import type { AccessPolicyConfig } from './chat.js'
 import { buildPlatformPrompt } from './prompt.js'
@@ -44,7 +44,7 @@ import type { OutboundSegment, SendOptions } from './outbound.js'
 import { ChatRegistry } from './registry.js'
 import type { ChatAgent } from './registry.js'
 import { InboundPipeline, normalizeOneBot11 } from './inbound.js'
-import type { NormalizedInbound, QuotedMessageData } from './inbound.js'
+import type { InboundMessageInfo, NormalizedInbound, QuotedMessageData } from './inbound.js'
 import { InterimTracker } from './interim.js'
 import { DeferredDelivery } from './deferred.js'
 import { DEFAULT_DEFERRED_TIMEOUT_MS } from './deferred.js'
@@ -194,6 +194,10 @@ export interface BridgeConfig {
   /** T4 (PR port 上下文尾巴)：/new 把上一会话最后几句带进新会话（默认关，
    * 裁定口径；落盘 mediaDir/chat-tails.json）。 */
   chatTailsEnabled?: boolean
+  /** 入站消息给模型看的格式：absent/'tag' = <user_message> 信封 + [HH:MM …]
+   * 前缀（既有行为，逐字节不变）；'plain' = 自然语言抬头 + 原话每行缩进两个
+   * 全角空格（平台提示词、引用/转发展开、旁听回顾、出站复读切除跟着换）。 */
+  promptStyle?: PromptStyle
   /** T7 (PR port 入站连发合并)：入站排队+连发合并开关（默认关，裁定口径）；
    * absent/false = 不排队不合并，handleInbound 走既有路径，与上游逐字节
    * 等价。开启后每会话一条串行链，同会话紧挨的消息并成一条投递（斜杠命令
@@ -548,7 +552,7 @@ export class ChatBridge {
       dispatchFollowup: (chatId, text, role, nickname, options) => this.dispatchFollowup(chatId, text, role, nickname, options),
       // 群聊旁观 (#58)：mention 门 drop 点喂缓冲；seam 可选（旧测试桩缺席 = 零行为）。
       feedBystander: (chatId, entry) => this.feedBystander(chatId, entry),
-      interceptBusyTurn: (chatId, text, role, nickname, plain) => this.interceptBusyTurn(chatId, text, role, nickname, plain),
+      interceptBusyTurn: (chatId, text, role, nickname, plain, message) => this.interceptBusyTurn(chatId, text, role, nickname, plain, message),
       interceptQuestionAnswer: (chatId, text) => this.interceptQuestionAnswer(chatId, text),
       sendToChat: (chatId, text) => this.sendToChat(chatId, text),
       log: (level, message) => this.deps.log(level, message),
@@ -830,8 +834,12 @@ export class ChatBridge {
 
   /** Feed one user message into a chat's agent (create on demand). Records
    * the base text for /retry, queues the initiator's turn role, and applies
-   * per-chat /goal + /plan prefixes. */
-  private async dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string, options?: { recordTail?: boolean; bystander?: boolean; reactionMessageId?: string }): Promise<void> {
+   * per-chat /goal + /plan prefixes. options.message = the inbound pipeline's
+   * structured view of the message (InboundMessageInfo; only inbound
+   * dispatches carry it — /retry, bystander reviews and the greeting turn do
+   * not). It is not read here: it rides the call for plugins that take over
+   * dispatch (wrapping this method), so they need not parse the text. */
+  private async dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string, options?: { recordTail?: boolean; bystander?: boolean; reactionMessageId?: string; message?: InboundMessageInfo }): Promise<void> {
     const final = this.prefixTurn(chatId, text)
     const fallback = this.chats.get(chatId)?.lastNickname ?? ''
     const chat = await this.ensureChat(chatId, nickname ?? fallback)
@@ -939,7 +947,7 @@ export class ChatBridge {
       this.deps.log('debug', '旁观触发跳过：回合进行中 ' + chatId + ' (' + trigger + ')')
       return
     }
-    const reviewText = this.bystander.buildReviewText(chatId)
+    const reviewText = this.bystander.buildReviewText(chatId, this.deps.config.promptStyle ?? 'tag')
     if (reviewText === null) return
     this.bystander.markDispatched(chatId, settings, Date.now())
     this.deps.log('info', '旁观回顾回合 (' + trigger + '): ' + chatId)
@@ -1272,7 +1280,7 @@ export class ChatBridge {
       // (cache + durable ChatSettings field, debounced save).
       silentUntil: chatId => bridge.getSilentUntil(chatId),
       setSilentUntil: (chatId, untilMs) => bridge.setSilentUntilImpl(chatId, untilMs),
-      config: { interimMessages: bridge.deps.config.interimMessages, maxImageBytes: bridge.deps.config.maxImageBytes, unknownCommand: bridge.deps.config.unknownCommand },
+      config: { interimMessages: bridge.deps.config.interimMessages, maxImageBytes: bridge.deps.config.maxImageBytes, unknownCommand: bridge.deps.config.unknownCommand, promptStyle: bridge.deps.config.promptStyle },
     }
   }
 
@@ -1363,7 +1371,7 @@ export class ChatBridge {
    * authoritative signal /stop uses; chat.busy (turn/start..turn/end view)
    * can lag the host driver and is deliberately NOT consulted.
    */
-  private async interceptBusyTurn(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean): Promise<boolean> {
+  private async interceptBusyTurn(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean, message?: InboundMessageInfo): Promise<boolean> {
     const chat = this.chats.get(chatId)
     if (chat === undefined || chat.agent.status !== 'running') return false
     // The restricted-member soft limit ([受限用户:仅问答]) is never widened by
@@ -1391,7 +1399,7 @@ export class ChatBridge {
       }
       return true
     }
-    await this.dispatchFollowup(chatId, text, role, nickname)
+    await this.dispatchFollowup(chatId, text, role, nickname, message !== undefined ? { message } : undefined)
     currentTrace()?.emit('dispatch', { ok: true, reason: TRACE_REASONS.busyTurnQueued })
     // T8/#27: the once-per-running-turn queue notice is switchable and
     // customizable (notices.queue); the queueing itself always happens and
@@ -1792,12 +1800,14 @@ export class ChatBridge {
         memoryText,
         // 权限分档 A2 (#59): 成员档位工具权限档决定「·成员」段文案。
         this.deps.config.permissions?.memberTools ?? 'none',
+        this.deps.config.promptStyle ?? 'tag',
       ),
     })
     registerTools(agentCtx, this, this.deps.connection, {
       maxImageBytes: this.deps.config.maxImageBytes,
       maxVoiceBytes: this.deps.config.maxVoiceBytes,
       maxFileBytes: this.deps.config.maxFileBytes,
+      promptStyle: this.deps.config.promptStyle ?? 'tag',
     }, (level, message) => this.deps.log(level, message))
     // T2-B1: expose ask_user_question to QQ sessions (timed variant, 300s
     // default). The host registers the tool only for preset/Web scopes, and

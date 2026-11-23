@@ -130,7 +130,7 @@ export interface CommandContext {
     silentUntil?: ((chatId: ChatId) => number | undefined) | undefined;
     setSilentUntil?: ((chatId: ChatId, untilMs: number | undefined) => void) | undefined;
     /** The only config fields the commands read. */
-    config: Pick<BridgeConfig, 'interimMessages' | 'maxImageBytes' | 'unknownCommand'>;
+    config: Pick<BridgeConfig, 'interimMessages' | 'maxImageBytes' | 'unknownCommand' | 'promptStyle'>;
 }
 /** T9-A: the sender identity the inbound pipeline already resolved for the
  * command message — threaded through tryHandleCommand so /steer can wrap its

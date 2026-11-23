@@ -30,6 +30,8 @@ export declare function readMemoryFiles(files: readonly string[], log?: ChannelL
  * @param memoryText - T4 (PR port 记忆文件)：记忆文件内容（仅私聊；空 = 不注入）。
  * @param memberTools - 权限分档 A2：成员档位工具权限档（缺省 'none'，与旧
  *   调用保持一致）——决定「·成员」段如何描述工具可用性（#59）。
+ * @param promptStyle - 入站消息格式（缺省 'tag'，旧调用不传即保持原文案逐字
+ *   节不变）：'plain' 时讲消息格式、档位与边界的几句换成讲抬头与缩进的说法。
  * @returns the section text.
  */
-export declare function buildPlatformPrompt(restrictedMembers: boolean, extra?: string, memoryText?: string, memberTools?: 'none' | 'send' | 'all'): string;
+export declare function buildPlatformPrompt(restrictedMembers: boolean, extra?: string, memoryText?: string, memberTools?: 'none' | 'send' | 'all', promptStyle?: 'tag' | 'plain'): string;

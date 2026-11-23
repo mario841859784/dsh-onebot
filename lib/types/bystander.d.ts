@@ -11,10 +11,11 @@
  * - 触发是纯规则（提到唤醒词/问句/话题词/机会触发），不接模型、零额外调用；
  *   「每条消息都开回合」的成本结构被冷却 + 每日上限双重定界。
  * - 旁听文本属不可信数据：buildReviewText 把缓冲整块包进 <user_message>
- *   边界（chat.ts wrapUserMessage 纪律），昵称渲染前再消毒一次。
+ *   边界（chat.ts wrapUserMessage 纪律），昵称渲染前再消毒一次。promptStyle=plain
+ *   时改成一句顶格抬头 + 每行缩进两个全角空格（chat.ts indentPlainBody 纪律）。
  * @module dsh-onebot/bystander
  */
-import { type ChatId } from './chat.js';
+import { type ChatId, type PromptStyle } from './chat.js';
 /** 一条旁听消息（seq = OneBot message_id，time = Unix 秒）。 */
 export interface BystanderEntry {
     seq: string;
@@ -75,8 +76,9 @@ export declare class BystanderTracker {
     /**
      * 把缓冲拼成回顾回合的一次性上下文。缓冲为空（全部空文本被剔）返回 null。
      * 整块包 <user_message> 边界（旁听文本不可信），引导语在边界外。
+     * style='plain'：一句顶格的抬头 + 记录每一行缩进两个全角空格，没有标记。
      */
-    buildReviewText(chatId: ChatId): string | null;
+    buildReviewText(chatId: ChatId, style?: PromptStyle): string | null;
     /** 记一次回顾回合派发：写冷却时间戳 + 递增当日计数。 */
     markDispatched(chatId: ChatId, settings: BystanderSettings, nowMs: number): void;
     /** 测试与调试观测：缓冲条数。 */

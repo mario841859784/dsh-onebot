@@ -3,6 +3,7 @@ import type { MediaStore } from './media.js';
 import type { Transcriber } from './stt.js';
 import type { OneBotSegment, MediaRef } from './cq.js';
 import type { AccessPolicyConfig, ChatId, UserRole } from './chat.js';
+import type { ChatKind, PromptStyle } from './chat.js';
 import type { BridgeConfig } from './bridge.js';
 import type { ChatSettings } from './registry.js';
 /**
@@ -76,6 +77,42 @@ export interface InboundChat {
     dispatchTimes: number[];
     rateLimitNoticeAt: number | undefined;
 }
+/**
+ * 一条入站消息的结构化信息，随派发钩子（dispatchFollowup / interceptBusyTurn
+ * 的 options.message）一起交出去，给接管派发的其它插件用，不必再解析文字。
+ * 两种 promptStyle 都带；缺省格式下多带这份字段不改变任何文字输出。
+ * 入站连发合并（inboxQueueEnabled）时几条在事件层就并成了一条，这里仍是
+ * 一个对象：messageId / time 取最后一条，body 是合并后的原话。
+ */
+export interface InboundMessageInfo {
+    /** 'private' | 'group'。 */
+    kind: ChatKind;
+    /** 发送者 QQ 号。 */
+    senderId: string;
+    /** 消毒后的昵称（sanitizeNickname，和前缀/信封里用的同一个值）。 */
+    nickname: string;
+    /** OneBot message_id；没有时为 ''。 */
+    messageId: string;
+    /** 群聊里是否算作叫到了机器人（@、引用即叫、唤醒词等）；私聊恒 false。 */
+    mentioned: boolean;
+    /** 消息时间（Unix 秒）；事件没带有效时间时是处理时刻。 */
+    time: number;
+    /** 发送者档位。 */
+    role: UserRole;
+    /** 是否按受限用户（只回答问题）处理：群聊 + 非管理员 + restrictedMemberPrefix。 */
+    restricted: boolean;
+    /** 信封里的那段原话（已含引用 / 合并转发展开与媒体标注），不带前缀/抬头、不带缩进。 */
+    body: string;
+    /** 这条消息给模型看的格式。 */
+    promptStyle: PromptStyle;
+}
+/** dispatchFollowup 的 options（inbound 交出去的那一份）。 */
+export interface InboundDispatchOptions {
+    /** 群聊 @ 表情回执的目标消息 id（见 InboundContext.dispatchFollowup）。 */
+    reactionMessageId?: string;
+    /** 结构化的消息信息（见 InboundMessageInfo）。 */
+    message?: InboundMessageInfo;
+}
 /** The bridge capabilities the inbound pipeline touches. Deliberately
  * narrower than BridgeDeps: the policy, the live registry views it needs
  * (chat lookup, per-chat settings, the idle sweep), media/transcriber, the
@@ -124,9 +161,7 @@ export interface InboundContext {
     /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes).
      *  options.reactionMessageId = 群聊 @ 表情回执：该消息命中「显式 @ 机器人」
      *  时由 inbound 传入，桥在回合启动点 best-effort 贴一次表情（缺席=不贴）。 */
-    dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string, options?: {
-        reactionMessageId?: string;
-    }): Promise<void>;
+    dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string, options?: InboundDispatchOptions): Promise<void>;
     /** 群聊旁观 (#58)：未通过 @ 门控的群消息喂进每群旁听缓冲，规则触发时由
      * 桥开一次回顾回合。桥侧 enabled=false 即返回（挂点零行为）；缺席（旧
      * 测试桩）= 无旁观能力，drop 点行为与上游逐字节等价。 */
@@ -146,7 +181,7 @@ export interface InboundContext {
      * carries no media, no quote and no forward (steer eligibility precondition:
      * media-bearing messages always queue, never steer). Optional: absent =
      * the pre-T2 pipeline (0.8.1 behavior for every message). */
-    interceptBusyTurn?(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean): Promise<boolean>;
+    interceptBusyTurn?(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean, message?: InboundMessageInfo): Promise<boolean>;
     /** T2-B3: ask_user_question answer seam — invoked for every plain message
      * after ALL gates and BEFORE interceptBusyTurn. Parses the raw text as a
      * reply to the chat's outstanding ask_user_question batch (纯选项选择 /
@@ -175,6 +210,9 @@ export interface InboundContext {
         /** T6 (PR port GIF 分帧)：开关默认 false——关闭时gifFramesNote 不触碰
          *  文件系统，行为与上游逐字节等价。 */
         gifFramesEnabled: boolean;
+        /** 入站消息给模型看的格式：'tag'（缺省）= <user_message> 信封 + 前缀；
+         *  'plain' = 自然语言抬头 + 缩进原话（见 chat.ts PromptStyle）。 */
+        promptStyle: PromptStyle;
     }>;
 }
 /** W2-②: default (chatId, message_id) dedup window, aligned with the MIT
@@ -209,6 +247,8 @@ export declare class InboundPipeline {
      * dedup window (LRU-capped; see DEDUP_MAX_ENTRIES). */
     get dedupWindowEntries(): number;
     processInbound(inbound: NormalizedInbound): Promise<void>;
+    /** 当前的 promptStyle（缺省 'tag'；不认识的值也按 'tag'）。 */
+    private promptStyle;
     /** W2-②: (chatId, message_id) sliding-window dedup against OneBot
      * re-delivery (reconnect replay / ws retry). Runs before every other gate
      * so a redelivered message can neither re-trigger a command nor reset the
@@ -268,4 +308,7 @@ export declare class InboundPipeline {
         text: string;
         media: MediaRef[];
     }>;
+    /** 合并转发没展开时给模型看的那一句。tag：`[合并转发 id=… 未展开: 原因码]`
+     * （原样）；plain：`一段合并转发（编号 …，没展开：原因）`。 */
+    private forwardFailedText;
 }

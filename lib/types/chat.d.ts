@@ -141,3 +141,48 @@ export declare const RESTRICTED_PREFIX = "[\u53D7\u9650\u7528\u6237:\u4EC5\u95EE
  * @returns the boundary-wrapped content.
  */
 export declare function wrapUserMessage(content: string, userId: string, nickname: string, messageId?: string): string;
+/**
+ * 入站消息给模型看的格式（promptStyle）：'tag'（缺省）= 现有的
+ * `<user_message …>` 信封 + `[HH:MM …]` 前缀；'plain' = 自然语言——一行
+ * 框架写的抬头（几点、谁、在哪儿说的），下面原话的每一行都缩进两个全角空格。
+ */
+export type PromptStyle = 'tag' | 'plain';
+/** plain 格式原话每一行前面的缩进：两个全角空格（U+3000）。 */
+export declare const PLAIN_INDENT: string;
+/**
+ * plain 格式的抬头行（框架写的那一行）的严格形状。读取侧（会话预览、
+ * 上下文尾巴、出站复读切除）只认这一种，昵称不含「（」（plainNickname 已
+ * 剥掉），QQ 号只认数字，结尾必须是全角冒号。
+ */
+export declare const PLAIN_HEADER_RE: RegExp;
+/**
+ * plain 格式私聊抬头：`19:36 昵称（QQ 10001）私聊你，这条编号 123456：`。
+ * @param nickname - 发送者昵称（这里再消毒一次）。
+ * @param userId - 发送者 QQ 号（协议给的数字）。
+ * @param seconds - event.time（Unix 秒）；无效时退回当前时间。
+ * @param messageId - 这条消息的 message_id；缺省/空 = 不写编号。
+ */
+export declare function buildPlainDirectHeader(nickname: string, userId: string, seconds: number, messageId?: string): string;
+/**
+ * plain 格式群聊抬头：`19:36 昵称（QQ 10001，成员）在群里@了你，这条编号 123456：`。
+ * 没 @ 写「在群里说」；管理员档写「管理员」；受限用户在括号里加「，只回答问题」
+ * （代替 tag 格式的 RESTRICTED_PREFIX）。
+ */
+export declare function buildPlainGroupHeader(nickname: string, userId: string, mentioned: boolean, role: UserRole, restricted: boolean, seconds: number, messageId?: string): string;
+/**
+ * plain 格式的原话块：每一行（空行也算）前面加两个全角空格。换行先统一成
+ * \n（\r\n、单独的 \r、U+0085/U+2028/U+2029 都算换行），所以原话里任何一种
+ * 换行后面伪造的「抬头」到了模型眼里也是缩进的。
+ */
+export declare function indentPlainBody(content: string): string;
+/** 抬头 + 缩进的原话块。 */
+export declare function wrapPlainMessage(header: string, content: string): string;
+/**
+ * 认一条 plain 格式的入站消息：第一行是严格的抬头，后面每一行都缩进（或为
+ * 空行——宿主派发前会 trim 末尾）。认得出返回抬头和去掉缩进的原话；认不出
+ * （包括 tag 格式、带 /goal 前缀的）返回 null，调用方走原来的路径。
+ */
+export declare function parsePlainEnvelope(text: string): {
+    header: string;
+    body: string;
+} | null;
