@@ -201,12 +201,12 @@ describe('allow 为自定义列表', () => {
 })
 
 describe('「像本机文件」的认法', () => {
-  it('绝对路径 / file: / UNC / 设备路径 / ./ ../ 算；http(s)://、base64://、普通文字、裸文件名不算', () => {
-    for (const v of ['C:\\x\\y.png', 'c:/x', '/etc/passwd', '\\\\server\\share\\x', '\\\\?\\C:\\x', '\\??\\C:\\x', '//server/share',
+  it('绝对路径 / file: / UNC / 设备路径 / ./ ../ / 盘符相对路径（C:foo）算；http(s)://、base64://、普通文字、裸文件名不算', () => {
+    for (const v of ['C:\\x\\y.png', 'c:/x', 'C:foo', 'Q:hello', '/etc/passwd', '\\\\server\\share\\x', '\\\\?\\C:\\x', '\\??\\C:\\x', '//server/share',
       'file:///C:/x', 'FILE://x', 'file:x', './a.png', '../a.png', '..\\a.png', '..']) {
       expect(looksLikeLocalPath(v), v).toBe(true)
     }
-    for (const v of ['https://example.com/a.png', 'http://127.0.0.1/a', 'base64://AAAA', 'abc.image', 'hello world', 'a/b.png', '', 'Q:hello']) {
+    for (const v of ['https://example.com/a.png', 'http://127.0.0.1/a', 'base64://AAAA', 'abc.image', 'hello world', 'a/b.png', '']) {
       expect(looksLikeLocalPath(v), v).toBe(false)
     }
   })
@@ -258,6 +258,15 @@ describe('本机文件放行目录（napcatApiFileRoots）', () => {
       await expect(run(action, build(d.secret)), action + ' outside').rejects.toThrow(/不在放行目录（napcatApiFileRoots）内/)
     }
     expect(calls).toHaveLength(before)
+  })
+
+  it('盘符相对路径（C:foo 这类无分隔符写法）fail closed 拒绝且不调协议端（T5：堵住绕过 napcatApiFileRoots 检查的洞）', async () => {
+    const d = await makeDirs()
+    const { run, calls } = harness({ allow: ['*'], fileRoots: [d.root] })
+    for (const [action, build] of PATH_ACTIONS) {
+      await expect(run(action, build('C:foo')), action + ' drive-relative').rejects.toThrow(/不在放行目录（napcatApiFileRoots）内/)
+    }
+    expect(calls).toHaveLength(0)
   })
 
   it('file:// 地址按两种读法核对；网络共享的 file:// 拒绝', async () => {
