@@ -17,7 +17,7 @@ import type { ChatId, PromptStyle } from './chat.js';
 import type { AccessPolicyConfig } from './chat.js';
 import { type NoticeTexts } from './notices.js';
 import { type UserQuestionsPort } from './ask-tool.js';
-import type { OutboundSegment, SendOptions } from './outbound.js';
+import type { ForwardNodeInput, OutboundSegment, SendOptions } from './outbound.js';
 import type { TraceSink } from './trace.js';
 import type { InjectChannel } from './inject.js';
 import type { InboundRecorder } from './record.js';
@@ -676,11 +676,9 @@ export declare class ChatBridge {
     private expandQuote;
     /** Send one message to a chat and return its message id. */
     private sendMsg;
-    /** Send [[qq_forward]] nodes as a merged-forward message. */
-    sendForward(chatId: ChatId, nodes: Array<{
-        name: string;
-        content: string;
-    }>): Promise<void>;
+    /** Send qq_send_forward nodes (self-written or referenced by message id)
+     * as a merged-forward message. */
+    sendForward(chatId: ChatId, nodes: ForwardNodeInput[]): Promise<void>;
     /**
      * W1/T5: the single connection-call gate every bridge pipeline
      * (inbound/outbound/interim/typing) routes through. In inject dry-run

@@ -40,7 +40,7 @@ import { parseQuestionAnswer } from './question-answer.js'
 import { OutboundPipeline } from './outbound.js'
 // 群聊旁观 (#58)：未通过 @ 门控的群消息进旁听缓冲，规则触发回顾回合。
 import { BystanderTracker, BYSTANDER_DEFAULTS, type BystanderSettings } from './bystander.js'
-import type { OutboundSegment, SendOptions } from './outbound.js'
+import type { ForwardNodeInput, OutboundSegment, SendOptions } from './outbound.js'
 import { ChatRegistry } from './registry.js'
 import type { ChatAgent } from './registry.js'
 import { InboundPipeline, normalizeOneBot11 } from './inbound.js'
@@ -1427,8 +1427,9 @@ export class ChatBridge {
     return this.outbound.sendMsg(chatId, segments, options)
   }
 
-  /** Send [[qq_forward]] nodes as a merged-forward message. */
-  async sendForward(chatId: ChatId, nodes: Array<{ name: string; content: string }>): Promise<void> {
+  /** Send qq_send_forward nodes (self-written or referenced by message id)
+   * as a merged-forward message. */
+  async sendForward(chatId: ChatId, nodes: ForwardNodeInput[]): Promise<void> {
     return this.outbound.sendForward(chatId, nodes)
   }
 

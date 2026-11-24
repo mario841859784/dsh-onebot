@@ -280,6 +280,29 @@ export interface SendOptions {
 }
 
 /**
+ * One qq_send_forward node: either a self-written `{ name, content }` card
+ * (sent as `{ type: 'node', data: { uin, name, content } }`) or a reference
+ * to an existing message `{ id }` (OneBot 11 `{ type: 'node', data: { id } }`;
+ * the implementation fills in the original sender and content). `id` is the
+ * message_id as a decimal string, validated by the caller (tools.ts).
+ */
+export type ForwardNodeInput = { name: string; content: string } | { id: string }
+
+/** At most this many referenced ids are spelled out in one audit line. */
+const AUDIT_FORWARD_ID_LIST_MAX = 20
+
+/** Audit reason for a proactive forward: unchanged for all-text nodes; with
+ * referenced nodes, the message ids are appended (their content is not
+ * audited — see sendForward). */
+function forwardAuditReason(base: string, nodes: readonly ForwardNodeInput[]): string {
+  const ids = nodes.flatMap(n => 'id' in n ? [n.id] : [])
+  if (ids.length === 0) return base
+  const shown = ids.slice(0, AUDIT_FORWARD_ID_LIST_MAX).join(',')
+  const more = ids.length > AUDIT_FORWARD_ID_LIST_MAX ? ' 等 ' + ids.length + ' 条' : ''
+  return base + '（引用已有消息 id=' + shown + more + '）'
+}
+
+/**
  * T9 (#2): strip a leaked <user_message> boundary. wrapUserMessage (chat.ts)
  * wraps every inbound payload in `<user_message qq="…" nickname="…">…</user_message>`,
  * and a model may echo those markers back inside its reply. Only the literal
@@ -795,34 +818,56 @@ export class OutboundPipeline {
   /** Send [[qq_forward]] nodes as a merged-forward message (proactive write
    * from the qq_send_forward tool). W2-③: subject to the minute/day caps
    * and audited; the passive [[qq_forward]] blocks inside sendToChat bypass
-   * this gate via sendForwardNodes. */
-  async sendForward(chatId: ChatId, nodes: Array<{ name: string; content: string }>): Promise<void> {
+   * this gate via sendForwardNodes.
+   *
+   * Nodes may also reference existing messages (`{ id }`, tool path only;
+   * the passive [[qq_forward]] blocks stay text-only). A referenced node
+   * carries no text of ours. The soft sensitive-word scan (scanSensitive)
+   * runs on sendToChat's model text only and never ran on this tool path;
+   * it is deliberately not extended to fetch referenced messages via
+   * get_msg: that content was written by someone else and is already in
+   * QQ, the implementation resolves the id itself (SnowLuma rejects ids it
+   * does not know), and a get_msg round trip would add a failure point for
+   * a log-only check. The action audit line records the referenced ids. */
+  async sendForward(chatId: ChatId, nodes: ForwardNodeInput[]): Promise<void> {
     const reject = this.writeGateRejectReason(chatId, 'send_forward_msg')
     if (reject !== null) throw new OneBotActionError(reject)
     try {
-      await this.sendForwardNodes(chatId, nodes)
-      this.auditWrite(chatId, 'send_forward_msg', true, '发送成功')
+      await this.dispatchForward(chatId, nodes.map(node => 'id' in node
+        ? { type: 'node', data: { id: node.id } }
+        : this.textForwardNode(node)))
+      this.auditWrite(chatId, 'send_forward_msg', true, forwardAuditReason('发送成功', nodes))
     } catch (error) {
-      this.auditWrite(chatId, 'send_forward_msg', false, '发送失败: ' + describeError(error))
+      this.auditWrite(chatId, 'send_forward_msg', false, forwardAuditReason('发送失败: ' + describeError(error), nodes))
       this.ctx.trace?.(chatId, { stage: 'outbound', ok: false, reason: '主动写发送失败: ' + describeError(error) })
       throw error
     }
   }
 
-  /** Ungated merged-forward send (shared by the gated tool path and the
-   * passive [[qq_forward]] blocks inside sendToChat). */
+  /** Ungated merged-forward send of self-written nodes (the passive
+   * [[qq_forward]] blocks inside sendToChat; text-only by design). */
   private async sendForwardNodes(chatId: ChatId, nodes: Array<{ name: string; content: string }>): Promise<void> {
-    const ref = splitChatId(chatId)
-    const target = Number(ref.target)
-    if (!Number.isFinite(target)) throw new OneBotActionError('invalid chat target: ' + chatId)
-    const messages = nodes.map(node => ({
+    await this.dispatchForward(chatId, nodes.map(node => this.textForwardNode(node)))
+  }
+
+  /** One self-written forward node: bot uin, name ≤24, one text segment ≤500. */
+  private textForwardNode(node: { name: string; content: string }): Record<string, unknown> {
+    return {
       type: 'node',
       data: {
         uin: this.ctx.selfId() || this.ctx.config.botQQ,
         name: node.name.slice(0, 24),
         content: [{ type: 'text', data: { text: node.content.slice(0, 500) } }],
       },
-    }))
+    }
+  }
+
+  /** Route built node segments to send_forward_msg (group) or
+   * send_private_forward_msg (private). Shared by both forward paths. */
+  private async dispatchForward(chatId: ChatId, messages: Array<Record<string, unknown>>): Promise<void> {
+    const ref = splitChatId(chatId)
+    const target = Number(ref.target)
+    if (!Number.isFinite(target)) throw new OneBotActionError('invalid chat target: ' + chatId)
     if (ref.kind === 'group') {
       await this.ctx.call('send_forward_msg', { group_id: target, messages }, chatId)
     } else {

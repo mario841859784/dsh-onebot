@@ -97,6 +97,19 @@ export interface SendOptions {
     queuable?: boolean;
 }
 /**
+ * One qq_send_forward node: either a self-written `{ name, content }` card
+ * (sent as `{ type: 'node', data: { uin, name, content } }`) or a reference
+ * to an existing message `{ id }` (OneBot 11 `{ type: 'node', data: { id } }`;
+ * the implementation fills in the original sender and content). `id` is the
+ * message_id as a decimal string, validated by the caller (tools.ts).
+ */
+export type ForwardNodeInput = {
+    name: string;
+    content: string;
+} | {
+    id: string;
+};
+/**
  * T9 (#2): strip a leaked <user_message> boundary. wrapUserMessage (chat.ts)
  * wraps every inbound payload in `<user_message qq="…" nickname="…">…</user_message>`,
  * and a model may echo those markers back inside its reply. Only the literal
@@ -285,12 +298,24 @@ export declare class OutboundPipeline {
     /** Send [[qq_forward]] nodes as a merged-forward message (proactive write
      * from the qq_send_forward tool). W2-③: subject to the minute/day caps
      * and audited; the passive [[qq_forward]] blocks inside sendToChat bypass
-     * this gate via sendForwardNodes. */
-    sendForward(chatId: ChatId, nodes: Array<{
-        name: string;
-        content: string;
-    }>): Promise<void>;
-    /** Ungated merged-forward send (shared by the gated tool path and the
-     * passive [[qq_forward]] blocks inside sendToChat). */
+     * this gate via sendForwardNodes.
+     *
+     * Nodes may also reference existing messages (`{ id }`, tool path only;
+     * the passive [[qq_forward]] blocks stay text-only). A referenced node
+     * carries no text of ours. The soft sensitive-word scan (scanSensitive)
+     * runs on sendToChat's model text only and never ran on this tool path;
+     * it is deliberately not extended to fetch referenced messages via
+     * get_msg: that content was written by someone else and is already in
+     * QQ, the implementation resolves the id itself (SnowLuma rejects ids it
+     * does not know), and a get_msg round trip would add a failure point for
+     * a log-only check. The action audit line records the referenced ids. */
+    sendForward(chatId: ChatId, nodes: ForwardNodeInput[]): Promise<void>;
+    /** Ungated merged-forward send of self-written nodes (the passive
+     * [[qq_forward]] blocks inside sendToChat; text-only by design). */
     private sendForwardNodes;
+    /** One self-written forward node: bot uin, name ≤24, one text segment ≤500. */
+    private textForwardNode;
+    /** Route built node segments to send_forward_msg (group) or
+     * send_private_forward_msg (private). Shared by both forward paths. */
+    private dispatchForward;
 }
