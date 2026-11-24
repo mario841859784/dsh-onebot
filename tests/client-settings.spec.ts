@@ -257,13 +257,13 @@ describe('T8 客户端 bundle — descriptor 契约核对（与宿主 src/settin
   })
 })
 
-describe('T8 客户端 bundle — 七组 79 键（与 host SETTINGS_GROUPS 逐字一致，T8 恢复全等契约）', () => {
-  it('分组键序逐字对齐 host SETTINGS_GROUPS（7 组 79 键，含 T6/T7 转正键、T11 sidebarEntryEnabled、T24 titleSyncEnabled、#61 建议 2 startupResumeEnabled 与消息格式 promptStyle）', () => {
+describe('T8 客户端 bundle — 七组 81 键（与 host SETTINGS_GROUPS 逐字一致，T8 恢复全等契约）', () => {
+  it('分组键序逐字对齐 host SETTINGS_GROUPS（7 组 81 键，含 T6/T7 转正键、T11 sidebarEntryEnabled、T24 titleSyncEnabled、#61 建议 2 startupResumeEnabled、消息格式 promptStyle 与 qq_napcat_api napcatApiAllow/napcatApiFileRoots）', () => {
     expect(client.GROUP_KEYS).toStrictEqual(SETTINGS_GROUPS)
     expect(groups.map((group) => group.id)).toEqual(['connection', 'permissions', 'behavior', 'bystander', 'session', 'media', 'diagnostics'])
-    expect(allFields).toHaveLength(79)
+    expect(allFields).toHaveLength(81) // 消息格式 promptStyle + qq_napcat_api：79→81（napcatApiAllow/napcatApiFileRoots 入 permissions 组）
     const clientKeys = allFields.map((field) => field.key)
-    expect(new Set(clientKeys).size).toBe(79) // 无重复
+    expect(new Set(clientKeys).size).toBe(81) // 无重复
     for (const key of clientKeys) expect([...ALL_KEYS]).toContain(key) // 无孤儿键
     // T6/T7 新增键落位
     expect(groups.find((group) => group.id === 'media')!.fields.map((field) => field.key)).toContain('gifFramesEnabled')
@@ -289,7 +289,7 @@ describe('T8 客户端 bundle — 七组 79 键（与 host SETTINGS_GROUPS 逐�
 
   it('默认值逐字对齐 host SCHEMA_DEFAULTS（T8 恢复全等，无豁免；notices 走面板 5 真键不在 DEFAULTS）', () => {
     const hostDefaults = SCHEMA_DEFAULTS as Record<string, unknown>
-    expect(Object.keys(defaults)).toHaveLength(80) // 79 面板键 + chatIdleEvictDays
+    expect(Object.keys(defaults)).toHaveLength(82) // 81 面板键（含 promptStyle/napcatApiAllow/napcatApiFileRoots）+ chatIdleEvictDays
     expect('notices' in defaults).toBe(false) // notices 由 NOTICE_KEYS 面板通道承载
     expect(defaults.chatIdleEvictDays).toBe(hostDefaults.chatIdleEvictDays) // 不上面板但参与徽标对照
     expect(defaults.sidebarEntryEnabled).toBe(true) // T11：侧边栏入口默认开（用户裁定）
@@ -442,13 +442,13 @@ describe('T8 showIf 条件显隐 — 贡献者面板交互契约', () => {
     expect(visibleLabels('session', { memoryFilesEnabled: true })).toContain('记忆文件路径')
   })
 
-  it('渲染行计数与 showIf 自洽：默认草稿顶层字段行 67 行 = 全键 79 - 12 个隐藏键（原 8 个 + #58 旁观 4 个 showIf）（host/port/interimRecallMs/inboxQueueDelayMs/memoryFiles/sttCommand/sttArgs/sttModel）；0.10.0 重排后 connection 4（6-2 隐藏）/ behavior 20（12 字段 + 4 通知开关 + 4 文案）/ session 11（12-1 隐藏）/ media 14（17-3 隐藏）', () => {
+  it('渲染行计数与 showIf 自洽：默认草稿顶层字段行 69 行 = 全键 81 - 12 个隐藏键（原 8 个 + #58 旁观 4 个 showIf）（host/port/interimRecallMs/inboxQueueDelayMs/memoryFiles/sttCommand/sttArgs/sttModel）；0.10.0 重排后 connection 4（6-2 隐藏）/ behavior 20（12 字段 + 4 通知开关 + 4 文案）/ session 11（12-1 隐藏）/ media 14（17-3 隐藏）', () => {
     const visible = (field: { showIf?: { key: string; value: unknown } }) => !field.showIf || baseDraft()[field.showIf.key] === field.showIf.value
     const expectedVisible = allFields.filter(visible).length
-    expect(expectedVisible).toBe(67)
+    expect(expectedVisible).toBe(69)
     const rowsPerGroup = groups.map((group) => topFieldRows(renderGroup(group.id, {})).length)
-    expect(rowsPerGroup).toEqual([4, 18, 20, 1, 11, 14, 7]) // #59 memberTools 入 permissions 组；#58 旁观组 5 字段（4 个 showIf 隐藏）；T1 reaction permissions 组 +2；#61 建议 2 session 组 +1（startupResumeEnabled）；消息格式 session 组 +1（promptStyle）
-    expect(rowsPerGroup.reduce((sum, count) => sum + count, 0)).toBe(75) // 67 可见字段行 + 8 通知行（behavior 内非字段行；showIf 隐藏键不渲染）
+    expect(rowsPerGroup).toEqual([4, 20, 20, 1, 11, 14, 7]) // #59 memberTools 入 permissions 组；#58 旁观组 5 字段（4 个 showIf 隐藏）；T1 reaction permissions 组 +2；#61 建议 2 session 组 +1（startupResumeEnabled）；消息格式 session 组 +1（promptStyle）；qq_napcat_api permissions 组 +2（napcatApiAllow/napcatApiFileRoots）
+    expect(rowsPerGroup.reduce((sum, count) => sum + count, 0)).toBe(77) // 69 可见字段行 + 8 通知行（behavior 内非字段行；showIf 隐藏键不渲染）
   })
 })
 
@@ -458,7 +458,7 @@ describe('T8 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     expect(sections.map((section) => section.props['data-group'])).toEqual(['connection', 'permissions', 'behavior', 'bystander', 'session', 'media', 'diagnostics'])
     const elements = sections.flatMap((section) => walk(section))
     expect(elements.filter((element) => element.type === stubUi.SegmentedControl)).toHaveLength(11) // 11 枚举全显（含消息格式 promptStyle）（原生分段控件）
-    expect(elements.filter((element) => element.type === 'textarea')).toHaveLength(12) // 8 可见 stringArray + 4 通知文案（#58 bystanderTopics 默认被 showIf 隐藏不渲染）
+    expect(elements.filter((element) => element.type === 'textarea')).toHaveLength(14) // 10 可见 stringArray（含 napcatApiAllow/napcatApiFileRoots）+ 4 通知文案（#58 bystanderTopics 默认被 showIf 隐藏不渲染）
     const inputs = elements.filter((element) => element.type === stubUi.Input)
     expect(inputs.filter((input) => input.props.type === 'text')).toHaveLength(18) // 9 可见 number（含 T1 reaction reactionEmoji）+ 9 可见 string
     expect(inputs.filter((input) => input.props.type === 'password')).toHaveLength(1)
@@ -735,7 +735,7 @@ describe('T8 冲突合并 — mergeOnConflict（远端未变保留草稿、远�
     expect(merged.keptCount).toBe(1)
     expect(merged.draft.port).toBe('3000')
     expect(merged.draft.botQQ).toBe('10086')
-    expect(Object.keys(merged.draft)).toHaveLength(79)
+    expect(Object.keys(merged.draft)).toHaveLength(81)
     expect((client.computeDirtyKeys as Function)(merged.draft, next)).toEqual(['botQQ'])
   })
 

@@ -77,7 +77,7 @@ export const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>> = {
   // 0.10.0 重排（用户裁定方案 A）：连接=通道配置 6 键；工作区/强制会话/提示词文件
   // 归 session；allowPrivateHosts 归 media；ignoreSelf/sidebarEntryEnabled 归 behavior。
   connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ'],
-  permissions: ['requireMention', 'memberTools', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'replyCountsAsMention', 'atAllCountsAsMention', 'reactionOnMention', 'reactionEmoji', 'faceStyle', 'pokeEnabled', 'restrictedMemberPrefix', 'sensitivePatterns'],
+  permissions: ['requireMention', 'memberTools', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'replyCountsAsMention', 'atAllCountsAsMention', 'reactionOnMention', 'reactionEmoji', 'faceStyle', 'pokeEnabled', 'restrictedMemberPrefix', 'sensitivePatterns', 'napcatApiAllow', 'napcatApiFileRoots'],
   behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'inboxQueueEnabled', 'inboxQueueDelayMs', 'titleSyncEnabled', 'ignoreSelf', 'sidebarEntryEnabled'],
   // #58 群聊旁观：默认全关/空（enabled=false 时其余四键零行为）。
   bystander: ['bystanderEnabled', 'bystanderCapacity', 'bystanderCooldownMinutes', 'bystanderDailyLimit', 'bystanderTopics'],
@@ -144,6 +144,10 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   pokeEnabled: true,
   restrictedMemberPrefix: true,
   sensitivePatterns: [],
+  // qq_napcat_api 放行规则：白名单缺省 = 原先写死的 15 个（与 src/napcat-api.ts
+  // DEFAULT_NAPCAT_API_ALLOW 逐项同序）；本机文件放行目录缺省空 = 不检查。
+  napcatApiAllow: ['get_group_member_list', 'get_group_member_info', 'get_stranger_info', 'get_forward_msg', 'get_record', 'get_file', 'upload_group_file', 'upload_private_file', 'get_group_root_files', 'get_group_files_by_folder', 'get_group_file_url', 'get_private_file_url', 'ocr_image', 'get_ai_characters', 'send_group_ai_record'],
+  napcatApiFileRoots: [],
   interimMessages: true,
   interimRecall: false,
   interimRecallMs: 90_000,
@@ -268,7 +272,7 @@ const BOOLEAN_KEYS: readonly string[] = [
   'sidebarEntryEnabled', 'titleSyncEnabled', 'bystanderEnabled', 'startupResumeEnabled',
 ]
 const STRING_KEYS: readonly string[] = ['host', 'url', 'accessToken', 'botQQ', 'workspacePath', 'groupWorkspacePath', 'forceSessionId', 'dmPromptFile', 'groupPromptFile', 'cardFooter', 'agentPreset', 'sttCommand', 'sttModel']
-const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'memoryFiles', 'sensitivePatterns', 'sttArgs', 'fontFiles', 'fontFamilies', 'bystanderTopics']
+const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupAllowFrom', 'wakeNamesAdmin', 'wakeNamesMember', 'memoryFiles', 'sensitivePatterns', 'sttArgs', 'fontFiles', 'fontFamilies', 'bystanderTopics', 'napcatApiAllow', 'napcatApiFileRoots']
 /** 全部 71 键（校验与快照的唯一键集；9 枚举 + 12 数字 + 29 布尔 + 13 字符串 +
  *  10 字符串数组 + notices 单独通道；T6 新增 gifFramesEnabled、T7 新增
  *  inboxQueueEnabled/inboxQueueDelayMs、T11 新增 sidebarEntryEnabled、T24 新增

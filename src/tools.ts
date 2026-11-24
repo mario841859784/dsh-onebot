@@ -1,6 +1,7 @@
 /**
  * Model-facing tools for the OneBot channel: media sends, merged forwards,
- * the whitelisted NapCat API proxy, and group history. Tools infer the target
+ * the NapCat API proxy (configurable allowlist + fixed denylist, see
+ * napcat-api.ts), and group history. Tools infer the target
  * chat from the calling agent's session; an explicit chat_id overrides.
  * @module dsh-onebot/tools
  */
@@ -20,25 +21,17 @@ import { cleanOutboundText } from './outbound.js'
 import { stripMarkdown } from './split.js'
 import type { OneBotSegment } from './cq.js'
 import { parseMessage, cqUnescape } from './cq.js'
-
-/** OneBot actions a model may invoke through qq_napcat_api. */
-const NAPCAT_API_WHITELIST = [
-  'get_group_member_list',
-  'get_group_member_info',
-  'get_stranger_info',
-  'get_forward_msg',
-  'get_record',
-  'get_file',
-  'upload_group_file',
-  'upload_private_file',
-  'get_group_root_files',
-  'get_group_files_by_folder',
-  'get_group_file_url',
-  'get_private_file_url',
-  'ocr_image',
-  'get_ai_characters',
-  'send_group_ai_record',
-]
+// qq_napcat_api 的放行规则（可配置白名单 + 写死的禁区 + 本机文件放行目录），
+// 由 index.ts apply() 经 configureNapcatApi 在注册工具之前装好。
+import {
+  checkNapcatAction,
+  checkNapcatParamPaths,
+  napcatActionDescription,
+  napcatApiListing,
+  napcatApiRules,
+  napcatToolDescription,
+  NAPCAT_API_LIST_ACTION,
+} from './napcat-api.js'
 
 /** Output projection shared by the send tools (unconstrained JSON value). */
 function sendOutput() {
@@ -421,14 +414,16 @@ export function registerTools(
     },
   }))
 
+  // 说明文字按注册时的规则拼（缺省配置下与以前逐字节一致）；判定也用同一份快照。
+  const napcat = napcatApiRules()
   register(defineTool({
     name: 'qq_napcat_api',
-    description: '调用 NapCat 白名单内的 OneBot 扩展 API（群成员列表/信息、文件、OCR、AI 语音等）。非白名单 action 会被拒绝。',
+    description: napcatToolDescription(napcat),
     parameters: {
       action: {
         type: 'string',
         required: true,
-        description: '白名单 action：' + NAPCAT_API_WHITELIST.join(' / '),
+        description: napcatActionDescription(napcat),
       },
       params: {
         type: 'object',
@@ -440,11 +435,15 @@ export function registerTools(
     isConcurrencySafe: () => true,
     execute: async (args, exec) => {
       const a = args as { action?: unknown; params?: unknown }
-      if (typeof a.action !== 'string' || !NAPCAT_API_WHITELIST.includes(a.action)) {
-        throw new Error('qq_napcat_api: action 不在白名单内（' + NAPCAT_API_WHITELIST.join(', ') + '）')
-      }
+      // 缺省配置下 "list" 不在白名单，照旧走下面的拒绝（行为不变）。
+      if (!napcat.legacy && a.action === NAPCAT_API_LIST_ACTION) return napcatApiListing(napcat) as JsonValue
+      const refused = checkNapcatAction(a.action, napcat)
+      if (refused !== undefined) throw new Error(refused)
+      const action = a.action as string
       const params = typeof a.params === 'object' && a.params !== null ? a.params as Record<string, unknown> : {}
-      return await connection.call(a.action, params) as JsonValue
+      const badPath = await checkNapcatParamPaths(params, napcat)
+      if (badPath !== undefined) throw new Error(badPath)
+      return await connection.call(action, params) as JsonValue
     },
   }))
 

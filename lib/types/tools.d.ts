@@ -1,6 +1,7 @@
 /**
  * Model-facing tools for the OneBot channel: media sends, merged forwards,
- * the whitelisted NapCat API proxy, and group history. Tools infer the target
+ * the NapCat API proxy (configurable allowlist + fixed denylist, see
+ * napcat-api.ts), and group history. Tools infer the target
  * chat from the calling agent's session; an explicit chat_id overrides.
  * @module dsh-onebot/tools
  */

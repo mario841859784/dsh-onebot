@@ -32,7 +32,7 @@
 | 文字图 | t2i 卡片渲染器（@napi-rs/canvas）：标题/粗斜体/删除线/引用/列表/代码块/表格/行内 code 胶囊/彩色 emoji/中文标点禁则；与 Hermes 原版同款数值（800px/26px/禁则集合/右缘 790） |
 | 出站 | 正文 ≤ `textImageThreshold`（默认 150）字符单条发送、**超过阈值渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji；渲染失败、PNG 超 `outboundImageMaxBytes` 或 `<=0` 禁用卡片时回退单条纯文本）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、**实时中间消息**（interimMessages：每条中间文本立即发出、实时可见；各自在 `interimRecallMs`（默认 90s）后自动单独撤回；回合结束时先把整轮中间消息渲染成一张 **t2i 小结卡**、立即撤回仍在屏幕上的原文、再发送最终回复——不用回合末合并转发，避免长回合「原文超 2 分钟撤不回+转发卡重复」；`interimRecall: false` 时降级为只发不撤（无小结卡、不撤回））、**宿主「计划书/提问卡」自动中继**（模型调用 exit_plan_mode 时把计划全文发到 QQ；**ask_user_question QQ 桥接**（0.9.11）：问题渲染成 QQ 选项卡、群友回复选项/`答:`/`跳过` 即回传答案，等待期内即时结算，300s 未答转 pending 后仍可回答，见「群聊权限分档与 ask_user_question 桥接」）、正在输入提示（set_input_status，仅私聊） |
 | 命令 | 斜杠命令（默认仅管理员；`/help` 群友可见成员视图）：`/new` 开新会话、`/stop` 停止生成、`/steer <补充内容>` 向运行中的任务补充指令（无运行任务时回用法提示；详见下方命令表与 `newMessagePolicy` 配置）、`/model` 查看或切换当前会话模型（`--default` 修改部署默认；无参输出两级序号列表，回复序号选 provider → 再回复序号选模型）、`/workspace` 查看或切换工作区（无参编号列表，回复序号即选）、`/preset` 查看或切换 agent 预设（无参编号列表，回复序号即选）、`/session` 查看可切回历史会话并按序号切回（`/new`、`/workspace`、`/preset` 切换下来的旧会话进列表，可来回切，历史上下文恢复）、`/status` 会话全景、`/doctor [export [参考号]|test]`（别名 `/healthcheck`）运行体检（export [参考号] 导出脱敏诊断包 qq-diagnostics-*.zip，文件名含触发参考号；`test` 一键自测收发链路）、`/retry` 重跑上一条、`/id` 会话标识、`/ver` 版本、`/ocr` 识别最近图片、`/mode` 切换出站模式（跨重启持久化）、`/plan` 计划模式、`/permission` 切换宿主权限预设（QQ 别名 `w`=工作区可写+需审批、`f`=全权+免审批；完整预设名照传，未知名由宿主报错并回显可用列表；无参查看当前与可用列表，序号按 available 顺序）、`/goal` 目标记录（跨重启持久化）、`/silent [分钟]` 临时免打扰（0.9.11 起，默认 30 分钟，再次 `/silent` 提前解除，见命令表）、`/help` 帮助（0.9.11 起群友可见成员视图，仅列群友可用的命令）；未知斜杠命令默认拦截并提示相近命令（`unknownCommand: passthrough` 改为透传给模型） |
-| 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_segments`（1–9 段纯文本分段气泡，每段 ≤500 字，见下文「分段发送」）、`qq_send_forward`、`qq_napcat_api`（14 个白名单 action）、`qq_group_history`（文件编辑工具 `code_safe_edit` 等已拆至独立插件 dsh-safe-edit，见下文「安全编辑」） |
+| 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_segments`（1–9 段纯文本分段气泡，每段 ≤500 字，见下文「分段发送」）、`qq_send_forward`、`qq_napcat_api`（白名单可配置，缺省 15 个 action；取凭据/密钥、发原始包、让协议端退出或重启是写死的禁区，见配置项 `napcatApiAllow`）、`qq_group_history`（文件编辑工具 `code_safe_edit` 等已拆至独立插件 dsh-safe-edit，见下文「安全编辑」） |
 | 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、**群聊权限分档**（0.9.11：每条群消息前缀标注发言人档位·管理员/·成员；成员档位回合默认禁用全部 `qq_*` 工具，`permissions.memberTools: send/all` 可放开（0.10.1 加 send 中间档）、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计 |
 | 会话 | 每个 QQ 会话一个持久 Agent（session id 稳定派生），重启后自动 resume（`startupResumeEnabled` 可关：关闭后每次重启都开全新会话）；按 `agentPreset`/`agentPresetGroup`/`workspacePath` 挂载到 preset 与工作区；每轮结束 flush 落盘 |
 | 运维 | 热加载：profile 层 patch 的 **config 覆盖**与 **insert 新增/删除**均热生效——插件 fiber 秒级原地重启（宿主进程不重启；代价：QQ 桥一次秒级重连、在途回合中断）；touch/内容未变不触发任何动作；bundle 自带 patch、仓库模板、部署副本的 patch 文件与根配置 `cordis.yml` 的改动**不**热生效；临时媒体 TTL 过期清理 |
@@ -220,6 +220,8 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `allowPrivateHosts` | `false` | 下载媒体 URL 时允许私网/环回地址（仅跳过私网检查，协议白名单与限长仍生效）；仅本机反代等可信场景开启，公网部署保持 `false` |
 | `fileRefRoots` | `[]` | 允许复制的 `file://` 源根目录；空数组默认拒绝所有入站 `file://` ref。路径按 `realpath` 校验，必须落在这些根目录内，被拒时打一条 warn 日志。只影响以 `file://` 形式返回图片、语音、视频的 OneBot 实现；文件段走 `get_file` 等接口，http(s) URL、base64 和不带 `file://` 前缀的本地路径也都不走这项检查，配置它对这些情况没有作用 |
 | `allowCidrs` | `[]` | 可选 CIDR 白名单（如 `100.64.0.0/10`、`fd7a:115c:a1e0::/48`）：只放行这些私网段，其他私网仍拒绝；空数组保持原行为；格式错误启动即报错 |
+| `napcatApiAllow` | 原先写死的 15 个动作 | `qq_napcat_api` 放行的 OneBot 动作名。缺省就是以前写死的那份（`get_group_member_list`、`get_group_member_info`、`get_stranger_info`、`get_forward_msg`、`get_record`、`get_file`、`upload_group_file`、`upload_private_file`、`get_group_root_files`、`get_group_files_by_folder`、`get_group_file_url`、`get_private_file_url`、`ocr_image`、`get_ai_characters`、`send_group_ai_record`），缺省时工具说明和行为与以前完全一样。写 `*` 表示禁区以外全部放行。**禁区写死在代码里、配置打不开**：取登录凭据和密钥（`get_cookies`、`get_credentials`、`get_clientkey`、`get_csrf_token`、`request_decrypt_key`）、发原始协议包（`send_packet`）、让协议端退出或重启（`bot_exit`、`set_restart`）、`.handle_quick_operation`；比较前去掉前导点和下划线、统一大小写、去掉 `nc_` 前缀和 `_async` / `_rate_limited` 后缀，所以 `.send_packet`、`nc_get_cookies` 这类别名同样拦下。改了缺省值以后，模型可以用 `action: "list"` 查看当前放行规则（不调用协议端） |
+| `napcatApiFileRoots` | `[]` | `qq_napcat_api` 参数里本机文件的放行目录。配置后，参数（递归看数组、嵌套对象和 CQ 码）里像本机文件的值——绝对路径、`file://` 地址、`./` `../` 开头的相对路径——必须按 `realpath` 落在这些目录内且文件存在，网络共享（`\\server\share`）、设备路径（`\\?\`、`\\.\`）、NTFS 备用数据流（`C:\a.txt:流`）一律拒绝；`http(s)://`、`base64://` 和消息正文不受影响。空数组（缺省）= 不检查，与以前一致。**建议配上**：`upload_group_file`、`set_qq_avatar`、`set_group_portrait` 等动作会让协议端按模型给的路径读本机文件，放开白名单（尤其 `*`）而不配它时启动会打一条警告。只在协议端与插件同机时有意义 |
 | `agentPreset` | 空 | 会话挂载的 agent preset（留空=默认） |
 | `agentPresetGroup` | 空 | 群聊会话的 agent preset id（粗档，0.9.11 起）：设置后群聊会话优先使用它，私聊仍用 `agentPreset`；留空=群私同源。`/preset` 的 per-chat 覆盖仍最优先 |
 | `permissions.memberTools` | `none` | 成员档位（非管理员）的工具权限（0.9.11 起；0.10.1 加 send 档）：`none`（默认）= 成员回合禁用全部 `qq_*` 工具（插件硬拦截，无需模型自觉）；`send` = 仅放行发往当前会话的内容类工具 `qq_send_text` / `qq_send_segments` / `qq_send_image`（成员回合也能分条、发图；发图可读会话工作区图库）；`all` = 不限。缺省配置 fail-closed 为 `none`；无 QQ 会话映射的调用方（Web 等其他通道）不受此档位约束 |
@@ -258,14 +260,14 @@ dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `o
 
 ![设置页 · 行为](docs/settings-ui-behavior.jpg)
 
-### 七组 75 键（另含 5 条通知文案）
+### 七组 80 键（另含 5 条通知文案）
 
 面板按七个页签分组：
 
 | 组 | 覆盖 |
 |---|---|
 | 连接 | 连接模式（反向/正向 WS 及对应地址端口）、`accessToken`（脱敏）、机器人 QQ 号——纯通道配置（0.10.0 重排） |
-| 权限 | 私聊/群聊策略与白名单、管理员、成员工具权限档、唤醒词、@ 唤醒细则、表情呈现、戳一戳、受限前缀、敏感词正则 |
+| 权限 | 私聊/群聊策略与白名单、管理员、成员工具权限档、唤醒词、@ 唤醒细则、表情呈现、戳一戳、受限前缀、敏感词正则、NapCat API 放行动作与本机文件目录 |
 | 行为 | 中间消息与自动撤回、错误通知、未知命令、频率上限、新消息排队/插话、连发合并、会话标题同步、忽略自己发的消息、首页侧边栏入口 |
 | 旁观 | 群聊旁观开关、旁听缓冲条数、回顾间隔与每日上限、话题词表（0.10.1，默认关） |
 | 会话 | 新会话问候、首条按 User 注入、记忆文件、智能体预设、私聊/群聊默认工作区路径、强制会话 ID、私聊/群聊提示词文件、消息格式 |
