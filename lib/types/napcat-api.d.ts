@@ -70,7 +70,8 @@ export interface LocalPathCandidate {
     value: string;
 }
 /**
- * 一个字符串是否「像本机文件」：file: 开头、盘符绝对路径（C:\ / C:/）、
+ * 一个字符串是否「像本机文件」：file: 开头、盘符开头（C:\ / C:/，也含 C:foo
+ * 这类盘符相对路径——acceptableShape 会把非绝对路径整体拒绝，fail closed）、
  * POSIX 绝对路径（/ 开头）、UNC / 设备路径（\\ 或 // 开头、\??\ 开头）、
  * ./ 或 ../ 开头的相对路径（相对的是协议端的工作目录，没法核，一律当本机
  * 文件处理）。http(s)://、base64:// 等其他 scheme 不算。
