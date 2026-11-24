@@ -216,6 +216,9 @@ window.__ModuleLoader__.load({
 					// #61 建议 2：启动恢复会话开关（默认开 = 既有启动 resume 行为；关 =
 					// 每次重启都开全新会话，旧会话记录与日志保留不动）。
 					{ key: "startupResumeEnabled", label: "启动恢复会话", type: "boolean", hint: "启动时按上次会话记录接回各聊天的原会话；关掉后每次重启都开全新会话（旧会话记录与日志保留不动）；改动重启插件后生效" },
+					// 入站消息格式：tag（默认，<user_message> 信封 + [HH:MM …] 前缀）/
+					// plain（自然语言抬头 + 原话每行空两格）。
+					{ key: "promptStyle", label: "消息格式", type: "enum", options: ["tag", "plain"], optionLabels: { tag: "标记（默认）", plain: "自然语言" }, hint: "收到的消息怎么写给模型看：标记 = <user_message> 信封；自然语言 = 一行抬头写几点、谁、在哪儿说的，下面原话每行空两格；改动重启插件后生效" },
 				],
 			},
 			{
@@ -312,6 +315,8 @@ window.__ModuleLoader__.load({
 			firstMessageAsUser: true,
 			// #61 建议 2：启动恢复会话开关（默认开）。
 			startupResumeEnabled: true,
+			// 入站消息格式（默认 tag = 既有写法）。
+			promptStyle: "tag",
 			memoryFilesEnabled: false, // T4 拍板默认关（贡献者 true）
 			memoryFiles: [],
 			ignoreSelf: true,
@@ -525,6 +530,8 @@ window.__ModuleLoader__.load({
 			firstMessageAsUser: vBoolean(),
 			// #61 建议 2：启动恢复会话开关。
 			startupResumeEnabled: vBoolean(),
+			// 入站消息格式。
+			promptStyle: vEnum(["tag", "plain"]),
 			memoryFilesEnabled: vBoolean(),
 			memoryFiles: vArray(vString(0, 1024)),
 			ignoreSelf: vBoolean(),
@@ -643,6 +650,8 @@ window.__ModuleLoader__.load({
 			firstMessageAsUser: vOptional(vBoolean()),
 			// #61 建议 2：启动恢复会话开关。
 			startupResumeEnabled: vOptional(vBoolean()),
+			// 入站消息格式。
+			promptStyle: vOptional(vEnum(["tag", "plain"])),
 			memoryFilesEnabled: vOptional(vBoolean()),
 			memoryFiles: vOptional(vArray(vString(0, 1024))),
 			agentPreset: vOptional(vString(0, 128)),
@@ -938,6 +947,7 @@ window.__ModuleLoader__.load({
 					newSessionGreeting: { label: "Greet on new sessions", hint: "After /new I say hello first" },
 					firstMessageAsUser: { label: "Inject first message as User", hint: "The host auto-names the session from the first message only when this is on (default off)" },
 					startupResumeEnabled: { label: "Resume sessions on startup", hint: "Rejoin each chat's last session on startup; off = every restart starts brand-new sessions (old mappings and logs are left untouched); changes apply after a plugin restart" },
+					promptStyle: { label: "Message format", options: { tag: "Tags (default)", plain: "Natural language" }, hint: "How inbound messages are written for the model: tags = the <user_message> envelope; natural language = one header line (time, sender, where) with every line of the message indented below it; changes apply after a plugin restart" },
 					memoryFilesEnabled: { label: "Read memory files on new sessions" },
 					memoryFiles: { label: "Memory file paths", placeholder: "Absolute file paths; split by comma, enumeration comma, or newline" },
 					agentPreset: { label: "Agent preset for new sessions (preset id, e.g. standard; empty = host default)", placeholder: "standard" },

@@ -23,9 +23,11 @@ import { cqUnescape, detectExplicitMention, detectMention, detectWakeName, parse
 import { gifFramesNote } from './gif-sheet.js'
 import type { AccessPolicyConfig, ChatId, UserRole } from './chat.js'
 import {
-  buildChatId, buildDirectMessagePrefix, buildGroupMessagePrefix, classifyUserRole, dmAllowed, groupAllowed,
-  RESTRICTED_PREFIX, sanitizeNickname, splitChatId, wrapUserMessage,
+  buildChatId, buildDirectMessagePrefix, buildGroupMessagePrefix, buildPlainDirectHeader, buildPlainGroupHeader,
+  classifyUserRole, dmAllowed, groupAllowed, RESTRICTED_PREFIX, sanitizeNickname, splitChatId, wrapPlainMessage,
+  wrapUserMessage,
 } from './chat.js'
+import type { ChatKind, PromptStyle } from './chat.js'
 import type { BridgeConfig } from './bridge.js'
 import { resolveNoticeText } from './notices.js'
 import type { ChatSettings } from './registry.js'
@@ -137,6 +139,44 @@ export interface InboundChat {
   rateLimitNoticeAt: number | undefined
 }
 
+/**
+ * 一条入站消息的结构化信息，随派发钩子（dispatchFollowup / interceptBusyTurn
+ * 的 options.message）一起交出去，给接管派发的其它插件用，不必再解析文字。
+ * 两种 promptStyle 都带；缺省格式下多带这份字段不改变任何文字输出。
+ * 入站连发合并（inboxQueueEnabled）时几条在事件层就并成了一条，这里仍是
+ * 一个对象：messageId / time 取最后一条，body 是合并后的原话。
+ */
+export interface InboundMessageInfo {
+  /** 'private' | 'group'。 */
+  kind: ChatKind
+  /** 发送者 QQ 号。 */
+  senderId: string
+  /** 消毒后的昵称（sanitizeNickname，和前缀/信封里用的同一个值）。 */
+  nickname: string
+  /** OneBot message_id；没有时为 ''。 */
+  messageId: string
+  /** 群聊里是否算作叫到了机器人（@、引用即叫、唤醒词等）；私聊恒 false。 */
+  mentioned: boolean
+  /** 消息时间（Unix 秒）；事件没带有效时间时是处理时刻。 */
+  time: number
+  /** 发送者档位。 */
+  role: UserRole
+  /** 是否按受限用户（只回答问题）处理：群聊 + 非管理员 + restrictedMemberPrefix。 */
+  restricted: boolean
+  /** 信封里的那段原话（已含引用 / 合并转发展开与媒体标注），不带前缀/抬头、不带缩进。 */
+  body: string
+  /** 这条消息给模型看的格式。 */
+  promptStyle: PromptStyle
+}
+
+/** dispatchFollowup 的 options（inbound 交出去的那一份）。 */
+export interface InboundDispatchOptions {
+  /** 群聊 @ 表情回执的目标消息 id（见 InboundContext.dispatchFollowup）。 */
+  reactionMessageId?: string
+  /** 结构化的消息信息（见 InboundMessageInfo）。 */
+  message?: InboundMessageInfo
+}
+
 /** The bridge capabilities the inbound pipeline touches. Deliberately
  * narrower than BridgeDeps: the policy, the live registry views it needs
  * (chat lookup, per-chat settings, the idle sweep), media/transcriber, the
@@ -185,7 +225,7 @@ export interface InboundContext {
   /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes).
    *  options.reactionMessageId = 群聊 @ 表情回执：该消息命中「显式 @ 机器人」
    *  时由 inbound 传入，桥在回合启动点 best-effort 贴一次表情（缺席=不贴）。 */
-  dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string, options?: { reactionMessageId?: string }): Promise<void>
+  dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string, options?: InboundDispatchOptions): Promise<void>
   /** 群聊旁观 (#58)：未通过 @ 门控的群消息喂进每群旁听缓冲，规则触发时由
    * 桥开一次回顾回合。桥侧 enabled=false 即返回（挂点零行为）；缺席（旧
    * 测试桩）= 无旁观能力，drop 点行为与上游逐字节等价。 */
@@ -199,7 +239,7 @@ export interface InboundContext {
    * carries no media, no quote and no forward (steer eligibility precondition:
    * media-bearing messages always queue, never steer). Optional: absent =
    * the pre-T2 pipeline (0.8.1 behavior for every message). */
-  interceptBusyTurn?(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean): Promise<boolean>
+  interceptBusyTurn?(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean, message?: InboundMessageInfo): Promise<boolean>
   /** T2-B3: ask_user_question answer seam — invoked for every plain message
    * after ALL gates and BEFORE interceptBusyTurn. Parses the raw text as a
    * reply to the chat's outstanding ask_user_question batch (纯选项选择 /
@@ -228,6 +268,9 @@ export interface InboundContext {
     /** T6 (PR port GIF 分帧)：开关默认 false——关闭时gifFramesNote 不触碰
      *  文件系统，行为与上游逐字节等价。 */
     gifFramesEnabled: boolean
+    /** 入站消息给模型看的格式：'tag'（缺省）= <user_message> 信封 + 前缀；
+     *  'plain' = 自然语言抬头 + 缩进原话（见 chat.ts PromptStyle）。 */
+    promptStyle: PromptStyle
   }>
 }
 
@@ -458,6 +501,8 @@ export class InboundPipeline {
     // forged prefix lines, restricted-member tags and system-prompt-like text
     // stay pure data. The framework-generated group prefix and
     // RESTRICTED_PREFIX remain outside — the only trusted metadata.
+    // promptStyle=plain keeps the same split: the unindented header line is
+    // the only trusted metadata, every payload line is indented below it.
     const content = [forward, quote, body].filter(part => part !== '').join('\n')
     if (content.trim() === '') {
       // pipeline-hooks.md #17: this drop used to be fully silent.
@@ -465,20 +510,47 @@ export class InboundPipeline {
       currentTrace()?.emit('dispatch', { ok: false, reason: TRACE_REASONS.inboundEmptyContent })
       return
     }
-    // T2 (PR port): 带上本条消息的 message_id（<user_message mid="…">），
-    // 模型可用 [[reply:<mid>]] 精确引用（出站半边见 outbound.ts sendToChat）。
-    let final = wrapUserMessage(content, userId, nickname, inbound.messageId)
     const role: UserRole = isAdmin ? 'admin' : 'member'
-    if (kind === 'group') {
-      // 权限分档 A1: the group prefix carries the sender's tier so the model
-      // can see who it is talking to without trusting message-internal text.
-      final = buildGroupMessagePrefix(nickname, userId, mentioned, role, inbound.time) + final
-      if (!isAdmin && this.ctx.config.restrictedMemberPrefix) {
-        final = RESTRICTED_PREFIX + final
-      }
+    const restricted = kind === 'group' && !isAdmin && this.ctx.config.restrictedMemberPrefix
+    const style = this.promptStyle()
+    let final: string
+    if (style === 'plain') {
+      // promptStyle=plain：一行框架写的抬头（几点、谁、在哪儿说的、编号），
+      // 下面原话每一行缩进两个全角空格——只有顶格的那行是框架写的，原话里
+      // 伪造的抬头到了模型眼里也是缩进的。受限用户写进抬头括号（「，只回答
+      // 问题」），代替 RESTRICTED_PREFIX。
+      const header = kind === 'group'
+        ? buildPlainGroupHeader(nickname, userId, mentioned, role, restricted, inbound.time, inbound.messageId)
+        : buildPlainDirectHeader(nickname, userId, inbound.time, inbound.messageId)
+      final = wrapPlainMessage(header, content)
     } else {
-      // T1 (PR port): 私聊也带时间戳前缀（拉旧消息时反映真实消息时间）。
-      final = buildDirectMessagePrefix(inbound.time) + final
+      // T2 (PR port): 带上本条消息的 message_id（<user_message mid="…">），
+      // 模型可用 [[reply:<mid>]] 精确引用（出站半边见 outbound.ts sendToChat）。
+      final = wrapUserMessage(content, userId, nickname, inbound.messageId)
+      if (kind === 'group') {
+        // 权限分档 A1: the group prefix carries the sender's tier so the model
+        // can see who it is talking to without trusting message-internal text.
+        final = buildGroupMessagePrefix(nickname, userId, mentioned, role, inbound.time) + final
+        if (restricted) {
+          final = RESTRICTED_PREFIX + final
+        }
+      } else {
+        // T1 (PR port): 私聊也带时间戳前缀（拉旧消息时反映真实消息时间）。
+        final = buildDirectMessagePrefix(inbound.time) + final
+      }
+    }
+    // 结构化信息随派发钩子交出去（两种格式都带，不改文字输出）。
+    const message: InboundMessageInfo = {
+      kind,
+      senderId: userId,
+      nickname,
+      messageId: inbound.messageId ?? '',
+      mentioned: kind === 'group' && mentioned,
+      time: inbound.time > 0 ? inbound.time : Math.floor(Date.now() / 1000),
+      role,
+      restricted,
+      body: content,
+      promptStyle: style,
     }
     // T2 (P1): the busy-turn policy seam runs AFTER every gate above (dedup /
     // self / policy / mention / command / rate-limit) and only around the
@@ -501,13 +573,18 @@ export class InboundPipeline {
       return
     }
     if (this.ctx.interceptBusyTurn !== undefined
-      && await this.ctx.interceptBusyTurn(chatId, final, role, nickname, plain)) {
+      && await this.ctx.interceptBusyTurn(chatId, final, role, nickname, plain, message)) {
       return
     }
     await this.ctx.dispatchFollowup(chatId, final, role, nickname,
       // 群聊 @ 表情回执：仅普通回合路径贴（命令/静音/限频/问答/忙回合/
       // 旁观路径都已在上方 return，天然不贴）；消息缺 id 时不贴。
-      { reactionMessageId: atBotHit && inbound.messageId !== undefined && inbound.messageId !== '' ? inbound.messageId : undefined })
+      { reactionMessageId: atBotHit && inbound.messageId !== undefined && inbound.messageId !== '' ? inbound.messageId : undefined, message })
+  }
+
+  /** 当前的 promptStyle（缺省 'tag'；不认识的值也按 'tag'）。 */
+  private promptStyle(): PromptStyle {
+    return this.ctx.config.promptStyle === 'plain' ? 'plain' : 'tag'
   }
 
   /** W2-②: (chatId, message_id) sliding-window dedup against OneBot
@@ -723,6 +800,10 @@ export class InboundPipeline {
       const withImages = imageNotes.length > 0 ? text + '\n' + imageNotes.join('\n') : text
       if (withImages.trim() === '') return ''
       const name = data.sender?.nickname ?? ''
+      if (this.promptStyle() === 'plain') {
+        // plain：「引用了 名字 的话：…」，没名字「引用了一句：…」。
+        return (name !== '' ? '引用了 ' + name + ' 的话：' : '引用了一句：') + withImages
+      }
       return '[引用]' + (name !== '' ? name + ': ' : '') + withImages
     } catch (error) {
       this.ctx.log('debug', 'quote expansion failed: ' + describeError(error))
@@ -888,16 +969,25 @@ export class InboundPipeline {
       if (lines.length === 0) {
         const reason = nodes.length === 0 ? 'empty-response' : 'no-text-nodes'
         currentTrace()?.emit('forward', { ok: false, reason: '合并转发未展开: ' + reason })
-        return { text: '[合并转发 id=' + forwardId + ' 未展开: ' + reason + ']', media }
+        return { text: this.forwardFailedText(forwardId, reason), media }
       }
       // T2 (PR port): 成功展开也带上 id——模型看到 [合并转发 id=…] 后可以用
       // [[reply:<mid>]] 引用原消息，或经 get_forward_msg 自助复查。
-      return { text: '[合并转发 id=' + forwardId + ']\n' + truncateForwardLines(lines).join('\n'), media }
+      const head = this.promptStyle() === 'plain' ? '一段合并转发（编号 ' + forwardId + '）：' : '[合并转发 id=' + forwardId + ']'
+      return { text: head + '\n' + truncateForwardLines(lines).join('\n'), media }
     } catch (error) {
       this.ctx.log('info', 'forward expansion failed: resId=' + forwardId + ': ' + describeError(error))
       currentTrace()?.emit('forward', { ok: false, reason: '合并转发展开失败: ' + describeError(error) })
-      return { text: '[合并转发 id=' + forwardId + ' 未展开: api-error]', media: [] }
+      return { text: this.forwardFailedText(forwardId, 'api-error'), media: [] }
     }
+  }
+
+  /** 合并转发没展开时给模型看的那一句。tag：`[合并转发 id=… 未展开: 原因码]`
+   * （原样）；plain：`一段合并转发（编号 …，没展开：原因）`。 */
+  private forwardFailedText(forwardId: string, reason: 'api-error' | 'empty-response' | 'no-text-nodes'): string {
+    if (this.promptStyle() !== 'plain') return '[合并转发 id=' + forwardId + ' 未展开: ' + reason + ']'
+    const why = reason === 'api-error' ? '接口调用失败' : reason === 'empty-response' ? '接口返回是空的' : '里面没有文字'
+    return '一段合并转发（编号 ' + forwardId + '，没展开：' + why + '）'
   }
 }
 

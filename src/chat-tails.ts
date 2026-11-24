@@ -18,6 +18,7 @@ import { join } from 'node:path'
 
 import type { ChannelLog } from './prompt.js'
 import { describeError } from './errors.js'
+import { parsePlainEnvelope } from './chat.js'
 
 /** 每个 chat 只留最近这么多条尾巴。 */
 export const TAIL_MAX_MESSAGES = 8
@@ -43,8 +44,12 @@ export interface TailEntry {
 
 /** 入站管线派来的文本先做净化：信封 <user_message …>…</user_message> 展开为
  * 里面的正文（贡献者版本整段删掉，会把消息体一起丢掉），再剥掉外层可信
- * 元数据前缀（时间戳 / 群档位 / 受限用户标记），尾巴只留人读的消息内容。 */
+ * 元数据前缀（时间戳 / 群档位 / 受限用户标记），尾巴只留人读的消息内容。
+ * promptStyle=plain 的消息（顶格抬头 + 每行缩进两个全角空格）同理：去掉抬头
+ * 行与缩进，只留原话（两种格式都认，和当前配置无关）。 */
 function normalizeTailText(text: string): string {
+  const plain = parsePlainEnvelope(String(text ?? ''))
+  if (plain !== null) return plain.body.trim()
   let out = String(text ?? '').replace(/<user_message\b[^>]*>([\s\S]*?)<\/user_message>/g, '$1')
   for (let i = 0; i < 3; i++) {
     if (!/^\[[^\]\n]{1,40}\] /.test(out)) break

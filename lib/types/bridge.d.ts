@@ -13,7 +13,7 @@ import type { Session, SessionEvent, SessionId, SessionStore } from '@deepseek-a
 import type { OneBotConnection, OneBotEvent } from './connection.js';
 import type { MediaStore } from './media.js';
 import type { Transcriber } from './stt.js';
-import type { ChatId } from './chat.js';
+import type { ChatId, PromptStyle } from './chat.js';
 import type { AccessPolicyConfig } from './chat.js';
 import { type NoticeTexts } from './notices.js';
 import { type UserQuestionsPort } from './ask-tool.js';
@@ -156,6 +156,10 @@ export interface BridgeConfig {
     /** T4 (PR port 上下文尾巴)：/new 把上一会话最后几句带进新会话（默认关，
      * 裁定口径；落盘 mediaDir/chat-tails.json）。 */
     chatTailsEnabled?: boolean;
+    /** 入站消息给模型看的格式：absent/'tag' = <user_message> 信封 + [HH:MM …]
+     * 前缀（既有行为，逐字节不变）；'plain' = 自然语言抬头 + 原话每行缩进两个
+     * 全角空格（平台提示词、引用/转发展开、旁听回顾、出站复读切除跟着换）。 */
+    promptStyle?: PromptStyle;
     /** T7 (PR port 入站连发合并)：入站排队+连发合并开关（默认关，裁定口径）；
      * absent/false = 不排队不合并，handleInbound 走既有路径，与上游逐字节
      * 等价。开启后每会话一条串行链，同会话紧挨的消息并成一条投递（斜杠命令
@@ -516,7 +520,11 @@ export declare class ChatBridge {
     private processInbound;
     /** Feed one user message into a chat's agent (create on demand). Records
      * the base text for /retry, queues the initiator's turn role, and applies
-     * per-chat /goal + /plan prefixes. */
+     * per-chat /goal + /plan prefixes. options.message = the inbound pipeline's
+     * structured view of the message (InboundMessageInfo; only inbound
+     * dispatches carry it — /retry, bystander reviews and the greeting turn do
+     * not). It is not read here: it rides the call for plugins that take over
+     * dispatch (wrapping this method), so they need not parse the text. */
     private dispatchFollowup;
     /** T24 (PR port 会话标题同步)：每条 QQ 用户消息派发回合后，让宿主标题
      * 服务为该会话重新生成标题（频率=每条消息，等价宿主 all-prompts 自动

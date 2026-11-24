@@ -86,7 +86,8 @@ export declare const SECRET_KEYS: readonly string[];
  *  10 字符串数组 + notices 单独通道；T6 新增 gifFramesEnabled、T7 新增
  *  inboxQueueEnabled/inboxQueueDelayMs、T11 新增 sidebarEntryEnabled、T24 新增
  *  titleSyncEnabled、T1 reaction 新增 reactionOnMention/reactionEmoji、#61 建议 2
- *  新增 startupResumeEnabled，实际键数以 ALL_KEYS 数组为准）。 */
+ *  新增 startupResumeEnabled、消息格式新增 promptStyle（枚举），实际键数以
+ *  ALL_KEYS 数组为准）。 */
 export declare const ALL_KEYS: readonly string[];
 /** OnebotSettingsSnapshot（T1 §3 快照结构）。 */
 export interface OnebotSettingsSnapshot {

@@ -1,5 +1,5 @@
 import type { BridgeConfig } from './bridge.js';
-import type { ChatId } from './chat.js';
+import type { ChatId, PromptStyle } from './chat.js';
 import type { TraceStage } from './trace.js';
 /** One OneBot message segment for outbound sends. */
 export interface OutboundSegment {
@@ -40,6 +40,29 @@ export declare function collapseRepeats(raw: string): string;
  * 返回空串。不含 user_message 时原样返回（不引入多余的 trim 副作用）。
  */
 export declare function cutLeakedEnvelope(raw: string): string;
+/** 出站清洗的格式选项：promptStyle='plain' 时额外切 plain 格式的复读
+ * （cutPlainEcho）；absent/'tag' = 既有行为逐字节不变。 */
+export interface OutboundCleanOptions {
+    promptStyle?: PromptStyle | undefined;
+}
+/**
+ * promptStyle=plain 的复读闸：模型把入站消息（一行顶格抬头 + 每行缩进两个
+ * 全角空格的原话）复读进回复时切掉。只认严格的抬头行（chat.ts
+ * PLAIN_HEADER_RE：「HH:MM 昵称（QQ 数字…）私聊你/在群里说/在群里@了你…：」
+ * 整行），而且只切两种位置，拿不准就不动：
+ * - 尾巴：从某个抬头行起到结尾，每一行都是抬头、缩进行或空行（#26 的
+ *   复读签名）——从这一段里第一个抬头行切到结尾；前面有正文就留正文；
+ * - 开头：第一行就是抬头，后面紧跟的缩进行/空行一并切掉，剩下的才是回复；
+ *   切完什么都不剩就整条不动。
+ * 正文中间出现的抬头不动（可能是有意引用），缩进的正文（中文段首空两格）
+ * 前面没有抬头也不动。
+ * @param text - 回复正文。
+ * @param whole - 整条回复只剩复读时：'drop' 返回 ''（cleanOutboundText 与
+ *   tag 的 cutLeakedEnvelope 同口径）；'keep' 返回去掉抬头与缩进的原话
+ *   （stripBoundaryLeakage 的 T9 口径：整条都包着时留内容）。
+ * @returns 切过的正文；没有可切的复读时原样返回（不做多余 trim）。
+ */
+export declare function cutPlainEcho(text: string, whole: 'drop' | 'keep'): string;
 /**
  * T2 (PR port): 出站清洗的单一入口——sendToChat 主路径（outboundDefenseEnabled
  * 开启时）与 qq_send_text 工具共用这一个函数，避免贡献者实现里主路径与工具
@@ -47,7 +70,7 @@ export declare function cutLeakedEnvelope(raw: string): string;
  * 信封闸 → 「系统提示」整段截断 → 半截 DSML/收尾标记与独立 URL 行剥除。
  * 不做 [[…]] 标记清理（reply 标记要在 sendToChat 里先抽取，次序不能被打断）。
  */
-export declare function cleanOutboundText(raw: string): string;
+export declare function cleanOutboundText(raw: string, options?: OutboundCleanOptions): string;
 /**
  * T2 (PR port): 引用/转发标记写歪时的兜底——只删标记本身，不动正文。
  * 在 sendToChat 里排在 [[reply:…]] 抽取与 [[qq_forward]] 块抽取之后。
@@ -111,7 +134,7 @@ export interface SendOptions {
  * 受限，普通尖括号（a < b、<tag>、<br>）不受影响。这一段在 user_message
  * 早退判断之前跑：真实泄漏样本里往往没有 user_message 包裹。
  */
-export declare function stripBoundaryLeakage(text: string): string;
+export declare function stripBoundaryLeakage(text: string, options?: OutboundCleanOptions): string;
 /** Narrow view of a live chat the outbound pipeline may touch — the
  * structural subset of the bridge's ChatAgent the pipeline reads: the
  * nickname used as the t2i card title. Re-evaluated for B8d: the per-chat
@@ -168,6 +191,8 @@ export interface OutboundContext {
         /** T2 (PR port): 纯括号旁白（如「（嗯……）」）静默丢弃的独立开关；
          * absent/false = 照常发送。 */
         asideOnlySilentEnabled: boolean;
+        /** 入站消息格式；'plain' 时出站清洗额外切 plain 格式的复读（cutPlainEcho）。 */
+        promptStyle: PromptStyle;
     }>;
 }
 /** W2-③: default bridge-wide proactive-write caps, aligned with the MIT

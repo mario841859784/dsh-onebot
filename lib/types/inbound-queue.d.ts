@@ -29,7 +29,9 @@ export declare const INBOUND_MERGE_WINDOW_MS = 600;
 export declare const INBOUND_MERGE_MAX_WAIT_MS = 3000;
 /** 把同一会话里紧挨着的几条并成一条：段的顺序保持原样，id/时间取最后一条
  *  （T7 口径：合并后的合成消息 mid = 最后一条的 message_id，与 review-t2.md
- *  的 <user_message mid=…> 语义衔接——模型 [[reply:]] 引用的是最后一句）。 */
+ *  的 <user_message mid=…> 语义衔接——模型 [[reply:]] 引用的是最后一句）。
+ *  promptStyle=plain 时同理：抬头里「这条编号」是最后一条的 id；派发时
+ *  options.message 也只有一份（messageId/time 取最后一条，body 是合并后的正文）。 */
 export declare function mergeInboundEvents(events: readonly OneBotEvent[]): OneBotEvent;
 /** 排队用的会话键。拿不到会话就归到 other，至少保证同一批 unknown 也是串行的。 */
 export declare function inboundChatKey(event: OneBotEvent | undefined): string;

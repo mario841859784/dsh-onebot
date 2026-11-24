@@ -259,6 +259,9 @@ export interface Config {
      * resume（不 resume、不 retire、不留 evictedChats 重试载体），首条消息新建
      * 会话；旧会话日志文件不动。 */
     startupResumeEnabled: boolean;
+    /** 入站消息给模型看的格式：tag（默认）= <user_message> 信封 + [HH:MM …]
+     * 前缀；plain = 自然语言抬头 + 原话每行缩进两个全角空格。 */
+    promptStyle: 'tag' | 'plain';
     /** T4 (PR port 提示词文件)：私聊（dm:）会话的附加设定文件路径（~/ 展开）；
      * 空 = 不注入（默认）。 */
     dmPromptFile: string;
