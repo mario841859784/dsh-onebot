@@ -71,7 +71,6 @@ export declare const TRACE_REASONS: {
     readonly nasFileTooLarge: "QQ 文件超过大小上限，已跳过获取";
     readonly nasFileFailed: "QQ 文件获取失败：无可用来源";
     readonly sttEmpty: "语音转写结果为空";
-    readonly transcriptNoChat: "语音转写结果无处投递";
     readonly outboundQueued: "连接断开，回复已排队等待重连补发";
     readonly outboundNotConnected: "连接断开，发送失败";
     readonly queueFull: "离线回复队列已满，丢弃最旧一条";

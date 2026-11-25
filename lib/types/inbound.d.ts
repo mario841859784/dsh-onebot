@@ -140,9 +140,6 @@ export interface InboundContext {
     media: MediaStore;
     /** Voice transcriber. */
     transcriber: Transcriber;
-    /** M3-D4c: deliver a completed voice transcript into the chat's agent
-     * (bridge-owned: steers the running turn, or opens one when idle). */
-    steerTranscript(chatId: ChatId, text: string): void;
     /** Slash-command router (bridge facade: the command table's ctx lives there).
      * nickname (T9-A): pre-sanitized sender display name for the /steer
      * <user_message> boundary attribute. */
@@ -271,10 +268,6 @@ export declare class InboundPipeline {
     buildBody(text: string, media: MediaRef[], chatId: ChatId): Promise<string>;
     /** Resolve one media ref to a text annotation with a local path. */
     resolveMediaRef(ref: MediaRef, chatId: ChatId): Promise<string>;
-    /** M3-D4c: transcribe in the background and deliver the labeled transcript
-     * into the chat's turn (steer at the running turn's nearest step boundary,
-     * or a new turn when the agent is idle). Failure keeps [语音] as final. */
-    private transcribeLater;
     /**
      * Expand a quote through get_msg, or reuse its already verified response.
      * @param messageId - quoted OneBot message id.
