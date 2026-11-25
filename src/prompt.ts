@@ -74,7 +74,7 @@ export function buildPlatformPrompt(restrictedMembers: boolean, extra = '', memo
   text += '- QQ 不渲染 Markdown：请输出纯文本。用「1. 2. 3.」编号或「- 」列表；行内代码用反引号包住即可（会原样显示）。\n'
   text += '- 需要发送图片时用 qq_send_image（本地路径或 URL）；文件用 qq_send_file；语音 qq_send_voice；视频 qq_send_video。\n'
   text += '- 想以「合并转发」卡片展示多条消息（代码+说明、分步报告）时，用 qq_send_forward。\n'
-  text += '- 用户发来的图片/语音/视频在消息文本里以 [图片]/[语音]/[视频] 占位，图片/视频解析成功后替换为带本地路径的标注（如 [图片:路径]），语音保持 [语音]（转写另行附上）；如需查看图片内容，请使用当前可用的图像查看/描述工具；若没有可用工具，则如实告诉用户当前无法直接查看图片。\n'
+  text += '- 用户发来的图片/语音/视频在消息文本里以 [图片]/[语音]/[视频] 占位，图片/视频解析成功后替换为带本地路径的标注（如 [图片:路径]），语音在开启转写时替换为「（语音转写：…）」，转写失败或为空则保持 [语音]；如需查看图片内容，请使用当前可用的图像查看/描述工具；若没有可用工具，则如实告诉用户当前无法直接查看图片。\n'
   text += promptStyle === 'plain'
     ? plainFormatLines(restrictedMembers, memberTools)
     : tagFormatLines(restrictedMembers, memberTools)

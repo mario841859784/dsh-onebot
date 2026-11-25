@@ -3,7 +3,7 @@
  *
  * 审计结论（docs/v4-source-audit.md）：全仓经宿主 API 写会话 source 的形态
  * 收敛于 src/bridge.ts:576（dispatchFollowup）与 :754（steerMessage 内核，
- * T2 起共用；steerTranscript//steer/steer 策略都经它）两点，
+ * T2 起共用；'steer' 策略与 /steer 都经它）两点，
  * 均为 `source: { kind: 'plugin:dsh-onebot' }`。本测试用真管线 harness（真实
  * ChatBridge + 反向 WS 入站）在四条路径上固化该结论，并在「持久化-重读-再写入」
  * 循环与真实宿主 v4 准入函数上断言 kind 不漂移：
@@ -200,11 +200,11 @@ describe('session v4 producer-owned source kind（持久化回归）', () => {
     try {
       h.sendText('先建立会话')
       await vi.waitFor(() => expect(h.captured).toHaveLength(1))
-      // steerTranscript 是私有方法（bridge.ts:738，T2 起委托 :749 的 steerMessage 内核），类型上经桥接访问 —— 运行时为原型方法
+      // steerMessage 是私有写点内核（bridge.ts:1344，steer 补递经它落会话行），类型上经桥接访问 —— 运行时为原型方法
       const chatId = [...(h.bridge as unknown as { chats: Map<string, unknown> }).chats.keys()][0]
       expect(chatId).toBeDefined()
-      ;(h.bridge as unknown as { steerTranscript: (chatId: string, text: string) => void })
-        .steerTranscript(chatId!, '（语音转写）帮我总结一下')
+      ;(h.bridge as unknown as { steerMessage: (chatId: string, text: string) => boolean })
+        .steerMessage(chatId!, '（语音转写）帮我总结一下')
       await vi.waitFor(() => expect(h.captured).toHaveLength(2))
       const steerRow = h.captured[1]
       expect(steerRow.via).toBe('steer')

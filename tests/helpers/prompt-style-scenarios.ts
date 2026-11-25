@@ -132,7 +132,6 @@ export async function runEnvelopeCase(mods: ScenarioModules, c: EnvelopeCase, mo
     sweepIdleChats: async () => undefined,
     media: { cleanupExpired: async () => undefined, resolve: async () => undefined },
     transcriber: { enabled: false },
-    steerTranscript: () => undefined,
     tryHandleCommand: async () => false,
     buildBody: async (t: string) => t,
     expandQuote: (id: string, verified?: unknown) => pipeline.expandQuote(id, verified),

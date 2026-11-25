@@ -19,7 +19,6 @@ import { realpath } from 'node:fs/promises'
 import type { OneBotConnection, OneBotEvent } from './connection.js'
 import type { MediaStore } from './media.js'
 import type { Transcriber } from './stt.js'
-import { transcriptLabel } from './stt.js'
 import type { MediaRef } from './cq.js'
 import type { ChatId, PromptStyle, UserRole } from './chat.js'
 import { buildChatId, classifyUserRole, splitChatId } from './chat.js'
@@ -157,7 +156,7 @@ export interface BridgeConfig {
    * the chat gets at most one queue notice per running turn; 'steer' = plain
    * text (no media/quote/forward, non-restricted senders) is submitted as a
    * supplementary instruction into the running turn via the same
-   * agent.steer kernel as steerTranscript, with a per-message submit notice. */
+   * agent.steer kernel (steerMessage), with a per-message submit notice. */
   newMessagePolicy?: 'queue' | 'steer'
   /** T9-B (用户裁决 2026-10-12)：steer 模式下自动插话的发送者资格档位；
    * absent → 'admin'（缺省）。'admin' = 仅管理员可自动插话；'all' = 所有
@@ -532,7 +531,6 @@ export class ChatBridge {
       sweepIdleChats: () => this.registry.sweepIdleChats(),
       media: deps.media,
       transcriber: deps.transcriber,
-      steerTranscript: (chatId, text) => this.steerTranscript(chatId, text),
       tryHandleCommand: (chatId, text, userId, nickname) => this.tryHandleCommand(chatId, text, userId, nickname),
       // T3-board /silent: silence-window probe (reads the in-memory cache
       // backfilled from the persisted ChatSettings at startup; expired
@@ -1327,19 +1325,9 @@ export class ChatBridge {
     return this.inbound.resolveMediaRef(ref, chatId)
   }
 
-  /** M3-D4c: steer a completed voice transcript into the chat's agent — the
-   * running turn consumes it at its nearest step boundary; an idle agent
-   * opens a turn. No live chat (dispatch dropped/never happened) drops it. */
-  private steerTranscript(chatId: ChatId, text: string): void {
-    if (this.steerMessage(chatId, transcriptLabel(text))) return
-    this.deps.log('debug', 'voice transcript dropped (no live chat): ' + chatId)
-    currentTrace()?.emit('dispatch', { ok: false, reason: TRACE_REASONS.transcriptNoChat })
-  }
-
   /** T2 (P1): the single agent.steer write point — one createUserMessage with
    * the producer-owned source kind (the session-v4 guard counts the source
-   * write points; this and dispatchFollowup are the only two). Shared by the
-   * voice transcript path (steerTranscript), the 'steer' policy and /steer.
+   * write points; this and dispatchFollowup are the only two). Shared by the 'steer' policy and /steer.
    * Returns false when the chat has no live agent (nothing was steered). */
   private steerMessage(chatId: ChatId, text: string): boolean {
     const chat = this.chats.get(chatId)

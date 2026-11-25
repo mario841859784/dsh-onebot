@@ -204,9 +204,6 @@ export interface InboundContext {
   media: MediaStore
   /** Voice transcriber. */
   transcriber: Transcriber
-  /** M3-D4c: deliver a completed voice transcript into the chat's agent
-   * (bridge-owned: steers the running turn, or opens one when idle). */
-  steerTranscript(chatId: ChatId, text: string): void
   /** Slash-command router (bridge facade: the command table's ctx lives there).
    * nickname (T9-A): pre-sanitized sender display name for the /steer
    * <user_message> boundary attribute. */
@@ -721,11 +718,20 @@ export class InboundPipeline {
         return (ref.stickerLabel !== undefined ? '[表情包:' : '[图片:') + resolved.path + ']'
           + await gifFramesNote(resolved.path, this.ctx.config.gifFramesEnabled === true)
       case 'voice': {
-        // M3-D4c: dispatch must not wait on STT — the [语音] placeholder ships
-        // now and the transcript steers into the turn when it completes. A
-        // failure/timeout keeps the placeholder as the final state.
+        // #68: with STT enabled dispatch waits for the transcription — the
+        // labeled transcript replaces the [语音] placeholder in the same
+        // message body, so the model sees the voice once and replies once.
+        // Failure/timeout/empty degrades back to the [语音] placeholder.
         if (this.ctx.transcriber.enabled) {
-          void this.transcribeLater(resolved.path, chatId)
+          try {
+            const label = transcriptLabel(await this.ctx.transcriber.transcribe(resolved.path))
+            if (label !== '') return label
+            this.ctx.log('debug', '语音转写结果为空: ' + resolved.path)
+            currentTrace()?.emit('transcribe', { ok: false, reason: TRACE_REASONS.sttEmpty })
+          } catch (error) {
+            this.ctx.log('warn', 'STT failed: ' + describeError(error))
+            currentTrace()?.emit('transcribe', { ok: false, reason: '语音转写失败: ' + describeError(error) })
+          }
         }
         return '[语音]'
       }
@@ -733,24 +739,6 @@ export class InboundPipeline {
         return '[视频:' + resolved.path + ']'
       default:
         return '[文件:' + resolved.path + ']'
-    }
-  }
-
-  /** M3-D4c: transcribe in the background and deliver the labeled transcript
-   * into the chat's turn (steer at the running turn's nearest step boundary,
-   * or a new turn when the agent is idle). Failure keeps [语音] as final. */
-  private async transcribeLater(path: string, chatId: ChatId): Promise<void> {
-    try {
-      const text = await this.ctx.transcriber.transcribe(path)
-      if (transcriptLabel(text) === '') {
-        this.ctx.log('debug', '语音转写结果为空: ' + path)
-        currentTrace()?.emit('transcribe', { ok: false, reason: TRACE_REASONS.sttEmpty })
-        return
-      }
-      this.ctx.steerTranscript(chatId, text)
-    } catch (error) {
-      this.ctx.log('warn', 'STT failed: ' + describeError(error))
-      currentTrace()?.emit('transcribe', { ok: false, reason: '语音转写失败: ' + describeError(error) })
     }
   }
 

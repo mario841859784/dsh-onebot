@@ -64,7 +64,6 @@ function makeHarness(options: HarnessOptions = {}) {
     sweepIdleChats,
     media: { cleanupExpired } as never,
     transcriber: { enabled: false } as never,
-    steerTranscript: () => undefined,
     tryHandleCommand, buildBody, expandQuote, interceptBusyTurn, dispatchFollowup,
     sendToChat: async () => { throw new Error('real outbound messages are forbidden in this test') },
     log: vi.fn(),
