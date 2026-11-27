@@ -230,7 +230,7 @@ export interface Config {
     /** @deprecated D4a alias of outboundImageMaxBytes; honored for one release. */
     maxImageBytes?: number;
     sttEnabled: boolean;
-    sttEngine: 'auto' | 'openai' | 'whisper-cpp' | 'custom';
+    sttEngine: 'auto' | 'openai' | 'whisper-cpp' | 'custom' | 'dsh';
     sttCommand: string;
     sttArgs: string[];
     sttModel: string;

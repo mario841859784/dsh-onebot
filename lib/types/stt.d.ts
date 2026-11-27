@@ -10,7 +10,7 @@
 /** STT configuration (subset of the plugin Config). */
 export interface SttConfig {
     enabled: boolean;
-    engine: 'auto' | 'openai' | 'whisper-cpp' | 'custom';
+    engine: 'auto' | 'openai' | 'whisper-cpp' | 'custom' | 'dsh';
     /** Program path/name for the custom engine. */
     command: string;
     /** argv template for the custom engine; {file} and {out} are substituted. */
@@ -19,6 +19,42 @@ export interface SttConfig {
     model: string;
     /** Per-transcription timeout in ms. */
     timeoutMs: number;
+    /**
+     * DSH 原生引擎专用：按名容错读取宿主 `speechToText` 服务（实验性语音转写
+     * 插件提供）。每次调用实时读取，服务未启用/未注册时返回 undefined——
+     * 不加入 cordis inject 列表（inject 是硬依赖，该服务是可选实验服务）。
+     */
+    getSpeechToText?: () => SpeechToTextLike | undefined;
+}
+/**
+ * 宿主实验性语音转写服务（cordis 服务名 `speechToText`）的最小结构类型：
+ * 只声明本插件用到的成员，字段/返回值用最小结构类型描述，刻意 **不 import
+ * 宿主包**（`@deepseek-ai/dsh-experimental-speech-to-text`），避免把可选
+ * 实验服务变成编译期硬依赖。
+ */
+export interface SpeechToTextLike {
+    resolve(request: {
+        readonly audio: Uint8Array;
+        readonly providerId?: string;
+        readonly language?: string;
+    }): unknown;
+    transcribe(spec: unknown, signal: AbortSignal): Promise<{
+        readonly text: string;
+    }>;
+    listProviders(): readonly unknown[];
+    snapshot(): {
+        readonly providers: readonly {
+            readonly id: string;
+            readonly preparation?: {
+                readonly phase: string;
+            };
+        }[];
+        readonly selection: {
+            readonly providerId: string;
+            readonly language: string;
+        };
+    };
+    prepare(providerId?: string): unknown;
 }
 /**
  * 判断文件头是不是 SILK v3。
