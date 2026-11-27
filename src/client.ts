@@ -229,7 +229,7 @@ window.__ModuleLoader__.load({
 				title: "媒体",
 				fields: [
 					{ key: "sttEnabled", label: "语音转写", type: "boolean", hint: "语音消息先转成文字" },
-					{ key: "sttEngine", label: "语音转写引擎", type: "enum", options: ["auto", "openai", "whisper-cpp", "custom"], optionLabels: { auto: "自动探测", openai: "openai", "whisper-cpp": "whisper-cpp", custom: "自定义命令" } },
+					{ key: "sttEngine", label: "语音转写引擎", type: "enum", options: ["auto", "openai", "whisper-cpp", "custom", "dsh"], optionLabels: { auto: "自动探测", openai: "openai", "whisper-cpp": "whisper-cpp", custom: "自定义命令", dsh: "DSH 原生" } },
 					{ key: "sttCommand", label: "自定义转写程序", type: "string", hint: "程序名或绝对路径", showIf: { key: "sttEngine", value: "custom" } },
 					{ key: "sttArgs", label: "转写参数模板", type: "stringArray", placeholder: "一行一个；{file} 和 {out} 会被替换", showIf: { key: "sttEngine", value: "custom" } },
 					{ key: "sttModel", label: "转写模型", type: "string", hint: "openai: small/base/medium…；whisper.cpp: 模型名或 .bin 路径", showIf: { key: "sttEngine", value: "openai" } },
@@ -974,7 +974,7 @@ window.__ModuleLoader__.load({
 				title: "Media",
 				fields: {
 					sttEnabled: { label: "Speech-to-text", hint: "Transcribe voice messages to text first" },
-					sttEngine: { label: "Speech-to-text engine", options: { auto: "Auto-detect", openai: "openai", "whisper-cpp": "whisper-cpp", custom: "Custom command" } },
+					sttEngine: { label: "Speech-to-text engine", options: { auto: "Auto-detect", openai: "openai", "whisper-cpp": "whisper-cpp", custom: "Custom command", dsh: "DSH native" } },
 					sttCommand: { label: "Custom transcription program", hint: "Program name or absolute path" },
 					sttArgs: { label: "Transcription argument template", placeholder: "One per line; {file} and {out} are substituted" },
 					sttModel: { label: "Transcription model", hint: "openai: small/base/medium…; whisper.cpp: model name or .bin path" },

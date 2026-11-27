@@ -233,7 +233,7 @@ const ENUM_KEYS: Readonly<Record<string, readonly string[]>> = {
   // T5 键表新增：@ 样式 / 日志级别 / 语音转写引擎。
   faceStyle: ['name', 'emoji'],
   logLevel: ['debug', 'info', 'warn', 'error'],
-  sttEngine: ['auto', 'openai', 'whisper-cpp', 'custom'],
+  sttEngine: ['auto', 'openai', 'whisper-cpp', 'custom', 'dsh'],
   // 入站消息格式：tag（默认）/ plain。
   promptStyle: ['tag', 'plain'],
 }

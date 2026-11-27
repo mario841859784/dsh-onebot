@@ -321,7 +321,7 @@ describe('T8 客户端 bundle — 七组 81 键（与 host SETTINGS_GROUPS 逐�
     expect(enumField('autoSteerPolicy')?.options).toEqual(['admin', 'all'])
     expect(enumField('faceStyle')?.options).toEqual(['name', 'emoji'])
     expect(enumField('logLevel')?.options).toEqual(['debug', 'info', 'warn', 'error'])
-    expect(enumField('sttEngine')?.options).toEqual(['auto', 'openai', 'whisper-cpp', 'custom'])
+    expect(enumField('sttEngine')?.options).toEqual(['auto', 'openai', 'whisper-cpp', 'custom', 'dsh'])
   })
 
   it('分组标题与字段 label 为中文（T8 要求：贡献者口语短文案 × 中文）', () => {

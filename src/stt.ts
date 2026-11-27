@@ -17,7 +17,7 @@ import { randomUUID } from 'node:crypto'
 /** STT configuration (subset of the plugin Config). */
 export interface SttConfig {
   enabled: boolean
-  engine: 'auto' | 'openai' | 'whisper-cpp' | 'custom'
+  engine: 'auto' | 'openai' | 'whisper-cpp' | 'custom' | 'dsh'
   /** Program path/name for the custom engine. */
   command: string
   /** argv template for the custom engine; {file} and {out} are substituted. */
@@ -26,6 +26,29 @@ export interface SttConfig {
   model: string
   /** Per-transcription timeout in ms. */
   timeoutMs: number
+  /**
+   * DSH 原生引擎专用：按名容错读取宿主 `speechToText` 服务（实验性语音转写
+   * 插件提供）。每次调用实时读取，服务未启用/未注册时返回 undefined——
+   * 不加入 cordis inject 列表（inject 是硬依赖，该服务是可选实验服务）。
+   */
+  getSpeechToText?: () => SpeechToTextLike | undefined
+}
+
+/**
+ * 宿主实验性语音转写服务（cordis 服务名 `speechToText`）的最小结构类型：
+ * 只声明本插件用到的成员，字段/返回值用最小结构类型描述，刻意 **不 import
+ * 宿主包**（`@deepseek-ai/dsh-experimental-speech-to-text`），避免把可选
+ * 实验服务变成编译期硬依赖。
+ */
+export interface SpeechToTextLike {
+  resolve(request: { readonly audio: Uint8Array; readonly providerId?: string; readonly language?: string }): unknown
+  transcribe(spec: unknown, signal: AbortSignal): Promise<{ readonly text: string }>
+  listProviders(): readonly unknown[]
+  snapshot(): {
+    readonly providers: readonly { readonly id: string; readonly preparation?: { readonly phase: string } }[]
+    readonly selection: { readonly providerId: string; readonly language: string }
+  }
+  prepare(providerId?: string): unknown
 }
 
 const DEFAULT_TIMEOUT_MS = 60_000
@@ -259,8 +282,10 @@ export class Transcriber {
     }
   }
 
-  private async resolveEngine(): Promise<'openai' | 'whisper-cpp' | 'custom'> {
+  private async resolveEngine(): Promise<'openai' | 'whisper-cpp' | 'custom' | 'dsh'> {
     if (this.config.engine === 'custom') return 'custom'
+    // dsh 是宿主内服务，不依赖任何本机二进制，无需探测。
+    if (this.config.engine === 'dsh') return 'dsh'
     if (this.config.engine !== 'auto') return this.config.engine
     if ((await findCommand('whisper-cli')) !== undefined) return 'whisper-cpp'
     if ((await findCommand('whisper')) !== undefined) return 'openai'
@@ -268,8 +293,42 @@ export class Transcriber {
     throw new Error('STT: no whisper engine found (tried whisper-cli, whisper, mlx_whisper); install one or set stt.command')
   }
 
-  private async runEngine(engine: 'openai' | 'whisper-cpp' | 'custom', wavPath: string, workDir: string): Promise<string> {
+  private async runEngine(engine: 'openai' | 'whisper-cpp' | 'custom' | 'dsh', wavPath: string, workDir: string): Promise<string> {
     const timeout = this.config.timeoutMs > 0 ? this.config.timeoutMs : DEFAULT_TIMEOUT_MS
+    if (engine === 'dsh') {
+      // DSH 原生转写：把管线产出的 16 kHz 单声道 PCM16 WAV 直接交给宿主
+      // speechToText 服务（复用宿主按需启动/空闲回收的 SenseVoice provider），
+      // 不再拉起外挂转写进程。providerId/language 省略，沿用宿主
+      // defaultProvider/language 配置，不绑死模型。
+      const audio = await readFile(wavPath)
+      const svc = this.config.getSpeechToText?.()
+      if (svc === undefined) {
+        throw new Error('STT: DSH 语音转写服务不可用（需启用宿主实验性语音转写插件）')
+      }
+      if (svc.listProviders().length === 0) {
+        throw new Error('STT: DSH 语音转写服务没有可用 provider（需在宿主启用实验性语音转写 provider）')
+      }
+      // SenseVoice provider 的 transcribe() 在准备阶段非 ready/standby 时直接
+      // 抛错且不会自动下载模型：查 snapshot，未就绪就 best-effort 触发
+      // prepare()（不等待，宿主后台继续准备，后续消息即可成功），本条按
+      // 现有失败路径抛错降级为 [语音]。
+      const snap = svc.snapshot()
+      const selected = snap.providers.find(p => p.id === snap.selection.providerId)
+      const phase = selected?.preparation?.phase
+      if (phase !== undefined && phase !== 'ready' && phase !== 'standby') {
+        if (phase === 'unprepared' || phase === 'failed' || phase === 'cancelled') {
+          try {
+            svc.prepare(snap.selection.providerId)
+          } catch {
+            // best effort — 宿主侧准备失败由宿主上报
+          }
+        }
+        throw new Error('STT: DSH 语音 provider 尚未准备就绪（phase=' + phase + '，首次需下载模型）；宿主已在后台准备，后续消息可正常转写')
+      }
+      const spec = svc.resolve({ audio })
+      const transcript = await svc.transcribe(spec, AbortSignal.timeout(timeout))
+      return transcript.text
+    }
     if (engine === 'custom') {
       const program = this.config.command !== '' ? this.config.command : 'whisper'
       const args = this.config.args.map(arg => arg.replaceAll('{file}', wavPath).replaceAll('{out}', join(workDir, 'out')))

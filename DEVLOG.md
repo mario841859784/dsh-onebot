@@ -1075,3 +1075,11 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **审计**：软性敏感词审计 `scanSensitive` 只跑在 sendToChat 的模型正文上，工具这条本来就不跑；`{ id }` 节点没有我们写的正文，不为它 get_msg 取原文（内容是别人发过、已在 QQ 里的，协议端自己解析 id、未知 id 直接报错，多一次 get_msg 只为一条只记日志的检查不划算）。写操作审计（qq-actions.log）照旧一次主动写一行；含引用节点时 reason 末尾附「（引用已有消息 id=…）」，最多列 20 个，再多写总数；全是自写节点时 reason 不变。
 - **未改**：memberTools 分档不动（qq_send_forward 仍仅管理员回合）；频控仍按一次调用计一次主动写。
 - **测试**：outbound.spec +6（两条 golden：全自写节点时群/私聊请求与改动前逐字节一致，在改动前代码上同样通过；混排形状与审计 reason；私聊路由与失败审计；20 个 id 截断；频控）；tools-gate.spec +7（golden、空 content 仍拒、混排与忽略 name/content、私聊 chat_id、非法 id、空 id 回落、成员档仍拦）。
+
+## 2026-11-28 sttEngine 新增 `dsh` 原生语音转写引擎（issue #69）
+
+- **问题**：此前语音转写只有 ffmpeg+whisper 本地路，依赖宿主侧模型/二进制；宿主已提供 `ctx.speechToText`（SenseVoice provider）却未被插件利用，用户无法选择「用 dsh 自己的转写能力」。
+- **方案**：`sttEngine` 配置新增 `'dsh'` 选项——入站语音经 SILK 解码转 canonical 16kHz mono WAV 后交宿主 `ctx.speechToText` 转写；服务缺失或未 prepared 时先 best-effort `prepare()`，仍不可用则降级抛错（沿用既有错误路径）。可配置 providerId / language。
+- **挂点**：src/stt.ts（dsh 引擎实现与 WAV canonical 化）、src/index.ts（schema 新增枚举值与 providerId/language 配置）、src/client.ts（面板配置同步）、src/settings-remote.ts（远程设置契约同步）；README.md / README.en.md 配置说明双语更新。
+- **测试**：tests/stt-dsh.spec.ts 新增（canonical WAV 形状、宿主调用参数、prepare 降级抛错路径）；既有 stt/client-settings/settings-remote 口径用例同步通过。
+- **验证**：./scripts/build.sh 通过；npx vitest run 全量 64 文件 1193 passed + 5 skipped（同既有口径）。

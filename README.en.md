@@ -213,7 +213,7 @@ default). Common options:
 | `sendErrorNotice` | `true` | Send a ⚠️ error notice to the user when a turn fails |
 | `sensitivePatterns` | `[]` | Outbound sensitive-content audit regexes (built-in `rm -rf`/shutdown/db-wipe/secret patterns; leave empty to use the built-in defaults) |
 | `sttEnabled` | `true` | voice transcription (needs ffmpeg + whisper CLI) |
-| `sttEngine` | `auto` | STT engine: `auto` (auto-detects whisper-cli/whisper/mlx_whisper)/`openai`/`whisper-cpp`/`custom` |
+| `sttEngine` | `auto` | STT engine: `auto` (auto-detects whisper-cli/whisper/mlx_whisper)/`openai`/`whisper-cpp`/`custom`/`dsh` (`dsh` = hand the decoded 16 kHz mono WAV to the host `speechToText` service; requires the host experimental speech-to-text plugin and its SenseVoice provider — the first cold start downloads the model and may exceed `sttTimeoutMs`, later messages transcribe normally) |
 | `sttModel` | `small` | whisper model |
 | `sttCommand` | empty | Program name/path for the `custom` engine |
 | `sttArgs` | `[]` | Argument templates for the `custom` engine; `{file}` and `{out}` are substituted |

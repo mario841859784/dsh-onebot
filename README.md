@@ -28,7 +28,7 @@
 |---|---|
 | 连接 | 反向 WS（NapCat ws-reverse 拨入，默认端口 8643）或正向 WS（拨出，默认 ws://127.0.0.1:3001）；断线自动重连（2s→60s 退避） |
 | 入站 | 私聊/群聊、段数组优先解析（CQ 字符串回退）、CQ 反转义、@/回复触发检测（fail-closed；回复仅认机器人自己的消息）、图片四路解析（url/base64/file/hash）、大图自动压缩（长边 ≤`inboundImageMaxPx`，GIF 不压）、文件段双通道接收（CDN 直链 get_private_file_url + get_file base64/url 回退）、表情 id→emoji/卡片/戳一戳段类型、引用消息自动取原文（get_msg）、合并转发自动展开（get_forward_msg）、群聊 @ 表情回执（`reactionOnMention`：被显式 @ 后回合启动时给该消息贴表情回执，仅 NapCat/SnowLuma） |
-| 语音 | ffmpeg 转 16kHz WAV + whisper 转写（openai-whisper / whisper.cpp / 自定义命令）；**非阻塞**：语音消息先以 [语音] 占位进入回合（不阻塞回复），转写完成后以「（语音转写：…）」补递（默认超时 60s）；转写失败/超时保留 [语音] 占位 |
+| 语音 | ffmpeg 转 16kHz WAV + whisper 转写（openai-whisper / whisper.cpp / 自定义命令；或 `dsh` 引擎交给宿主 speechToText 服务，见 `sttEngine`）；**非阻塞**：语音消息先以 [语音] 占位进入回合（不阻塞回复），转写完成后以「（语音转写：…）」补递（默认超时 60s）；转写失败/超时保留 [语音] 占位 |
 | 文字图 | t2i 卡片渲染器（@napi-rs/canvas）：标题/粗斜体/删除线/引用/列表/代码块/表格/行内 code 胶囊/彩色 emoji/中文标点禁则；与 Hermes 原版同款数值（800px/26px/禁则集合/右缘 790） |
 | 出站 | 正文 ≤ `textImageThreshold`（默认 150）字符单条发送、**超过阈值渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji；渲染失败、PNG 超 `outboundImageMaxBytes` 或 `<=0` 禁用卡片时回退单条纯文本）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、**实时中间消息**（interimMessages：每条中间文本立即发出、实时可见；各自在 `interimRecallMs`（默认 90s）后自动单独撤回；回合结束时先把整轮中间消息渲染成一张 **t2i 小结卡**、立即撤回仍在屏幕上的原文、再发送最终回复——不用回合末合并转发，避免长回合「原文超 2 分钟撤不回+转发卡重复」；`interimRecall: false` 时降级为只发不撤（无小结卡、不撤回））、**宿主「计划书/提问卡」自动中继**（模型调用 exit_plan_mode 时把计划全文发到 QQ；**ask_user_question QQ 桥接**（0.9.11）：问题渲染成 QQ 选项卡、群友回复选项/`答:`/`跳过` 即回传答案，等待期内即时结算，300s 未答转 pending 后仍可回答，见「群聊权限分档与 ask_user_question 桥接」）、正在输入提示（set_input_status，仅私聊） |
 | 命令 | 斜杠命令（默认仅管理员；`/help` 群友可见成员视图）：`/new` 开新会话、`/stop` 停止生成、`/steer <补充内容>` 向运行中的任务补充指令（无运行任务时回用法提示；详见下方命令表与 `newMessagePolicy` 配置）、`/model` 查看或切换当前会话模型（`--default` 修改部署默认；无参输出两级序号列表，回复序号选 provider → 再回复序号选模型）、`/workspace` 查看或切换工作区（无参编号列表，回复序号即选）、`/preset` 查看或切换 agent 预设（无参编号列表，回复序号即选）、`/session` 查看可切回历史会话并按序号切回（`/new`、`/workspace`、`/preset` 切换下来的旧会话进列表，可来回切，历史上下文恢复）、`/status` 会话全景、`/doctor [export [参考号]|test]`（别名 `/healthcheck`）运行体检（export [参考号] 导出脱敏诊断包 qq-diagnostics-*.zip，文件名含触发参考号；`test` 一键自测收发链路）、`/retry` 重跑上一条、`/id` 会话标识、`/ver` 版本、`/ocr` 识别最近图片、`/mode` 切换出站模式（跨重启持久化）、`/plan` 计划模式、`/permission` 切换宿主权限预设（QQ 别名 `w`=工作区可写+需审批、`f`=全权+免审批；完整预设名照传，未知名由宿主报错并回显可用列表；无参查看当前与可用列表，序号按 available 顺序）、`/goal` 目标记录（跨重启持久化）、`/silent [分钟]` 临时免打扰（0.9.11 起，默认 30 分钟，再次 `/silent` 提前解除，见命令表）、`/help` 帮助（0.9.11 起群友可见成员视图，仅列群友可用的命令）；未知斜杠命令默认拦截并提示相近命令（`unknownCommand: passthrough` 改为透传给模型） |
@@ -201,7 +201,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `sendErrorNotice` | `true` | 一轮运行出错时向用户发送 ⚠️ 错误提示 |
 | `sensitivePatterns` | `[]` | 出站敏感内容审计正则（内置 `rm -rf`/关机/删库/密钥 等模式；留空用内置默认） |
 | `sttEnabled` | `true` | 语音转写（需 ffmpeg + whisper CLI） |
-| `sttEngine` | `auto` | STT 引擎：`auto`(自动探测 whisper-cli/whisper/mlx_whisper)/`openai`/`whisper-cpp`/`custom` |
+| `sttEngine` | `auto` | STT 引擎：`auto`(自动探测 whisper-cli/whisper/mlx_whisper)/`openai`/`whisper-cpp`/`custom`/`dsh`。`dsh` = DSH 原生转写：语音照常经 ffmpeg/SILK 解码成 16kHz 单声道 WAV 后，交给宿主 speechToText 服务转写（复用宿主按需启动/空闲回收的 SenseVoice provider），不再拉起外挂转写进程。**前置条件**：宿主启用实验性语音转写插件与 SenseVoice provider；首次冷启动需下载模型，下载耗时可能超过 `sttTimeoutMs` 而降级为 [语音]，宿主准备完成后后续消息正常转写。providerId/language 不在此配置，沿用宿主默认选择 |
 | `sttModel` | `small` | whisper 模型 |
 | `sttCommand` | 空 | `custom` 引擎的程序名/路径 |
 | `sttArgs` | `[]` | `custom` 引擎参数模板，`{file}` 与 `{out}` 会被替换 |

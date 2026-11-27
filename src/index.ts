@@ -227,7 +227,7 @@ export interface Config {
   /** @deprecated D4a alias of outboundImageMaxBytes; honored for one release. */
   maxImageBytes?: number
   sttEnabled: boolean
-  sttEngine: 'auto' | 'openai' | 'whisper-cpp' | 'custom'
+  sttEngine: 'auto' | 'openai' | 'whisper-cpp' | 'custom' | 'dsh'
   sttCommand: string
   sttArgs: string[]
   sttModel: string
@@ -466,8 +466,8 @@ export const Config: Z<Config> = z.object({
     .description('出站视频/文件大小上限（字节）'),
   sttEnabled: z.boolean().default(true)
     .description('入站语音是否转写（需要 ffmpeg 和 whisper CLI；失败时降级为 [语音] 占位）'),
-  sttEngine: z.union([z.const('auto'), z.const('openai'), z.const('whisper-cpp'), z.const('custom')]).default('auto')
-    .description('STT 引擎：auto 自动探测 whisper-cli / whisper / mlx_whisper'),
+  sttEngine: z.union([z.const('auto'), z.const('openai'), z.const('whisper-cpp'), z.const('custom'), z.const('dsh')]).default('auto')
+    .description('STT 引擎：auto 自动探测 whisper-cli / whisper / mlx_whisper；dsh 交给宿主 speechToText 服务（实验性语音转写插件提供），需先在宿主启用'),
   sttCommand: z.string().default('')
     .description('custom 引擎的程序名/路径'),
   sttArgs: z.array(z.string()).default([])
@@ -690,6 +690,16 @@ export function apply(ctx: Context, config: Config): void {
     args: config.sttArgs,
     model: config.sttModel,
     timeoutMs: config.sttTimeoutMs,
+    // DSH 原生转写引擎专用：按名容错读取宿主 speechToText 服务（实验性语音
+    // 转写插件提供）。不加入 cordis inject 列表——inject 是硬依赖，该服务
+    // 是可选实验服务；同 index.ts:740 loader / :767 sessionTitle 先例。
+    getSpeechToText: () => {
+      try {
+        return ctx.get('speechToText') as import('./stt.js').SpeechToTextLike | undefined
+      } catch {
+        return undefined
+      }
+    },
   })
   connection.onMessage = (event: OneBotEvent) => {
     void bridge.handleInbound(event)
